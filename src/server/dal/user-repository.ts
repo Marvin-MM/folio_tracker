@@ -1,5 +1,5 @@
 import { eq } from "drizzle-orm";
-import { db, type AppDatabase } from "@/server/db";
+import { db, type AppDatabase, type DbExecutor } from "@/server/db";
 import { accounts, users } from "@/server/db/schema";
 
 export interface UserPreferencesRecord {
@@ -18,19 +18,27 @@ export interface UpdateUserPreferencesInput {
 }
 
 export interface UserRepository {
-  getById(userId: string): Promise<UserPreferencesRecord | null>;
+  getById(
+    userId: string,
+    executor?: DbExecutor
+  ): Promise<UserPreferencesRecord | null>;
   updatePreferences(
     userId: string,
-    input: UpdateUserPreferencesInput
+    input: UpdateUserPreferencesInput,
+    executor?: DbExecutor
   ): Promise<UserPreferencesRecord | null>;
   listConnectedProviders(userId: string): Promise<string[]>;
+  deleteUserAccount(userId: string, executor?: DbExecutor): Promise<boolean>;
 }
 
 export class DrizzleUserRepository implements UserRepository {
   constructor(private readonly database: AppDatabase = db) {}
 
-  async getById(userId: string): Promise<UserPreferencesRecord | null> {
-    const [record] = await this.database
+  async getById(
+    userId: string,
+    executor: DbExecutor = this.database
+  ): Promise<UserPreferencesRecord | null> {
+    const [record] = await executor
       .select({
         id: users.id,
         name: users.name,
@@ -48,7 +56,8 @@ export class DrizzleUserRepository implements UserRepository {
 
   async updatePreferences(
     userId: string,
-    input: UpdateUserPreferencesInput
+    input: UpdateUserPreferencesInput,
+    executor: DbExecutor = this.database
   ): Promise<UserPreferencesRecord | null> {
     const updates: Partial<typeof users.$inferInsert> = {
       updatedAt: new Date(),
@@ -64,7 +73,7 @@ export class DrizzleUserRepository implements UserRepository {
       updates.emailRemindersEnabled = input.emailRemindersEnabled;
     }
 
-    const [updated] = await this.database
+    const [updated] = await executor
       .update(users)
       .set(updates)
       .where(eq(users.id, userId))
@@ -87,6 +96,17 @@ export class DrizzleUserRepository implements UserRepository {
       .where(eq(accounts.userId, userId));
 
     return Array.from(new Set(rows.map((row) => row.providerId)));
+  }
+
+  async deleteUserAccount(
+    userId: string,
+    executor: DbExecutor = this.database
+  ): Promise<boolean> {
+    const deleted = await executor
+      .delete(users)
+      .where(eq(users.id, userId))
+      .returning({ id: users.id });
+    return deleted.length > 0;
   }
 }
 

@@ -17,7 +17,7 @@ import {
   type ProjectRepository,
 } from "@/server/dal/project-repository";
 import { userRepository, type UserRepository } from "@/server/dal/user-repository";
-import { db, type AppDatabase } from "@/server/db";
+import { db, withDbRetry, type AppDatabase } from "@/server/db";
 import type {
   InvitationRole,
   ProjectInvitationRecord,
@@ -26,10 +26,6 @@ import {
   defaultEventBus,
   type EventBus,
 } from "@/server/providers/event-bus";
-import {
-  defaultPermissionCache,
-  type PermissionCache,
-} from "@/server/providers/redis/permission-cache";
 import {
   defaultRateLimiter,
   type RateLimiter,
@@ -79,7 +75,6 @@ export interface ProjectInviteServiceDeps {
   projects?: ProjectRepository;
   users?: UserRepository;
   membershipLookup?: ProjectMembershipLookup;
-  permissionCache?: PermissionCache;
   rateLimiter?: RateLimiter;
   eventBus?: EventBus;
   now?: () => number;
@@ -90,7 +85,6 @@ export class ProjectInviteService {
   private readonly projects: ProjectRepository;
   private readonly users: UserRepository;
   private readonly membershipLookup: ProjectMembershipLookup;
-  private readonly permissionCache: PermissionCache;
   private readonly rateLimiter: RateLimiter;
   private readonly eventBus: EventBus;
   private readonly now: () => number;
@@ -101,7 +95,6 @@ export class ProjectInviteService {
     this.users = deps.users ?? userRepository;
     this.membershipLookup =
       deps.membershipLookup ?? createDrizzleMembershipLookup(this.database);
-    this.permissionCache = deps.permissionCache ?? defaultPermissionCache;
     this.rateLimiter = deps.rateLimiter ?? defaultRateLimiter;
     this.eventBus = deps.eventBus ?? defaultEventBus;
     this.now = deps.now ?? (() => Date.now());
@@ -116,8 +109,7 @@ export class ProjectInviteService {
       projectId,
       actorId,
       ["owner"],
-      this.membershipLookup,
-      this.permissionCache
+      this.membershipLookup
     );
 
     const limitResult = await this.rateLimiter.limit("project_invite", actorId);
@@ -141,8 +133,8 @@ export class ProjectInviteService {
     const nowMs = this.now();
     const expiresAt = nowMs + INVITE_EXPIRY_MS;
 
-    const { invitation, projectName, inviterName } =
-      await this.database.transaction(async (tx) => {
+    const { invitation, projectName, inviterName } = await withDbRetry(() =>
+      this.database.transaction(async (tx) => {
         const project = await this.projects.getProjectById(projectId, tx);
         if (!project) {
           throw new NotFoundError("Project not found.");
@@ -173,6 +165,7 @@ export class ProjectInviteService {
           }
           await this.projects.updateInvitationStatus(
             existingPending.id,
+            projectId,
             "expired",
             tx
           );
@@ -202,31 +195,50 @@ export class ProjectInviteService {
           tx
         );
 
-        const inviter = await this.users.getById(actorId);
+        const inviter = await this.users.getById(actorId, tx);
 
         return {
           invitation: created,
           projectName: project.name,
           inviterName: inviter?.name ?? "A project owner",
         };
-      });
+      })
+    );
 
     const invitePath = `/invite/${rawToken}`;
     const baseUrl =
       process.env.BETTER_AUTH_URL?.trim() || "http://localhost:3000";
 
-    await this.eventBus.emit({
-      name: "app/project.invited",
-      data: {
-        invitationId: invitation.id,
-        projectId,
-        projectName,
-        inviterName,
-        email,
-        role: input.role,
-        inviteUrl: `${baseUrl}${invitePath}`,
-      },
-    });
+    try {
+      await this.eventBus.emit({
+        id: `project-invite-${invitation.id}`,
+        name: "app/project.invited",
+        data: {
+          invitationId: invitation.id,
+          projectId,
+          projectName,
+          inviterName,
+          email,
+          role: input.role,
+          inviteUrl: `${baseUrl}${invitePath}`,
+        },
+      });
+    } catch (error) {
+      const isLocalDev =
+        process.env.INNGEST_DEV === "1" ||
+        process.env.NODE_ENV !== "production";
+      if (isLocalDev) {
+        console.warn(
+          JSON.stringify({
+            event: "project.invite.inngest_dev_unreachable",
+            invitationId: invitation.id,
+            reason: error instanceof Error ? error.message : "Unknown error",
+          })
+        );
+      } else {
+        throw error;
+      }
+    }
 
     return { invitation, invitePath };
   }
@@ -275,6 +287,11 @@ export class ProjectInviteService {
     };
   }
 
+  /**
+   * Atomically consumes a single-use invitation inside an ACID transaction via:
+   * `UPDATE project_invitations SET status = 'accepted' WHERE id = ? AND project_id = ? AND status = 'pending' AND expires_at > ? RETURNING *`
+   * Zero TOCTOU: strictly ONE concurrent caller succeeds; all others abort with `ConflictError`.
+   */
   async acceptInvitation(
     rawToken: string,
     authenticatedUser: {
@@ -298,94 +315,80 @@ export class ProjectInviteService {
     const nowMs = this.now();
     const userEmail = authenticatedUser.email.trim().toLowerCase();
 
-    const outcome = await this.database.transaction(async (tx) => {
-      const match = await this.projects.findInvitationByTokenHash(tokenHash, tx);
-      if (!match) {
-        throw new NotFoundError("This invitation link is invalid.");
-      }
-
-      const { invitation } = match;
-      const invitedEmail = invitation.email.trim().toLowerCase();
-
-      if (userEmail !== invitedEmail) {
-        throw new EmailMismatchError(
-          `This invitation was sent to ${maskEmail(invitedEmail)}. You are signed in as ${authenticatedUser.email}.`
-        );
-      }
-
-      // Idempotent handling if already accepted by this exact user
-      if (invitation.status === "accepted") {
-        const existingMember = await this.projects.getMember(
-          invitation.projectId,
-          authenticatedUser.id,
+    return withDbRetry(() =>
+      this.database.transaction(async (tx) => {
+        const match = await this.projects.findInvitationByTokenHash(
+          tokenHash,
           tx
         );
-        if (existingMember) {
-          return {
-            projectId: invitation.projectId,
-            role: invitation.role,
-            alreadyMember: true,
-          };
+        if (!match) {
+          throw new NotFoundError("This invitation link is invalid.");
         }
-        throw new ConflictError("This invitation has already been used.");
-      }
 
-      if (invitation.status === "revoked" || invitation.status === "declined") {
-        throw new ForbiddenError("This invitation is no longer active.");
-      }
+        const { invitation } = match;
+        const invitedEmail = invitation.email.trim().toLowerCase();
 
-      if (invitation.expiresAt <= nowMs) {
-        await this.projects.updateInvitationStatus(
+        if (userEmail !== invitedEmail) {
+          throw new EmailMismatchError(
+            `This invitation was sent to ${maskEmail(invitedEmail)}. You are signed in as ${authenticatedUser.email}.`
+          );
+        }
+
+        if (invitation.status === "revoked" || invitation.status === "declined") {
+          throw new ForbiddenError("This invitation is no longer active.");
+        }
+
+        if (invitation.status === "pending" && invitation.expiresAt <= nowMs) {
+          await this.projects.updateInvitationStatus(
+            invitation.id,
+            invitation.projectId,
+            "expired",
+            tx
+          );
+          throw new ValidationError("This invitation link has expired.");
+        }
+
+        // Single atomic conditional claim: eliminates concurrent double-accept TOCTOU
+        const claimed = await this.projects.claimPendingInvitation(
           invitation.id,
-          "expired",
+          invitation.projectId,
+          nowMs,
           tx
         );
-        throw new ValidationError("This invitation link has expired.");
-      }
+        if (!claimed) {
+          throw new ConflictError(
+            "This invitation has already been accepted or is no longer valid."
+          );
+        }
 
-      const claimed = await this.projects.claimPendingInvitation(
-        invitation.id,
-        tx
-      );
-      if (!claimed) {
-        throw new ConflictError("This invitation has already been accepted.");
-      }
+        await this.projects.addMember(
+          {
+            projectId: claimed.projectId,
+            userId: authenticatedUser.id,
+            role: claimed.role,
+          },
+          tx
+        );
 
-      await this.projects.addMember(
-        {
-          projectId: invitation.projectId,
-          userId: authenticatedUser.id,
-          role: invitation.role,
-        },
-        tx
-      );
+        await this.projects.recordActivity(
+          {
+            projectId: claimed.projectId,
+            actorId: authenticatedUser.id,
+            action: "member.joined",
+            entityType: "member",
+            entityId: authenticatedUser.id,
+            metadata: { role: claimed.role },
+          },
+          tx
+        );
 
-      await this.projects.recordActivity(
-        {
-          projectId: invitation.projectId,
-          actorId: authenticatedUser.id,
-          action: "member.joined",
-          entityType: "member",
-          entityId: authenticatedUser.id,
-          metadata: { role: invitation.role },
-        },
-        tx
-      );
-
-      return {
-        projectId: invitation.projectId,
-        role: invitation.role,
-        alreadyMember: false,
-      };
-    });
-
-    // Immediately invalidate any cached non-member/prior role entry
-    await this.permissionCache.invalidateRole(
-      outcome.projectId,
-      authenticatedUser.id
+        return {
+          projectId: claimed.projectId,
+          role: claimed.role,
+          alreadyMember: false,
+        };
+      })
     );
-
-    return outcome;
   }
 
   async revokeInvitation(
@@ -397,36 +400,42 @@ export class ProjectInviteService {
       projectId,
       actorId,
       ["owner"],
-      this.membershipLookup,
-      this.permissionCache
+      this.membershipLookup
     );
 
-    await this.database.transaction(async (tx) => {
-      const existing = await this.projects.findInvitationById(
-        invitationId,
-        projectId,
-        tx
-      );
-      if (!existing) {
-        throw new NotFoundError("Invitation not found.");
-      }
-      if (existing.status !== "pending") {
-        throw new ConflictError("Only pending invitations can be revoked.");
-      }
-
-      await this.projects.updateInvitationStatus(invitationId, "revoked", tx);
-      await this.projects.recordActivity(
-        {
+    await withDbRetry(() =>
+      this.database.transaction(async (tx) => {
+        const existing = await this.projects.findInvitationById(
+          invitationId,
           projectId,
-          actorId,
-          action: "invite.revoked",
-          entityType: "invitation",
-          entityId: invitationId,
-          metadata: { recipient: maskEmail(existing.email) },
-        },
-        tx
-      );
-    });
+          tx
+        );
+        if (!existing) {
+          throw new NotFoundError("Invitation not found.");
+        }
+        if (existing.status !== "pending") {
+          throw new ConflictError("Only pending invitations can be revoked.");
+        }
+
+        await this.projects.updateInvitationStatus(
+          invitationId,
+          projectId,
+          "revoked",
+          tx
+        );
+        await this.projects.recordActivity(
+          {
+            projectId,
+            actorId,
+            action: "invite.revoked",
+            entityType: "invitation",
+            entityId: invitationId,
+            metadata: { recipient: maskEmail(existing.email) },
+          },
+          tx
+        );
+      })
+    );
   }
 }
 

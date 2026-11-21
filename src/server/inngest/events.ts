@@ -5,8 +5,8 @@ export const reminderScheduledEvent = eventType("app/reminder.scheduled", {
   schema: z.object({
     reminderId: z.string(),
     userId: z.string(),
-    entityType: z.enum(["task", "note"]),
-    entityId: z.string(),
+    taskId: z.string().nullable(),
+    noteId: z.string().nullable(),
     remindAt: z.number(),
     version: z.number().int().min(1),
   }),

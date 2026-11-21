@@ -5,6 +5,8 @@ import { UnauthorizedError } from "@/server/dal/errors";
 import { notificationRepository } from "@/server/dal/notification-repository";
 import { workspaceRepository } from "@/server/dal/workspace-repository";
 
+export const dynamic = "force-dynamic";
+
 export default async function AppShellLayout({
   children,
 }: Readonly<{

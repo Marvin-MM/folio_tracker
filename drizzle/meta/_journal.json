@@ -8,6 +8,13 @@
       "when": 1795279470446,
       "tag": "0000_common_karma",
       "breakpoints": true
+    },
+    {
+      "idx": 1,
+      "version": "6",
+      "when": 1795297682173,
+      "tag": "0001_harden_reminders_fk_outbox",
+      "breakpoints": true
     }
   ]
 }

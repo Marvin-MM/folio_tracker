@@ -77,7 +77,7 @@ export const projectInvitationsRelations = relations(
   })
 );
 
-export const tasksRelations = relations(tasks, ({ one }) => ({
+export const tasksRelations = relations(tasks, ({ one, many }) => ({
   creator: one(users, {
     fields: [tasks.userId],
     references: [users.id],
@@ -92,9 +92,10 @@ export const tasksRelations = relations(tasks, ({ one }) => ({
     fields: [tasks.projectId],
     references: [projects.id],
   }),
+  reminders: many(reminders),
 }));
 
-export const notesRelations = relations(notes, ({ one }) => ({
+export const notesRelations = relations(notes, ({ one, many }) => ({
   author: one(users, {
     fields: [notes.userId],
     references: [users.id],
@@ -103,6 +104,7 @@ export const notesRelations = relations(notes, ({ one }) => ({
     fields: [notes.projectId],
     references: [projects.id],
   }),
+  reminders: many(reminders),
 }));
 
 export const projectActivitiesRelations = relations(
@@ -123,6 +125,14 @@ export const remindersRelations = relations(reminders, ({ one }) => ({
   user: one(users, {
     fields: [reminders.userId],
     references: [users.id],
+  }),
+  task: one(tasks, {
+    fields: [reminders.taskId],
+    references: [tasks.id],
+  }),
+  note: one(notes, {
+    fields: [reminders.noteId],
+    references: [notes.id],
   }),
 }));
 

@@ -41,6 +41,26 @@ async function extractEmailIdentifier(request: NextRequest): Promise<string> {
   return "anon";
 }
 
+function attachPrivateNoStore(response: Response, extra?: Record<string, string>): Response {
+  const nextHeaders = new Headers(response.headers);
+  nextHeaders.set("Cache-Control", "private, no-store");
+  if (extra) {
+    for (const [k, v] of Object.entries(extra)) {
+      nextHeaders.set(k, v);
+    }
+  }
+  return new Response(response.body, {
+    status: response.status,
+    statusText: response.statusText,
+    headers: nextHeaders,
+  });
+}
+
+export async function handleAuthGet(request: NextRequest): Promise<Response> {
+  const response = await authHandler.GET(request);
+  return attachPrivateNoStore(response);
+}
+
 export async function handleRateLimitedAuthPost(
   request: NextRequest,
   limiter: RateLimiter = defaultRateLimiter,
@@ -56,7 +76,10 @@ export async function handleRateLimitedAuthPost(
     const identifier = await extractEmailIdentifier(request);
     const key = `${ip}:${pathname}:${identifier}`;
     const limitResult = await limiter.limit("auth", key);
-    const headers = buildRateLimitHeaders(limitResult);
+    const headers = {
+      "Cache-Control": "private, no-store",
+      ...buildRateLimitHeaders(limitResult),
+    };
 
     if (!limitResult.allowed) {
       return NextResponse.json(
@@ -73,16 +96,9 @@ export async function handleRateLimitedAuthPost(
     }
 
     const response = await delegate(request);
-    const nextHeaders = new Headers(response.headers);
-    for (const [k, v] of Object.entries(headers)) {
-      nextHeaders.set(k, v);
-    }
-    return new Response(response.body, {
-      status: response.status,
-      statusText: response.statusText,
-      headers: nextHeaders,
-    });
+    return attachPrivateNoStore(response, headers);
   }
 
-  return delegate(request);
+  const response = await delegate(request);
+  return attachPrivateNoStore(response);
 }

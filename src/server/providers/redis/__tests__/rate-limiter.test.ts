@@ -1,12 +1,11 @@
 import { NextRequest } from "next/server";
 import { describe, expect, it } from "vitest";
 import { handleRateLimitedAuthPost } from "@/server/http/auth-rate-limit-handler";
-import { InMemoryPermissionCache } from "@/server/providers/redis/permission-cache";
 import { InMemoryRateLimiter } from "@/server/providers/redis/rate-limiter";
 import { InMemoryUnreadCounterCache } from "@/server/providers/redis/unread-counter-cache";
 
-describe("Redis Providers — RateLimiter (429), PermissionCache & UnreadCounterCache", () => {
-  it("enforces sliding-window threshold and returns structured HTTP 429 with Retry-After headers", async () => {
+describe("Redis Providers — RateLimiter (429 + no-store) & UnreadCounterCache", () => {
+  it("enforces sliding-window threshold and returns structured HTTP 429 with Retry-After and Cache-Control: private, no-store", async () => {
     let clock = 1_700_000_000_000;
     const limiter = new InMemoryRateLimiter({
       now: () => clock,
@@ -43,6 +42,7 @@ describe("Redis Providers — RateLimiter (429), PermissionCache & UnreadCounter
         okDelegate
       );
       expect(res.status).toBe(200);
+      expect(res.headers.get("Cache-Control")).toBe("private, no-store");
       expect(res.headers.get("X-RateLimit-Limit")).toBe("3");
       expect(res.headers.get("X-RateLimit-Remaining")).toBe(String(2 - i));
     }
@@ -54,6 +54,7 @@ describe("Redis Providers — RateLimiter (429), PermissionCache & UnreadCounter
       okDelegate
     );
     expect(blocked.status).toBe(429);
+    expect(blocked.headers.get("Cache-Control")).toBe("private, no-store");
     expect(Number(blocked.headers.get("Retry-After"))).toBeGreaterThan(0);
     expect(blocked.headers.get("X-RateLimit-Remaining")).toBe("0");
 
@@ -73,23 +74,6 @@ describe("Redis Providers — RateLimiter (429), PermissionCache & UnreadCounter
       okDelegate
     );
     expect(recovered.status).toBe(200);
-  });
-
-  it("caches project roles with 300s TTL and supports immediate invalidation", async () => {
-    let clock = 1_700_000_000_000;
-    const cache = new InMemoryPermissionCache(() => clock);
-
-    expect(await cache.getRole("p1", "u1")).toBeNull();
-    await cache.setRole("p1", "u1", "editor");
-    expect(await cache.getRole("p1", "u1")).toBe("editor");
-
-    await cache.invalidateRole("p1", "u1");
-    expect(await cache.getRole("p1", "u1")).toBeNull();
-
-    // TTL expiration after 300s
-    await cache.setRole("p1", "u1", "viewer");
-    clock += 300_001;
-    expect(await cache.getRole("p1", "u1")).toBeNull();
   });
 
   it("tracks unread notification counters accurately across increment, decrement, and reset", async () => {

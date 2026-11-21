@@ -15,7 +15,7 @@ export async function GET() {
       {
         status: 200,
         headers: {
-          "Cache-Control": "no-store",
+          "Cache-Control": "private, no-store",
         },
       }
     );
@@ -29,7 +29,7 @@ export async function GET() {
       {
         status: 503,
         headers: {
-          "Cache-Control": "no-store",
+          "Cache-Control": "private, no-store",
         },
       }
     );

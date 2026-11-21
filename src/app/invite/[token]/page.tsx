@@ -8,6 +8,8 @@ import { APP_NAME } from "@/lib/constants";
 import { auth } from "@/server/auth";
 import { projectInviteService } from "@/server/services/project-invite-service";
 
+export const dynamic = "force-dynamic";
+
 export const metadata: Metadata = {
   title: "Project Invitation",
 };

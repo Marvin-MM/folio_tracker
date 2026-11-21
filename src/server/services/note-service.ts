@@ -10,6 +10,7 @@ import {
 } from "@/server/dal/errors";
 import {
   noteRepository,
+  type NoteAuthMetadata,
   type NoteRepository,
 } from "@/server/dal/note-repository";
 import {
@@ -20,18 +21,13 @@ import {
   reminderRepository,
   type ReminderRepository,
 } from "@/server/dal/reminder-repository";
-import { db, type AppDatabase } from "@/server/db";
+import { db, withDbRetry, type AppDatabase, type DbExecutor } from "@/server/db";
 import type { NoteRecord, ReminderRecord } from "@/server/db/schema";
+import { defaultEventBus, type EventBus } from "@/server/providers/event-bus";
 import {
-  defaultEventBus,
-  type AppDomainEvent,
-  type EventBus,
-} from "@/server/providers/event-bus";
-import {
-  defaultPermissionCache,
-  type PermissionCache,
-} from "@/server/providers/redis/permission-cache";
-import { ReminderService } from "./reminder-service";
+  buildCancelledReminderEvent,
+  ReminderService,
+} from "./reminder-service";
 
 export interface CreateNoteInput {
   title: string;
@@ -57,7 +53,6 @@ export interface NoteServiceDeps {
   reminders?: ReminderRepository;
   projects?: ProjectRepository;
   membershipLookup?: ProjectMembershipLookup;
-  permissionCache?: PermissionCache;
   reminderService?: ReminderService;
   eventBus?: EventBus;
 }
@@ -68,7 +63,6 @@ export class NoteService {
   private readonly reminders: ReminderRepository;
   private readonly projects: ProjectRepository;
   private readonly membershipLookup: ProjectMembershipLookup;
-  private readonly permissionCache: PermissionCache;
   private readonly reminderService: ReminderService;
   private readonly eventBus: EventBus;
 
@@ -79,23 +73,20 @@ export class NoteService {
     this.projects = deps.projects ?? projectRepository;
     this.membershipLookup =
       deps.membershipLookup ?? createDrizzleMembershipLookup(this.database);
-    this.permissionCache = deps.permissionCache ?? defaultPermissionCache;
     this.eventBus = deps.eventBus ?? defaultEventBus;
     this.reminderService =
       deps.reminderService ??
       new ReminderService({
         database: this.database,
         reminders: this.reminders,
-        notes: this.notes,
-        membershipLookup: this.membershipLookup,
-        permissionCache: this.permissionCache,
         eventBus: this.eventBus,
       });
   }
 
   private async assertCanMutateNote(
-    note: NoteRecord,
-    userId: string
+    note: Pick<NoteAuthMetadata, "userId" | "projectId">,
+    userId: string,
+    executor?: DbExecutor
   ): Promise<void> {
     if (note.projectId) {
       await assertProjectRole(
@@ -103,7 +94,7 @@ export class NoteService {
         userId,
         ["owner", "editor"],
         this.membershipLookup,
-        this.permissionCache
+        executor
       );
       return;
     }
@@ -127,13 +118,12 @@ export class NoteService {
         input.projectId,
         userId,
         ["owner", "editor"],
-        this.membershipLookup,
-        this.permissionCache
+        this.membershipLookup
       );
     }
 
-    const { note, reminder, postCommitEvent } = await this.database.transaction(
-      async (tx) => {
+    const { note, reminder, shouldDispatch } = await withDbRetry(() =>
+      this.database.transaction(async (tx) => {
         const createdNote = await this.notes.create(
           {
             userId,
@@ -147,21 +137,21 @@ export class NoteService {
         );
 
         let createdReminder: ReminderRecord | null = null;
-        let eventToEmit: AppDomainEvent | null = null;
+        let dispatchReminder = false;
 
         if (input.remindAt !== undefined && input.remindAt !== null) {
           const attached = await this.reminderService.createInTransaction(
             tx,
             userId,
             {
-              entityType: "note",
-              entityId: createdNote.id,
+              noteId: createdNote.id,
+              taskId: null,
               remindAt: input.remindAt,
               timezone: input.timezone ?? "UTC",
             }
           );
           createdReminder = attached.reminder;
-          eventToEmit = attached.postCommitEvent;
+          dispatchReminder = attached.shouldDispatch;
         }
 
         if (createdNote.projectId) {
@@ -181,13 +171,13 @@ export class NoteService {
         return {
           note: createdNote,
           reminder: createdReminder,
-          postCommitEvent: eventToEmit,
+          shouldDispatch: dispatchReminder,
         };
-      }
+      })
     );
 
-    if (postCommitEvent) {
-      await this.eventBus.emit(postCommitEvent);
+    if (reminder && shouldDispatch) {
+      await this.reminderService.dispatchScheduledReminder(reminder);
     }
 
     return { note, reminder };
@@ -202,7 +192,7 @@ export class NoteService {
       throw new ValidationError("Note title cannot be empty.");
     }
 
-    const existing = await this.notes.getById(noteId);
+    const existing = await this.notes.getAuthMetadata(noteId);
     if (!existing) {
       throw new NotFoundError("Note not found.");
     }
@@ -213,15 +203,13 @@ export class NoteService {
         input.projectId,
         userId,
         ["owner", "editor"],
-        this.membershipLookup,
-        this.permissionCache
+        this.membershipLookup
       );
     }
 
-    return this.database.transaction(async (tx) => {
-      const updated = await this.notes.updateById(
-        noteId,
-        {
+    return withDbRetry(() =>
+      this.database.transaction(async (tx) => {
+        const patch = {
           ...(input.title !== undefined ? { title: input.title.trim() } : {}),
           ...(input.content !== undefined ? { content: input.content } : {}),
           ...(input.tags !== undefined ? { tags: input.tags } : {}),
@@ -229,42 +217,56 @@ export class NoteService {
           ...(input.projectId !== undefined
             ? { projectId: input.projectId }
             : {}),
-        },
-        tx
-      );
+        };
 
-      if (!updated) {
-        throw new NotFoundError("Note not found.");
-      }
+        const updated = existing.projectId
+          ? await this.notes.updateProjectNote(
+              noteId,
+              existing.projectId,
+              patch,
+              tx
+            )
+          : await this.notes.updatePersonalNote(noteId, userId, patch, tx);
 
-      if (updated.projectId) {
-        await this.projects.recordActivity(
-          {
-            projectId: updated.projectId,
-            actorId: userId,
-            action: "note.updated",
-            entityType: "note",
-            entityId: updated.id,
-            metadata: { title: updated.title },
-          },
-          tx
-        );
-      }
+        if (!updated) {
+          throw new NotFoundError("Note not found.");
+        }
 
-      return updated;
-    });
+        if (updated.projectId) {
+          await this.projects.recordActivity(
+            {
+              projectId: updated.projectId,
+              actorId: userId,
+              action: "note.updated",
+              entityType: "note",
+              entityId: updated.id,
+              metadata: { title: updated.title },
+            },
+            tx
+          );
+        }
+
+        return updated;
+      })
+    );
   }
 
   async togglePin(userId: string, noteId: string): Promise<NoteRecord> {
-    const existing = await this.notes.getById(noteId);
+    const existing = await this.notes.getAuthMetadata(noteId);
     if (!existing) {
       throw new NotFoundError("Note not found.");
     }
     await this.assertCanMutateNote(existing, userId);
 
-    const updated = await this.notes.updateById(noteId, {
-      isPinned: !existing.isPinned,
-    });
+    const updated = await withDbRetry(() =>
+      existing.projectId
+        ? this.notes.updateProjectNote(noteId, existing.projectId, {
+            isPinned: !existing.isPinned,
+          })
+        : this.notes.updatePersonalNote(noteId, userId, {
+            isPinned: !existing.isPinned,
+          })
+    );
 
     if (!updated) {
       throw new NotFoundError("Note not found.");
@@ -273,46 +275,52 @@ export class NoteService {
   }
 
   async deleteNote(userId: string, noteId: string): Promise<void> {
-    const existing = await this.notes.getById(noteId);
+    const existing = await this.notes.getAuthMetadata(noteId);
     if (!existing) {
       throw new NotFoundError("Note not found.");
     }
     await this.assertCanMutateNote(existing, userId);
 
-    const cancelledEvents = await this.database.transaction(async (tx) => {
-      const cancelled = await this.reminders.cancelActiveForEntity(
-        { userId, entityType: "note", entityId: noteId },
-        tx
-      );
+    const cancelledEvents = await withDbRetry(() =>
+      this.database.transaction(async (tx) => {
+        // Collect ALL active scheduled reminders across all users BEFORE cascade delete
+        const activeScheduled =
+          await this.reminders.findActiveScheduledForNote(noteId, tx);
 
-      await this.notes.deleteById(noteId, tx);
+        const deleted = existing.projectId
+          ? await this.notes.deleteProjectNote(noteId, existing.projectId, tx)
+          : await this.notes.deletePersonalNote(noteId, userId, tx);
 
-      if (existing.projectId) {
-        await this.projects.recordActivity(
-          {
-            projectId: existing.projectId,
-            actorId: userId,
-            action: "note.deleted",
-            entityType: "note",
-            entityId: noteId,
-            metadata: { title: existing.title },
-          },
-          tx
+        if (!deleted) {
+          throw new NotFoundError("Note not found.");
+        }
+
+        if (existing.projectId) {
+          await this.projects.recordActivity(
+            {
+              projectId: existing.projectId,
+              actorId: userId,
+              action: "note.deleted",
+              entityType: "note",
+              entityId: noteId,
+              metadata: { title: existing.title },
+            },
+            tx
+          );
+        }
+
+        return activeScheduled.map((row) =>
+          buildCancelledReminderEvent({
+            reminderId: row.id,
+            userId: row.userId,
+            version: row.version,
+          })
         );
-      }
-
-      return cancelled.map<AppDomainEvent>((row) => ({
-        name: "app/reminder.cancelled",
-        data: {
-          reminderId: row.id,
-          userId,
-          version: row.version,
-        },
-      }));
-    });
+      })
+    );
 
     if (cancelledEvents.length > 0) {
-      await this.eventBus.emit(cancelledEvents);
+      await this.reminderService.emitControlEventsSafely(cancelledEvents);
     }
   }
 }

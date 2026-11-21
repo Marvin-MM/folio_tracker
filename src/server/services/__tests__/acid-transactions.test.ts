@@ -17,6 +17,44 @@ import { NoteService } from "@/server/services/note-service";
 import { ReminderService } from "@/server/services/reminder-service";
 import { TaskService } from "@/server/services/task-service";
 
+function makeFailingReminderRepo(
+  realReminders: DrizzleReminderRepository,
+  errorMessage: string
+): ReminderRepository {
+  return {
+    create: async () => {
+      throw new Error(errorMessage);
+    },
+    getByIdForUser: realReminders.getByIdForUser.bind(realReminders),
+    listActiveForTarget: realReminders.listActiveForTarget.bind(realReminders),
+    listActiveForUserWithEntities:
+      realReminders.listActiveForUserWithEntities.bind(realReminders),
+    updateWithVersion: realReminders.updateWithVersion.bind(realReminders),
+    markDispatched: realReminders.markDispatched.bind(realReminders),
+    claimForDelivery: realReminders.claimForDelivery.bind(realReminders),
+    cancelIfRevoked: realReminders.cancelIfRevoked.bind(realReminders),
+    cancelActiveForTarget:
+      realReminders.cancelActiveForTarget.bind(realReminders),
+    findActiveScheduledForTask:
+      realReminders.findActiveScheduledForTask.bind(realReminders),
+    findActiveScheduledForNote:
+      realReminders.findActiveScheduledForNote.bind(realReminders),
+    findActiveScheduledForProject:
+      realReminders.findActiveScheduledForProject.bind(realReminders),
+    findActiveScheduledForUserAccountDeletion:
+      realReminders.findActiveScheduledForUserAccountDeletion.bind(
+        realReminders
+      ),
+    findPendingFarWithinHorizon:
+      realReminders.findPendingFarWithinHorizon.bind(realReminders),
+    promotePendingFarToScheduled:
+      realReminders.promotePendingFarToScheduled.bind(realReminders),
+    findUndispatchedScheduled:
+      realReminders.findUndispatchedScheduled.bind(realReminders),
+    getEntitySummary: realReminders.getEntitySummary.bind(realReminders),
+  };
+}
+
 describe("ACID transactions across TaskService & NoteService", () => {
   let tempDir: string;
   let conn: DbConnection;
@@ -50,26 +88,10 @@ describe("ACID transactions across TaskService & NoteService", () => {
   it("rolls back Task insert atomically if linked Reminder insert fails mid-transaction", async () => {
     const bus = new InMemoryEventBus();
     const realReminders = new DrizzleReminderRepository(conn.db);
-    const failingReminders: ReminderRepository = {
-      ...realReminders,
-      create: async () => {
-        throw new Error("Simulated reminder constraint failure");
-      },
-      getById: realReminders.getById.bind(realReminders),
-      getByIdForUser: realReminders.getByIdForUser.bind(realReminders),
-      listActiveForEntity: realReminders.listActiveForEntity.bind(realReminders),
-      listActiveForUserWithEntities:
-        realReminders.listActiveForUserWithEntities.bind(realReminders),
-      updateWithVersion: realReminders.updateWithVersion.bind(realReminders),
-      claimForDelivery: realReminders.claimForDelivery.bind(realReminders),
-      cancelActiveForEntity:
-        realReminders.cancelActiveForEntity.bind(realReminders),
-      findPendingFarWithinHorizon:
-        realReminders.findPendingFarWithinHorizon.bind(realReminders),
-      promotePendingFarToScheduled:
-        realReminders.promotePendingFarToScheduled.bind(realReminders),
-      getEntitySummary: realReminders.getEntitySummary.bind(realReminders),
-    };
+    const failingReminders = makeFailingReminderRepo(
+      realReminders,
+      "Simulated reminder constraint failure"
+    );
 
     const taskRepo = new DrizzleTaskRepository(conn.db);
     const taskSvc = new TaskService({
@@ -98,26 +120,10 @@ describe("ACID transactions across TaskService & NoteService", () => {
   it("rolls back Note insert atomically if linked Reminder insert fails mid-transaction", async () => {
     const bus = new InMemoryEventBus();
     const realReminders = new DrizzleReminderRepository(conn.db);
-    const failingReminders: ReminderRepository = {
-      ...realReminders,
-      create: async () => {
-        throw new Error("Simulated note reminder failure");
-      },
-      getById: realReminders.getById.bind(realReminders),
-      getByIdForUser: realReminders.getByIdForUser.bind(realReminders),
-      listActiveForEntity: realReminders.listActiveForEntity.bind(realReminders),
-      listActiveForUserWithEntities:
-        realReminders.listActiveForUserWithEntities.bind(realReminders),
-      updateWithVersion: realReminders.updateWithVersion.bind(realReminders),
-      claimForDelivery: realReminders.claimForDelivery.bind(realReminders),
-      cancelActiveForEntity:
-        realReminders.cancelActiveForEntity.bind(realReminders),
-      findPendingFarWithinHorizon:
-        realReminders.findPendingFarWithinHorizon.bind(realReminders),
-      promotePendingFarToScheduled:
-        realReminders.promotePendingFarToScheduled.bind(realReminders),
-      getEntitySummary: realReminders.getEntitySummary.bind(realReminders),
-    };
+    const failingReminders = makeFailingReminderRepo(
+      realReminders,
+      "Simulated note reminder failure"
+    );
 
     const noteRepo = new DrizzleNoteRepository(conn.db);
     const noteSvc = new NoteService({
@@ -150,7 +156,6 @@ describe("ACID transactions across TaskService & NoteService", () => {
     const remRepo = new DrizzleReminderRepository(conn.db);
     const remSvc = new ReminderService({
       database: conn.db,
-      tasks: taskRepo,
       reminders: remRepo,
       eventBus: bus,
     });
@@ -169,6 +174,8 @@ describe("ACID transactions across TaskService & NoteService", () => {
     });
 
     expect(reminder).not.toBeNull();
+    expect(reminder!.taskId).toBe(task.id);
+    expect(reminder!.noteId).toBeNull();
     expect(bus.events).toHaveLength(1);
     expect(bus.events[0]?.name).toBe("app/reminder.scheduled");
 
@@ -187,6 +194,7 @@ describe("ACID transactions across TaskService & NoteService", () => {
 
     expect(bus.events).toHaveLength(1);
     expect(bus.events[0]).toEqual({
+      id: `reminder-cancel-${reminder!.id}-v2`,
       name: "app/reminder.cancelled",
       data: {
         reminderId: reminder!.id,

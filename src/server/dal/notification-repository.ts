@@ -1,5 +1,5 @@
 import { and, count, desc, eq } from "drizzle-orm";
-import { db, type AppDatabase, type DbExecutor } from "@/server/db";
+import { db, withDbRetry, type AppDatabase, type DbExecutor } from "@/server/db";
 import {
   notifications,
   pushSubscriptions,
@@ -127,45 +127,41 @@ export class DrizzleNotificationRepository implements NotificationRepository {
     return updated.length;
   }
 
+  /**
+   * Atomic SQLite UPSERT on unique `endpoint`: reassigns `userId` to the
+   * currently authenticated user on shared devices with zero TOCTOU race.
+   */
   async upsertPushSubscription(
     input: UpsertPushSubscriptionInput
   ): Promise<PushSubscriptionRecord> {
-    const existing = await this.database
-      .select()
-      .from(pushSubscriptions)
-      .where(eq(pushSubscriptions.endpoint, input.endpoint))
-      .limit(1);
-
-    if (existing[0]) {
-      const [updated] = await this.database
-        .update(pushSubscriptions)
-        .set({
+    return withDbRetry(async () => {
+      const now = Date.now();
+      const [upserted] = await this.database
+        .insert(pushSubscriptions)
+        .values({
           userId: input.userId,
+          endpoint: input.endpoint,
           p256dh: input.p256dh,
           auth: input.auth,
           userAgent: input.userAgent ?? null,
+          createdAt: now,
         })
-        .where(eq(pushSubscriptions.endpoint, input.endpoint))
+        .onConflictDoUpdate({
+          target: pushSubscriptions.endpoint,
+          set: {
+            userId: input.userId,
+            p256dh: input.p256dh,
+            auth: input.auth,
+            userAgent: input.userAgent ?? null,
+          },
+        })
         .returning();
-      return updated!;
-    }
 
-    const [created] = await this.database
-      .insert(pushSubscriptions)
-      .values({
-        userId: input.userId,
-        endpoint: input.endpoint,
-        p256dh: input.p256dh,
-        auth: input.auth,
-        userAgent: input.userAgent ?? null,
-        createdAt: Date.now(),
-      })
-      .returning();
-
-    if (!created) {
-      throw new Error("Failed to persist push subscription.");
-    }
-    return created;
+      if (!upserted) {
+        throw new Error("Failed to persist push subscription.");
+      }
+      return upserted;
+    });
   }
 
   async listPushSubscriptionsForUser(

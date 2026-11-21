@@ -37,7 +37,7 @@ import {
   TooltipContent,
   TooltipTrigger,
 } from "@/components/ui/tooltip";
-import { authClient } from "@/lib/auth-client";
+import { performSecureSignOut } from "@/lib/client-sign-out";
 import { APP_NAME } from "@/lib/constants";
 import { cn } from "@/lib/utils";
 import type {
@@ -128,7 +128,7 @@ export function LeftRail({
   const handleSignOut = async () => {
     setSigningOut(true);
     try {
-      await authClient.signOut();
+      await performSecureSignOut();
       router.push("/login");
       router.refresh();
     } finally {

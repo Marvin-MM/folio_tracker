@@ -13,7 +13,6 @@ import { DrizzleUserRepository } from "@/server/dal/user-repository";
 import { createDbConnection, type DbConnection } from "@/server/db/client";
 import { users } from "@/server/db/schema";
 import { InMemoryEventBus } from "@/server/providers/event-bus";
-import { InMemoryPermissionCache } from "@/server/providers/redis/permission-cache";
 import { InMemoryRateLimiter } from "@/server/providers/redis/rate-limiter";
 import { NoteService } from "@/server/services/note-service";
 import { ProjectInviteService } from "@/server/services/project-invite-service";
@@ -21,7 +20,7 @@ import { ProjectService } from "@/server/services/project-service";
 import { ReminderService } from "@/server/services/reminder-service";
 import { TaskService } from "@/server/services/task-service";
 
-describe("Shared Projects RBAC Matrix (owner / editor / viewer / outsider)", () => {
+describe("Shared Projects RBAC Matrix (direct-Turso owner / editor / viewer / outsider)", () => {
   let tempDir: string;
   let conn: DbConnection;
 
@@ -36,7 +35,6 @@ describe("Shared Projects RBAC Matrix (owner / editor / viewer / outsider)", () 
   let taskSvc: TaskService;
   let noteSvc: NoteService;
   let reminderSvc: ReminderService;
-  let permCache: InMemoryPermissionCache;
 
   beforeAll(async () => {
     tempDir = mkdtempSync(path.join(tmpdir(), "folio-rbac-test-"));
@@ -72,13 +70,13 @@ describe("Shared Projects RBAC Matrix (owner / editor / viewer / outsider)", () 
     const userRepo = new DrizzleUserRepository(conn.db);
     const lookup = createDrizzleMembershipLookup(conn.db);
     const bus = new InMemoryEventBus();
-    permCache = new InMemoryPermissionCache();
 
     projectSvc = new ProjectService({
       database: conn.db,
       projects: projectRepo,
+      reminders: remRepo,
       membershipLookup: lookup,
-      permissionCache: permCache,
+      eventBus: bus,
     });
 
     inviteSvc = new ProjectInviteService({
@@ -86,7 +84,6 @@ describe("Shared Projects RBAC Matrix (owner / editor / viewer / outsider)", () 
       projects: projectRepo,
       users: userRepo,
       membershipLookup: lookup,
-      permissionCache: permCache,
       rateLimiter: new InMemoryRateLimiter(),
       eventBus: bus,
     });
@@ -94,10 +91,6 @@ describe("Shared Projects RBAC Matrix (owner / editor / viewer / outsider)", () 
     reminderSvc = new ReminderService({
       database: conn.db,
       reminders: remRepo,
-      tasks: taskRepo,
-      notes: noteRepo,
-      membershipLookup: lookup,
-      permissionCache: permCache,
       eventBus: bus,
     });
 
@@ -107,7 +100,6 @@ describe("Shared Projects RBAC Matrix (owner / editor / viewer / outsider)", () 
       reminders: remRepo,
       projects: projectRepo,
       membershipLookup: lookup,
-      permissionCache: permCache,
       reminderService: reminderSvc,
       eventBus: bus,
     });
@@ -118,7 +110,6 @@ describe("Shared Projects RBAC Matrix (owner / editor / viewer / outsider)", () 
       reminders: remRepo,
       projects: projectRepo,
       membershipLookup: lookup,
-      permissionCache: permCache,
       reminderService: reminderSvc,
       eventBus: bus,
     });
@@ -215,21 +206,22 @@ describe("Shared Projects RBAC Matrix (owner / editor / viewer / outsider)", () 
 
     // Viewer CAN attach & snooze private personal reminders on shared project tasks and notes!
     const viewerTaskReminder = await reminderSvc.attachReminder(viewerId, {
-      entityType: "task",
-      entityId: editorTask.id,
+      taskId: editorTask.id,
+      noteId: null,
       remindAt: Date.now() + 2 * 3_600_000,
       timezone: "UTC",
     });
     expect(viewerTaskReminder.userId).toBe(viewerId);
-    expect(viewerTaskReminder.entityId).toBe(editorTask.id);
+    expect(viewerTaskReminder.taskId).toBe(editorTask.id);
 
     const viewerNoteReminder = await reminderSvc.attachReminder(viewerId, {
-      entityType: "note",
-      entityId: editorNote.id,
+      noteId: editorNote.id,
+      taskId: null,
       remindAt: Date.now() + 3 * 3_600_000,
       timezone: "UTC",
     });
     expect(viewerNoteReminder.userId).toBe(viewerId);
+    expect(viewerNoteReminder.noteId).toBe(editorNote.id);
 
     const snoozed = await reminderSvc.snoozeReminder(
       viewerId,
@@ -250,8 +242,8 @@ describe("Shared Projects RBAC Matrix (owner / editor / viewer / outsider)", () 
 
     await expect(
       reminderSvc.attachReminder(outsiderId, {
-        entityType: "task",
-        entityId: editorTask.id,
+        taskId: editorTask.id,
+        noteId: null,
         remindAt: Date.now() + 3_600_000,
         timezone: "UTC",
       })
@@ -276,8 +268,8 @@ describe("Shared Projects RBAC Matrix (owner / editor / viewer / outsider)", () 
 
     await expect(
       reminderSvc.attachReminder(editorId, {
-        entityType: "task",
-        entityId: personalTask.id,
+        taskId: personalTask.id,
+        noteId: null,
         remindAt: Date.now() + 3_600_000,
         timezone: "UTC",
       })

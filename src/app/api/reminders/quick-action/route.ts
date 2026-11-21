@@ -5,6 +5,12 @@ import { DalError } from "@/server/dal/errors";
 import { reminderService } from "@/server/services/reminder-service";
 import { taskService } from "@/server/services/task-service";
 
+export const dynamic = "force-dynamic";
+
+const NO_STORE_HEADERS = {
+  "Cache-Control": "private, no-store",
+};
+
 const quickActionSchema = z.discriminatedUnion("action", [
   z.object({
     action: z.literal("snooze_15m"),
@@ -25,7 +31,7 @@ export async function POST(request: NextRequest) {
     if (!parsed.success) {
       return NextResponse.json(
         { ok: false, error: "Invalid notification action payload." },
-        { status: 400 }
+        { status: 400, headers: NO_STORE_HEADERS }
       );
     }
 
@@ -36,11 +42,14 @@ export async function POST(request: NextRequest) {
         "15m",
         user.timezone || "UTC"
       );
-      return NextResponse.json({
-        ok: true,
-        reminderId: updated.id,
-        remindAt: updated.remindAt,
-      });
+      return NextResponse.json(
+        {
+          ok: true,
+          reminderId: updated.id,
+          remindAt: updated.remindAt,
+        },
+        { headers: NO_STORE_HEADERS }
+      );
     }
 
     const result = await taskService.toggleTaskStatus(
@@ -48,21 +57,24 @@ export async function POST(request: NextRequest) {
       parsed.data.taskId,
       "done"
     );
-    return NextResponse.json({
-      ok: true,
-      taskId: result.task.id,
-      status: result.task.status,
-    });
+    return NextResponse.json(
+      {
+        ok: true,
+        taskId: result.task.id,
+        status: result.task.status,
+      },
+      { headers: NO_STORE_HEADERS }
+    );
   } catch (error) {
     if (error instanceof DalError) {
       return NextResponse.json(
         { ok: false, error: error.message },
-        { status: error.statusCode }
+        { status: error.statusCode, headers: NO_STORE_HEADERS }
       );
     }
     return NextResponse.json(
       { ok: false, error: "Unable to process notification action." },
-      { status: 500 }
+      { status: 500, headers: NO_STORE_HEADERS }
     );
   }
 }

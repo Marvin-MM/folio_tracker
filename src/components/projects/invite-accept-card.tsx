@@ -17,7 +17,7 @@ import {
   CardHeader,
   CardTitle,
 } from "@/components/ui/card";
-import { authClient } from "@/lib/auth-client";
+import { performSecureSignOut } from "@/lib/client-sign-out";
 import type { InvitationPreviewResult } from "@/server/services/project-invite-service";
 
 interface InviteAcceptCardProps {
@@ -107,7 +107,7 @@ export function InviteAcceptCard({
   const handleSwitchAccount = async () => {
     setSwitchingAccount(true);
     try {
-      await authClient.signOut();
+      await performSecureSignOut();
       router.push(`/login?callbackURL=${encodeURIComponent(callbackPath)}`);
       router.refresh();
     } finally {

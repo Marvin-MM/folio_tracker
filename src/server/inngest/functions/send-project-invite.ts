@@ -63,6 +63,7 @@ function renderInviteHtml(params: {
 export const sendProjectInviteFn = inngest.createFunction(
   {
     id: "send-project-invite",
+    concurrency: { limit: 25 },
     retries: 4,
     triggers: [projectInvitedEvent],
   },

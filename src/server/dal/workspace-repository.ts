@@ -8,6 +8,7 @@ import {
   eq,
   gt,
   inArray,
+  isNotNull,
   isNull,
   lte,
   or,
@@ -105,23 +106,23 @@ export class DrizzleWorkspaceRepository implements WorkspaceRepository {
           )
         ),
       this.database
-        .select({ entityId: reminders.entityId })
+        .select({ taskId: reminders.taskId })
         .from(reminders)
         .where(
           and(
             eq(reminders.userId, userId),
-            eq(reminders.entityType, "task"),
+            isNotNull(reminders.taskId),
             inArray(reminders.status, ["scheduled", "snoozed"]),
             lte(reminders.remindAt, endOfTodayMs)
           )
         ),
       this.database
-        .select({ entityId: reminders.entityId })
+        .select({ taskId: reminders.taskId })
         .from(reminders)
         .where(
           and(
             eq(reminders.userId, userId),
-            eq(reminders.entityType, "task"),
+            isNotNull(reminders.taskId),
             inArray(reminders.status, ["pending_far", "scheduled", "snoozed"]),
             gt(reminders.remindAt, endOfTodayMs)
           )
@@ -191,10 +192,18 @@ export class DrizzleWorkspaceRepository implements WorkspaceRepository {
     );
 
     const todayRemTaskIds = Array.from(
-      new Set(todayReminderTaskRows.map((r) => r.entityId))
+      new Set(
+        todayReminderTaskRows
+          .map((r) => r.taskId)
+          .filter((id): id is string => typeof id === "string")
+      )
     );
     const upcomingRemTaskIds = Array.from(
-      new Set(upcomingReminderTaskRows.map((r) => r.entityId))
+      new Set(
+        upcomingReminderTaskRows
+          .map((r) => r.taskId)
+          .filter((id): id is string => typeof id === "string")
+      )
     );
 
     const [todayRows, upcomingRows] = await Promise.all([
@@ -255,7 +264,7 @@ export class DrizzleWorkspaceRepository implements WorkspaceRepository {
           inArray(tasks.status, ["todo", "in_progress"])
         )
       )
-      .orderBy(asc(tasks.position), desc(tasks.createdAt))
+      .orderBy(asc(tasks.position), asc(tasks.id))
       .limit(100);
 
     return { items, referenceUtcMs: Date.now() };
@@ -281,7 +290,7 @@ export class DrizzleWorkspaceRepository implements WorkspaceRepository {
           lte(tasks.dueAt, endOfTodayMs)
         )
       )
-      .orderBy(asc(tasks.dueAt), asc(tasks.position))
+      .orderBy(asc(tasks.dueAt), asc(tasks.position), asc(tasks.id))
       .limit(100);
 
     return { items, referenceUtcMs };
@@ -297,7 +306,7 @@ export class DrizzleWorkspaceRepository implements WorkspaceRepository {
           inArray(reminders.status, ["pending_far", "scheduled", "snoozed"])
         )
       )
-      .orderBy(asc(reminders.remindAt))
+      .orderBy(asc(reminders.remindAt), asc(reminders.id))
       .limit(100);
   }
 
@@ -306,7 +315,7 @@ export class DrizzleWorkspaceRepository implements WorkspaceRepository {
       .select()
       .from(notes)
       .where(and(eq(notes.userId, userId), isNull(notes.projectId)))
-      .orderBy(desc(notes.isPinned), desc(notes.updatedAt))
+      .orderBy(desc(notes.isPinned), desc(notes.updatedAt), asc(notes.id))
       .limit(100);
   }
 }

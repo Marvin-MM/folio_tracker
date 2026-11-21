@@ -4,6 +4,8 @@ import { ReminderListView } from "@/components/workspace/workspace-lists";
 import { requireSession } from "@/server/dal/auth-guard";
 import { reminderRepository } from "@/server/dal/reminder-repository";
 
+export const dynamic = "force-dynamic";
+
 export const metadata: Metadata = {
   title: "Reminders",
 };

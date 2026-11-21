@@ -185,8 +185,8 @@ describe("Drizzle SQLite schema constraints & ACID transactions", () => {
         // Trigger a foreign key violation inside the same transaction
         await tx.insert(reminders).values({
           userId: "01JDOESNOTEXISTUSER0000001",
-          entityType: "task",
-          entityId: "01JFAKEENTITY0000000000001",
+          taskId: "01JFAKETASK000000000000001",
+          noteId: null,
           remindAt: Date.now() + 3_600_000,
           timezone: "UTC",
         });

@@ -1,6 +1,7 @@
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
+import { eq } from "drizzle-orm";
 import { migrate } from "drizzle-orm/libsql/migrator";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { ConflictError } from "@/server/dal/errors";
@@ -8,7 +9,7 @@ import { DrizzleNoteRepository } from "@/server/dal/note-repository";
 import { DrizzleReminderRepository } from "@/server/dal/reminder-repository";
 import { DrizzleTaskRepository } from "@/server/dal/task-repository";
 import { createDbConnection, type DbConnection } from "@/server/db/client";
-import { users } from "@/server/db/schema";
+import { reminders, users } from "@/server/db/schema";
 import { InMemoryEventBus } from "@/server/providers/event-bus";
 import {
   REMINDER_HORIZON_MS,
@@ -17,7 +18,7 @@ import {
 
 const DAY_MS = 24 * 60 * 60 * 1000;
 
-describe("ReminderService — 14-day hybrid horizon & optimistic version locking", () => {
+describe("ReminderService — 14-day hybrid horizon, outbox dispatch & optimistic version locking", () => {
   let tempDir: string;
   let conn: DbConnection;
   let userId: string;
@@ -64,67 +65,82 @@ describe("ReminderService — 14-day hybrid horizon & optimistic version locking
     rmSync(tempDir, { recursive: true, force: true });
   });
 
-  it("persists <=14d reminders as 'scheduled' and emits app/reminder.scheduled, while >14d persists as 'pending_far' with no event", async () => {
+  it("persists <=14d reminders as 'scheduled' with deterministic event ID + stamped dispatchedAt, while >14d persists as 'pending_far'", async () => {
     const fixedNow = Date.UTC(2026, 10, 21, 10, 0, 0);
     const bus = new InMemoryEventBus();
     const remSvc = new ReminderService({
       database: conn.db,
       reminders: new DrizzleReminderRepository(conn.db),
-      tasks: new DrizzleTaskRepository(conn.db),
-      notes: new DrizzleNoteRepository(conn.db),
       eventBus: bus,
       now: () => fixedNow,
     });
 
-    // Near-horizon (3 days out) -> scheduled + event emitted
+    // Near-horizon (3 days out) -> scheduled + event emitted + dispatchedAt stamped
     const near = await remSvc.attachReminder(userId, {
-      entityType: "task",
-      entityId: taskId,
+      taskId,
+      noteId: null,
       remindAt: fixedNow + 3 * DAY_MS,
       timezone: "Africa/Kampala",
     });
     expect(near.status).toBe("scheduled");
     expect(near.version).toBe(1);
+    expect(near.taskId).toBe(taskId);
+    expect(near.noteId).toBeNull();
     expect(bus.events).toHaveLength(1);
+    expect(bus.events[0]?.id).toBe(`reminder-sched-${near.id}-v1`);
     expect(bus.events[0]?.name).toBe("app/reminder.scheduled");
+
+    const [nearDb] = await conn.db
+      .select()
+      .from(reminders)
+      .where(eq(reminders.id, near.id));
+    expect(nearDb!.dispatchedAt).toBe(fixedNow);
 
     bus.clear();
 
     // Far-horizon (20 days out) -> pending_far + ZERO Inngest event emitted
     const far = await remSvc.attachReminder(userId, {
-      entityType: "note",
-      entityId: noteId,
+      noteId,
+      taskId: null,
       remindAt: fixedNow + 20 * DAY_MS,
       timezone: "Africa/Kampala",
     });
     expect(far.status).toBe("pending_far");
     expect(far.version).toBe(1);
+    expect(far.dispatchedAt).toBeNull();
     expect(bus.events).toHaveLength(0);
 
     // Advance clock by 8 days so the 20-day reminder is now 12 days away (inside 14d horizon)
+    const sweepNow = fixedNow + 8 * DAY_MS;
     const sweeperSvc = new ReminderService({
       database: conn.db,
       reminders: new DrizzleReminderRepository(conn.db),
-      tasks: new DrizzleTaskRepository(conn.db),
-      notes: new DrizzleNoteRepository(conn.db),
       eventBus: bus,
-      now: () => fixedNow + 8 * DAY_MS,
+      now: () => sweepNow,
     });
 
-    const promotedCount = await sweeperSvc.sweepFarFutureReminders(50);
+    const promotedCount = await sweeperSvc.sweepFarFutureReminders(200);
     expect(promotedCount).toBe(1);
     expect(bus.events).toHaveLength(1);
     expect(bus.events[0]).toEqual({
+      id: `reminder-sched-${far.id}-v1`,
       name: "app/reminder.scheduled",
       data: {
         reminderId: far.id,
         userId,
-        entityType: "note",
-        entityId: noteId,
+        taskId: null,
+        noteId,
         remindAt: far.remindAt,
         version: 1,
       },
     });
+
+    const [farDb] = await conn.db
+      .select()
+      .from(reminders)
+      .where(eq(reminders.id, far.id));
+    expect(farDb!.status).toBe("scheduled");
+    expect(farDb!.dispatchedAt).toBe(sweepNow);
   });
 
   it("increments version on reschedule/snooze and blocks stale delivery + duplicate claims", async () => {
@@ -133,15 +149,13 @@ describe("ReminderService — 14-day hybrid horizon & optimistic version locking
     const remSvc = new ReminderService({
       database: conn.db,
       reminders: new DrizzleReminderRepository(conn.db),
-      tasks: new DrizzleTaskRepository(conn.db),
-      notes: new DrizzleNoteRepository(conn.db),
       eventBus: bus,
       now: () => fixedNow,
     });
 
     const created = await remSvc.attachReminder(userId, {
-      entityType: "task",
-      entityId: taskId,
+      taskId,
+      noteId: null,
       remindAt: fixedNow + 60 * 60 * 1000,
       timezone: "Africa/Kampala",
     });
@@ -174,17 +188,29 @@ describe("ReminderService — 14-day hybrid horizon & optimistic version locking
     ).rejects.toBeInstanceOf(ConflictError);
 
     // Stale Inngest worker attempting to claim version 1 MUST be rejected
-    const staleClaim = await remSvc.verifyAndClaimForDelivery(created.id, 1);
+    const staleClaim = await remSvc.verifyAndClaimForDelivery(
+      created.id,
+      userId,
+      1
+    );
     expect(staleClaim).toBeNull();
 
     // Current Inngest worker claiming version 2 succeeds atomically
-    const validClaim = await remSvc.verifyAndClaimForDelivery(created.id, 2);
+    const validClaim = await remSvc.verifyAndClaimForDelivery(
+      created.id,
+      userId,
+      2
+    );
     expect(validClaim).not.toBeNull();
     expect(validClaim!.status).toBe("sent");
     expect(validClaim!.sentAt).toBe(fixedNow);
 
     // Duplicate retry of version 2 MUST be rejected (idempotent — zero double-send)
-    const duplicateClaim = await remSvc.verifyAndClaimForDelivery(created.id, 2);
+    const duplicateClaim = await remSvc.verifyAndClaimForDelivery(
+      created.id,
+      userId,
+      2
+    );
     expect(duplicateClaim).toBeNull();
   });
 });

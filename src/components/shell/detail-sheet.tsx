@@ -884,7 +884,7 @@ function ReminderInspectorBody({
           className="gap-1 border-reminder/40 text-[11px] font-normal text-reminder"
         >
           <Bell className="size-3" />
-          {reminder.entityType} reminder
+          {reminder.taskId ? "task" : "note"} reminder
         </Badge>
         <Badge variant="secondary" className="text-[11px] font-normal capitalize">
           {reminder.status.replace("_", " ")}
@@ -954,7 +954,7 @@ function ReminderInspectorBody({
         </Button>
         <Button asChild variant="outline" size="sm" className="mira-row gap-1.5 text-xs">
           <Link href={item.deepLink}>
-            Open linked {reminder.entityType}
+            Open linked {reminder.taskId ? "task" : "note"}
             <ExternalLink className="size-3" />
           </Link>
         </Button>

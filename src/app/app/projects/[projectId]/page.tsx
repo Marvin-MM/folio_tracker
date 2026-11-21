@@ -5,6 +5,8 @@ import { requireSession } from "@/server/dal/auth-guard";
 import { ForbiddenError, NotFoundError } from "@/server/dal/errors";
 import { projectService } from "@/server/services/project-service";
 
+export const dynamic = "force-dynamic";
+
 export const metadata: Metadata = {
   title: "Project",
 };

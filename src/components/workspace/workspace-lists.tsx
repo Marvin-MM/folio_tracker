@@ -758,7 +758,7 @@ export function ReminderListView({
                       variant="secondary"
                       className="h-4 px-1.5 text-[10px] font-normal capitalize"
                     >
-                      {reminder.entityType}
+                      {reminder.taskId ? "task" : "note"}
                     </Badge>
                   </button>
 

@@ -43,6 +43,24 @@ const nextConfig: NextConfig = {
         ],
       },
       {
+        source: "/api/:path*",
+        headers: [
+          {
+            key: "Cache-Control",
+            value: "private, no-store",
+          },
+        ],
+      },
+      {
+        source: "/invite/:path*",
+        headers: [
+          {
+            key: "Cache-Control",
+            value: "private, no-store",
+          },
+        ],
+      },
+      {
         source: "/(.*)",
         headers: [
           {

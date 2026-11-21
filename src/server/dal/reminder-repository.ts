@@ -1,19 +1,21 @@
-import { and, asc, eq, inArray, lte, sql } from "drizzle-orm";
+import { and, asc, eq, inArray, isNull, lte, or, sql } from "drizzle-orm";
 import { db, type AppDatabase, type DbExecutor } from "@/server/db";
 import {
   notes,
   projectMembers,
+  projects,
   reminders,
   tasks,
-  type ReminderEntityType,
   type ReminderRecord,
   type ReminderStatus,
+  type ReminderTarget,
 } from "@/server/db/schema";
+import { canUserReadEntity } from "./auth-guard";
 
 export interface CreateReminderRowInput {
   userId: string;
-  entityType: ReminderEntityType;
-  entityId: string;
+  taskId: string | null;
+  noteId: string | null;
   remindAt: number;
   timezone: string;
   status: ReminderStatus;
@@ -26,7 +28,14 @@ export interface UpdateReminderOptimisticInput {
   remindAt?: number;
   timezone?: string;
   status: ReminderStatus;
+  dispatchedAt?: number | null;
   sentAt?: number | null;
+}
+
+export interface ScheduledReminderCancellationTarget {
+  id: string;
+  userId: string;
+  version: number;
 }
 
 export interface EnrichedReminderItem {
@@ -41,37 +50,70 @@ export interface ReminderRepository {
     input: CreateReminderRowInput,
     executor?: DbExecutor
   ): Promise<ReminderRecord>;
-  getById(
-    reminderId: string,
-    executor?: DbExecutor
-  ): Promise<ReminderRecord | null>;
   getByIdForUser(
     reminderId: string,
     userId: string,
     executor?: DbExecutor
   ): Promise<ReminderRecord | null>;
-  listActiveForEntity(
+  listActiveForTarget(
     userId: string,
-    entityType: ReminderEntityType,
-    entityId: string
+    target: ReminderTarget
   ): Promise<ReminderRecord[]>;
   listActiveForUserWithEntities(userId: string): Promise<EnrichedReminderItem[]>;
   updateWithVersion(
     input: UpdateReminderOptimisticInput,
     executor?: DbExecutor
   ): Promise<ReminderRecord | null>;
-  claimForDelivery(
-    params: { reminderId: string; expectedVersion: number; sentAt: number },
-    executor?: DbExecutor
-  ): Promise<ReminderRecord | null>;
-  cancelActiveForEntity(
+  markDispatched(
     params: {
-      userId: string;
-      entityType: ReminderEntityType;
-      entityId: string;
+      reminderId: string;
+      expectedVersion: number;
+      dispatchedAt: number;
     },
     executor?: DbExecutor
-  ): Promise<Array<{ id: string; version: number }>>;
+  ): Promise<boolean>;
+  claimForDelivery(
+    params: {
+      reminderId: string;
+      userId: string;
+      expectedVersion: number;
+      sentAt: number;
+    },
+    executor?: DbExecutor
+  ): Promise<ReminderRecord | null>;
+  cancelIfRevoked(
+    params: {
+      reminderId: string;
+      userId: string;
+      expectedVersion: number;
+      nowMs?: number;
+    },
+    executor?: DbExecutor
+  ): Promise<ReminderRecord | null>;
+  cancelActiveForTarget(
+    params: {
+      userId: string;
+      taskId?: string | null;
+      noteId?: string | null;
+    },
+    executor?: DbExecutor
+  ): Promise<Array<{ id: string; userId: string; version: number }>>;
+  findActiveScheduledForTask(
+    taskId: string,
+    executor?: DbExecutor
+  ): Promise<ScheduledReminderCancellationTarget[]>;
+  findActiveScheduledForNote(
+    noteId: string,
+    executor?: DbExecutor
+  ): Promise<ScheduledReminderCancellationTarget[]>;
+  findActiveScheduledForProject(
+    projectId: string,
+    executor?: DbExecutor
+  ): Promise<ScheduledReminderCancellationTarget[]>;
+  findActiveScheduledForUserAccountDeletion(
+    userId: string,
+    executor?: DbExecutor
+  ): Promise<ScheduledReminderCancellationTarget[]>;
   findPendingFarWithinHorizon(
     cutoffUtcMs: number,
     limit?: number
@@ -81,10 +123,14 @@ export interface ReminderRepository {
     expectedVersion: number,
     executor?: DbExecutor
   ): Promise<ReminderRecord | null>;
+  findUndispatchedScheduled(
+    staleBeforeUtcMs: number,
+    limit?: number
+  ): Promise<ReminderRecord[]>;
   getEntitySummary(
-    entityType: ReminderEntityType,
-    entityId: string,
-    userId: string
+    target: ReminderTarget,
+    userId: string,
+    executor?: DbExecutor
   ): Promise<{ title: string; snippet: string; deepLink: string } | null>;
 }
 
@@ -106,12 +152,13 @@ export class DrizzleReminderRepository implements ReminderRepository {
       .insert(reminders)
       .values({
         userId: input.userId,
-        entityType: input.entityType,
-        entityId: input.entityId,
+        taskId: input.taskId,
+        noteId: input.noteId,
         remindAt: input.remindAt,
         timezone: input.timezone,
         status: input.status,
         version: 1,
+        dispatchedAt: null,
         sentAt: null,
         createdAt: now,
         updatedAt: now,
@@ -122,19 +169,6 @@ export class DrizzleReminderRepository implements ReminderRepository {
       throw new Error("Failed to insert reminder.");
     }
     return created;
-  }
-
-  async getById(
-    reminderId: string,
-    executor: DbExecutor = this.database
-  ): Promise<ReminderRecord | null> {
-    const [row] = await executor
-      .select()
-      .from(reminders)
-      .where(eq(reminders.id, reminderId))
-      .limit(1);
-
-    return row ?? null;
   }
 
   async getByIdForUser(
@@ -153,23 +187,25 @@ export class DrizzleReminderRepository implements ReminderRepository {
     return row ?? null;
   }
 
-  async listActiveForEntity(
+  async listActiveForTarget(
     userId: string,
-    entityType: ReminderEntityType,
-    entityId: string
+    target: ReminderTarget
   ): Promise<ReminderRecord[]> {
+    const targetPredicate = target.taskId
+      ? eq(reminders.taskId, target.taskId)
+      : eq(reminders.noteId, target.noteId!);
+
     return this.database
       .select()
       .from(reminders)
       .where(
         and(
           eq(reminders.userId, userId),
-          eq(reminders.entityType, entityType),
-          eq(reminders.entityId, entityId),
+          targetPredicate,
           inArray(reminders.status, ACTIVE_REMINDER_STATUSES)
         )
       )
-      .orderBy(asc(reminders.remindAt));
+      .orderBy(asc(reminders.remindAt), asc(reminders.id));
   }
 
   async listActiveForUserWithEntities(
@@ -184,7 +220,7 @@ export class DrizzleReminderRepository implements ReminderRepository {
           inArray(reminders.status, [...ACTIVE_REMINDER_STATUSES, "sent"])
         )
       )
-      .orderBy(asc(reminders.remindAt))
+      .orderBy(asc(reminders.remindAt), asc(reminders.id))
       .limit(150);
 
     if (rows.length === 0) {
@@ -192,17 +228,18 @@ export class DrizzleReminderRepository implements ReminderRepository {
     }
 
     const taskIds = rows
-      .filter((r) => r.entityType === "task")
-      .map((r) => r.entityId);
+      .map((r) => r.taskId)
+      .filter((id): id is string => typeof id === "string");
     const noteIds = rows
-      .filter((r) => r.entityType === "note")
-      .map((r) => r.entityId);
+      .map((r) => r.noteId)
+      .filter((id): id is string => typeof id === "string");
 
-    const [taskRows, noteRows] = await Promise.all([
+    const [taskRows, noteRows, memberRows] = await Promise.all([
       taskIds.length > 0
         ? this.database
             .select({
               id: tasks.id,
+              userId: tasks.userId,
               title: tasks.title,
               status: tasks.status,
               projectId: tasks.projectId,
@@ -214,39 +251,65 @@ export class DrizzleReminderRepository implements ReminderRepository {
         ? this.database
             .select({
               id: notes.id,
+              userId: notes.userId,
               title: notes.title,
               projectId: notes.projectId,
             })
             .from(notes)
             .where(inArray(notes.id, noteIds))
         : Promise.resolve([]),
+      this.database
+        .select({ projectId: projectMembers.projectId })
+        .from(projectMembers)
+        .where(eq(projectMembers.userId, userId)),
     ]);
 
-    const taskMap = new Map(taskRows.map((t) => [t.id, t]));
-    const noteMap = new Map(noteRows.map((n) => [n.id, n]));
+    const memberProjectIds = new Set(memberRows.map((m) => m.projectId));
 
-    return rows.map((reminder) => {
-      if (reminder.entityType === "task") {
-        const task = taskMap.get(reminder.entityId);
-        return {
+    const taskMap = new Map(
+      taskRows
+        .filter((t) =>
+          t.projectId ? memberProjectIds.has(t.projectId) : t.userId === userId
+        )
+        .map((t) => [t.id, t])
+    );
+
+    const noteMap = new Map(
+      noteRows
+        .filter((n) =>
+          n.projectId ? memberProjectIds.has(n.projectId) : n.userId === userId
+        )
+        .map((n) => [n.id, n])
+    );
+
+    const enriched: EnrichedReminderItem[] = [];
+    for (const reminder of rows) {
+      if (reminder.taskId) {
+        const task = taskMap.get(reminder.taskId);
+        if (!task) continue;
+        enriched.push({
           reminder,
-          entityTitle: task?.title ?? "Deleted task",
-          entityStatus: task?.status ?? null,
-          deepLink: task?.projectId
-            ? `/app/projects/${encodeURIComponent(task.projectId)}?item=${encodeURIComponent(reminder.entityId)}`
-            : `/app/inbox?item=${encodeURIComponent(reminder.entityId)}`,
-        };
+          entityTitle: task.title,
+          entityStatus: task.status,
+          deepLink: task.projectId
+            ? `/app/projects/${encodeURIComponent(task.projectId)}?item=${encodeURIComponent(task.id)}`
+            : `/app/inbox?item=${encodeURIComponent(task.id)}`,
+        });
+      } else if (reminder.noteId) {
+        const note = noteMap.get(reminder.noteId);
+        if (!note) continue;
+        enriched.push({
+          reminder,
+          entityTitle: note.title,
+          entityStatus: null,
+          deepLink: note.projectId
+            ? `/app/projects/${encodeURIComponent(note.projectId)}?tab=notes&item=${encodeURIComponent(note.id)}`
+            : `/app/notes?item=${encodeURIComponent(note.id)}`,
+        });
       }
-      const note = noteMap.get(reminder.entityId);
-      return {
-        reminder,
-        entityTitle: note?.title ?? "Deleted note",
-        entityStatus: null,
-        deepLink: note?.projectId
-          ? `/app/projects/${encodeURIComponent(note.projectId)}?tab=notes&item=${encodeURIComponent(reminder.entityId)}`
-          : `/app/notes?item=${encodeURIComponent(reminder.entityId)}`,
-      };
-    });
+    }
+
+    return enriched;
   }
 
   async updateWithVersion(
@@ -260,6 +323,9 @@ export class DrizzleReminderRepository implements ReminderRepository {
         ...(input.remindAt !== undefined ? { remindAt: input.remindAt } : {}),
         ...(input.timezone !== undefined ? { timezone: input.timezone } : {}),
         status: input.status,
+        ...(input.dispatchedAt !== undefined
+          ? { dispatchedAt: input.dispatchedAt }
+          : {}),
         ...(input.sentAt !== undefined ? { sentAt: input.sentAt } : {}),
         version: sql`${reminders.version} + 1`,
         updatedAt: now,
@@ -276,8 +342,39 @@ export class DrizzleReminderRepository implements ReminderRepository {
     return updated ?? null;
   }
 
+  async markDispatched(
+    params: {
+      reminderId: string;
+      expectedVersion: number;
+      dispatchedAt: number;
+    },
+    executor: DbExecutor = this.database
+  ): Promise<boolean> {
+    const updated = await executor
+      .update(reminders)
+      .set({
+        dispatchedAt: params.dispatchedAt,
+      })
+      .where(
+        and(
+          eq(reminders.id, params.reminderId),
+          eq(reminders.status, "scheduled"),
+          eq(reminders.version, params.expectedVersion),
+          isNull(reminders.dispatchedAt)
+        )
+      )
+      .returning({ id: reminders.id });
+
+    return updated.length > 0;
+  }
+
   async claimForDelivery(
-    params: { reminderId: string; expectedVersion: number; sentAt: number },
+    params: {
+      reminderId: string;
+      userId: string;
+      expectedVersion: number;
+      sentAt: number;
+    },
     executor: DbExecutor = this.database
   ): Promise<ReminderRecord | null> {
     const [claimed] = await executor
@@ -290,6 +387,7 @@ export class DrizzleReminderRepository implements ReminderRepository {
       .where(
         and(
           eq(reminders.id, params.reminderId),
+          eq(reminders.userId, params.userId),
           eq(reminders.status, "scheduled"),
           eq(reminders.version, params.expectedVersion)
         )
@@ -299,14 +397,52 @@ export class DrizzleReminderRepository implements ReminderRepository {
     return claimed ?? null;
   }
 
-  async cancelActiveForEntity(
+  async cancelIfRevoked(
     params: {
+      reminderId: string;
       userId: string;
-      entityType: ReminderEntityType;
-      entityId: string;
+      expectedVersion: number;
+      nowMs?: number;
     },
     executor: DbExecutor = this.database
-  ): Promise<Array<{ id: string; version: number }>> {
+  ): Promise<ReminderRecord | null> {
+    const now = params.nowMs ?? Date.now();
+    const [cancelled] = await executor
+      .update(reminders)
+      .set({
+        status: "cancelled",
+        version: sql`${reminders.version} + 1`,
+        updatedAt: now,
+      })
+      .where(
+        and(
+          eq(reminders.id, params.reminderId),
+          eq(reminders.userId, params.userId),
+          eq(reminders.status, "scheduled"),
+          eq(reminders.version, params.expectedVersion)
+        )
+      )
+      .returning();
+
+    return cancelled ?? null;
+  }
+
+  async cancelActiveForTarget(
+    params: {
+      userId: string;
+      taskId?: string | null;
+      noteId?: string | null;
+    },
+    executor: DbExecutor = this.database
+  ): Promise<Array<{ id: string; userId: string; version: number }>> {
+    const targetPredicate = params.taskId
+      ? eq(reminders.taskId, params.taskId)
+      : params.noteId
+        ? eq(reminders.noteId, params.noteId)
+        : null;
+
+    if (!targetPredicate) return [];
+
     const now = Date.now();
     return executor
       .update(reminders)
@@ -318,20 +454,162 @@ export class DrizzleReminderRepository implements ReminderRepository {
       .where(
         and(
           eq(reminders.userId, params.userId),
-          eq(reminders.entityType, params.entityType),
-          eq(reminders.entityId, params.entityId),
+          targetPredicate,
           inArray(reminders.status, ACTIVE_REMINDER_STATUSES)
         )
       )
       .returning({
         id: reminders.id,
+        userId: reminders.userId,
         version: reminders.version,
       });
   }
 
+  async findActiveScheduledForTask(
+    taskId: string,
+    executor: DbExecutor = this.database
+  ): Promise<ScheduledReminderCancellationTarget[]> {
+    return executor
+      .select({
+        id: reminders.id,
+        userId: reminders.userId,
+        version: reminders.version,
+      })
+      .from(reminders)
+      .where(
+        and(eq(reminders.taskId, taskId), eq(reminders.status, "scheduled"))
+      );
+  }
+
+  async findActiveScheduledForNote(
+    noteId: string,
+    executor: DbExecutor = this.database
+  ): Promise<ScheduledReminderCancellationTarget[]> {
+    return executor
+      .select({
+        id: reminders.id,
+        userId: reminders.userId,
+        version: reminders.version,
+      })
+      .from(reminders)
+      .where(
+        and(eq(reminders.noteId, noteId), eq(reminders.status, "scheduled"))
+      );
+  }
+
+  async findActiveScheduledForProject(
+    projectId: string,
+    executor: DbExecutor = this.database
+  ): Promise<ScheduledReminderCancellationTarget[]> {
+    const [taskReminders, noteReminders] = await Promise.all([
+      executor
+        .select({
+          id: reminders.id,
+          userId: reminders.userId,
+          version: reminders.version,
+        })
+        .from(reminders)
+        .innerJoin(tasks, eq(reminders.taskId, tasks.id))
+        .where(
+          and(
+            eq(tasks.projectId, projectId),
+            eq(reminders.status, "scheduled")
+          )
+        ),
+      executor
+        .select({
+          id: reminders.id,
+          userId: reminders.userId,
+          version: reminders.version,
+        })
+        .from(reminders)
+        .innerJoin(notes, eq(reminders.noteId, notes.id))
+        .where(
+          and(
+            eq(notes.projectId, projectId),
+            eq(reminders.status, "scheduled")
+          )
+        ),
+    ]);
+
+    return [...taskReminders, ...noteReminders];
+  }
+
+  async findActiveScheduledForUserAccountDeletion(
+    userId: string,
+    executor: DbExecutor = this.database
+  ): Promise<ScheduledReminderCancellationTarget[]> {
+    const ownedProjects = await executor
+      .select({ id: projects.id })
+      .from(projects)
+      .where(eq(projects.ownerId, userId));
+
+    const ownedProjectIds = ownedProjects.map((p) => p.id);
+
+    const [directUserReminders, ownedProjectTaskReminders, ownedProjectNoteReminders] =
+      await Promise.all([
+        executor
+          .select({
+            id: reminders.id,
+            userId: reminders.userId,
+            version: reminders.version,
+          })
+          .from(reminders)
+          .where(
+            and(
+              eq(reminders.userId, userId),
+              eq(reminders.status, "scheduled")
+            )
+          ),
+        ownedProjectIds.length > 0
+          ? executor
+              .select({
+                id: reminders.id,
+                userId: reminders.userId,
+                version: reminders.version,
+              })
+              .from(reminders)
+              .innerJoin(tasks, eq(reminders.taskId, tasks.id))
+              .where(
+                and(
+                  inArray(tasks.projectId, ownedProjectIds),
+                  eq(reminders.status, "scheduled")
+                )
+              )
+          : Promise.resolve([]),
+        ownedProjectIds.length > 0
+          ? executor
+              .select({
+                id: reminders.id,
+                userId: reminders.userId,
+                version: reminders.version,
+              })
+              .from(reminders)
+              .innerJoin(notes, eq(reminders.noteId, notes.id))
+              .where(
+                and(
+                  inArray(notes.projectId, ownedProjectIds),
+                  eq(reminders.status, "scheduled")
+                )
+              )
+          : Promise.resolve([]),
+      ]);
+
+    // Deduplicate by reminder ID
+    const deduped = new Map<string, ScheduledReminderCancellationTarget>();
+    for (const row of [
+      ...directUserReminders,
+      ...ownedProjectTaskReminders,
+      ...ownedProjectNoteReminders,
+    ]) {
+      deduped.set(row.id, row);
+    }
+    return Array.from(deduped.values());
+  }
+
   async findPendingFarWithinHorizon(
     cutoffUtcMs: number,
-    limit = 100
+    limit = 200
   ): Promise<ReminderRecord[]> {
     return this.database
       .select()
@@ -342,7 +620,7 @@ export class DrizzleReminderRepository implements ReminderRepository {
           lte(reminders.remindAt, cutoffUtcMs)
         )
       )
-      .orderBy(asc(reminders.remindAt))
+      .orderBy(asc(reminders.remindAt), asc(reminders.id))
       .limit(limit);
   }
 
@@ -355,6 +633,7 @@ export class DrizzleReminderRepository implements ReminderRepository {
       .update(reminders)
       .set({
         status: "scheduled",
+        dispatchedAt: null,
         updatedAt: Date.now(),
       })
       .where(
@@ -369,91 +648,102 @@ export class DrizzleReminderRepository implements ReminderRepository {
     return promoted ?? null;
   }
 
+  async findUndispatchedScheduled(
+    staleBeforeUtcMs: number,
+    limit = 200
+  ): Promise<ReminderRecord[]> {
+    return this.database
+      .select()
+      .from(reminders)
+      .where(
+        and(
+          eq(reminders.status, "scheduled"),
+          isNull(reminders.dispatchedAt),
+          lte(reminders.updatedAt, staleBeforeUtcMs)
+        )
+      )
+      .orderBy(asc(reminders.updatedAt), asc(reminders.id))
+      .limit(limit);
+  }
+
   async getEntitySummary(
-    entityType: ReminderEntityType,
-    entityId: string,
-    userId: string
+    target: ReminderTarget,
+    userId: string,
+    executor: DbExecutor = this.database
   ): Promise<{ title: string; snippet: string; deepLink: string } | null> {
-    if (entityType === "task") {
-      const [task] = await this.database
+    const canRead = await canUserReadEntity(userId, target, executor);
+    if (!canRead) return null;
+
+    if (target.taskId) {
+      const [task] = await executor
         .select({
+          id: tasks.id,
           title: tasks.title,
           description: tasks.description,
           projectId: tasks.projectId,
-          userId: tasks.userId,
         })
         .from(tasks)
-        .where(eq(tasks.id, entityId))
+        .where(
+          and(
+            eq(tasks.id, target.taskId),
+            or(
+              and(isNull(tasks.projectId), eq(tasks.userId, userId)),
+              sql`${tasks.projectId} IN (SELECT project_id FROM project_members WHERE user_id = ${userId})`
+            )
+          )
+        )
         .limit(1);
 
       if (!task) return null;
-      if (task.projectId) {
-        const [member] = await this.database
-          .select({ role: projectMembers.role })
-          .from(projectMembers)
-          .where(
-            and(
-              eq(projectMembers.projectId, task.projectId),
-              eq(projectMembers.userId, userId)
-            )
-          )
-          .limit(1);
-        if (!member) return null;
-      } else if (task.userId !== userId) {
-        return null;
-      }
 
       const snippet = (task.description ?? "").trim().slice(0, 140);
       return {
         title: task.title,
         snippet: snippet || "Scheduled task reminder.",
         deepLink: task.projectId
-          ? `/app/projects/${encodeURIComponent(task.projectId)}?item=${encodeURIComponent(entityId)}`
-          : `/app/inbox?item=${encodeURIComponent(entityId)}`,
+          ? `/app/projects/${encodeURIComponent(task.projectId)}?item=${encodeURIComponent(task.id)}`
+          : `/app/inbox?item=${encodeURIComponent(task.id)}`,
       };
     }
 
-    const [note] = await this.database
-      .select({
-        title: notes.title,
-        content: notes.content,
-        projectId: notes.projectId,
-        userId: notes.userId,
-      })
-      .from(notes)
-      .where(eq(notes.id, entityId))
-      .limit(1);
-
-    if (!note) return null;
-    if (note.projectId) {
-      const [member] = await this.database
-        .select({ role: projectMembers.role })
-        .from(projectMembers)
+    if (target.noteId) {
+      const [note] = await executor
+        .select({
+          id: notes.id,
+          title: notes.title,
+          content: notes.content,
+          projectId: notes.projectId,
+        })
+        .from(notes)
         .where(
           and(
-            eq(projectMembers.projectId, note.projectId),
-            eq(projectMembers.userId, userId)
+            eq(notes.id, target.noteId),
+            or(
+              and(isNull(notes.projectId), eq(notes.userId, userId)),
+              sql`${notes.projectId} IN (SELECT project_id FROM project_members WHERE user_id = ${userId})`
+            )
           )
         )
         .limit(1);
-      if (!member) return null;
-    } else if (note.userId !== userId) {
-      return null;
+
+      if (!note) return null;
+
+      const snippet = note.content
+        .replace(/[#*_`>\-\[\]]/g, " ")
+        .replace(/\s+/g, " ")
+        .trim()
+        .slice(0, 140);
+
+      return {
+        title: note.title,
+        snippet: snippet || "Scheduled note reminder.",
+        deepLink: note.projectId
+          ? `/app/projects/${encodeURIComponent(note.projectId)}?tab=notes&item=${encodeURIComponent(note.id)}`
+          : `/app/notes?item=${encodeURIComponent(note.id)}`,
+      };
     }
 
-    const snippet = note.content
-      .replace(/[#*_`>\-\[\]]/g, " ")
-      .replace(/\s+/g, " ")
-      .trim()
-      .slice(0, 140);
-
-    return {
-      title: note.title,
-      snippet: snippet || "Scheduled note reminder.",
-      deepLink: note.projectId
-        ? `/app/projects/${encodeURIComponent(note.projectId)}?tab=notes&item=${encodeURIComponent(entityId)}`
-        : `/app/notes?item=${encodeURIComponent(entityId)}`,
-    };
+    return null;
   }
 }
 

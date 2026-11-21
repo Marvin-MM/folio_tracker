@@ -15,12 +15,12 @@ import {
   ValidationError,
 } from "@/server/dal/errors";
 import { DrizzleProjectRepository } from "@/server/dal/project-repository";
+import { DrizzleReminderRepository } from "@/server/dal/reminder-repository";
 import { DrizzleTaskRepository } from "@/server/dal/task-repository";
 import { DrizzleUserRepository } from "@/server/dal/user-repository";
 import { createDbConnection, type DbConnection } from "@/server/db/client";
 import { projectInvitations, tasks, users } from "@/server/db/schema";
 import { InMemoryEventBus } from "@/server/providers/event-bus";
-import { InMemoryPermissionCache } from "@/server/providers/redis/permission-cache";
 import { InMemoryRateLimiter } from "@/server/providers/redis/rate-limiter";
 import {
   hashInviteToken,
@@ -30,7 +30,7 @@ import {
 import { ProjectService } from "@/server/services/project-service";
 import { TaskService } from "@/server/services/task-service";
 
-describe("ProjectInviteService — SHA-256 tokens, expiry, ACID acceptance & PermissionCache invalidation", () => {
+describe("ProjectInviteService — SHA-256 tokens, expiry, atomic single-use acceptance & direct-Turso RBAC", () => {
   let tempDir: string;
   let conn: DbConnection;
 
@@ -41,7 +41,6 @@ describe("ProjectInviteService — SHA-256 tokens, expiry, ACID acceptance & Per
 
   let projectRepo: DrizzleProjectRepository;
   let projectSvc: ProjectService;
-  let permCache: InMemoryPermissionCache;
   let eventBus: InMemoryEventBus;
 
   beforeAll(async () => {
@@ -66,14 +65,14 @@ describe("ProjectInviteService — SHA-256 tokens, expiry, ACID acceptance & Per
     wrongUserId = inserted[2]!.id;
 
     projectRepo = new DrizzleProjectRepository(conn.db);
-    permCache = new InMemoryPermissionCache();
     eventBus = new InMemoryEventBus();
 
     projectSvc = new ProjectService({
       database: conn.db,
       projects: projectRepo,
+      reminders: new DrizzleReminderRepository(conn.db),
       membershipLookup: createDrizzleMembershipLookup(conn.db),
-      permissionCache: permCache,
+      eventBus,
     });
 
     const proj = await projectSvc.createProject(ownerId, {
@@ -87,7 +86,7 @@ describe("ProjectInviteService — SHA-256 tokens, expiry, ACID acceptance & Per
     rmSync(tempDir, { recursive: true, force: true });
   });
 
-  it("hashes tokens with SHA-256, prevents duplicates, rejects mismatched email, accepts atomically, and invalidates PermissionCache on revocation", async () => {
+  it("hashes tokens with SHA-256, prevents duplicates, rejects mismatched email, enforces atomic single-use acceptance, and reflects revocations instantaneously via direct Turso lookup", async () => {
     const fixedNow = Date.UTC(2026, 10, 21, 12, 0, 0);
     const lookup = createDrizzleMembershipLookup(conn.db);
     const inviteSvc = new ProjectInviteService({
@@ -95,17 +94,15 @@ describe("ProjectInviteService — SHA-256 tokens, expiry, ACID acceptance & Per
       projects: projectRepo,
       users: new DrizzleUserRepository(conn.db),
       membershipLookup: lookup,
-      permissionCache: permCache,
       rateLimiter: new InMemoryRateLimiter(),
       eventBus,
       now: () => fixedNow,
     });
 
-    // Populate PermissionCache with a cached non-member ("none") entry for Bob first
+    // Before acceptance, Bob is rejected directly against Turso
     await expect(
-      assertProjectRole(projectId, inviteeId, ["editor"], lookup, permCache)
+      assertProjectRole(projectId, inviteeId, ["editor"], lookup)
     ).rejects.toBeInstanceOf(ForbiddenError);
-    expect(await permCache.getRole(projectId, inviteeId)).toBe("none");
 
     // 1. Create invite -> raw token is NOT persisted; only SHA-256 hash is stored
     const { invitation, invitePath } = await inviteSvc.createInvitation(
@@ -137,7 +134,7 @@ describe("ProjectInviteService — SHA-256 tokens, expiry, ACID acceptance & Per
       })
     ).rejects.toBeInstanceOf(EmailMismatchError);
 
-    // 4. Matching authenticated user accepts atomically -> invalidates cached "none" immediately!
+    // 4. Matching authenticated user accepts atomically
     const accepted = await inviteSvc.acceptInvitation(rawToken, {
       id: inviteeId,
       email: "bob@invite.test",
@@ -148,40 +145,38 @@ describe("ProjectInviteService — SHA-256 tokens, expiry, ACID acceptance & Per
       role: "editor",
       alreadyMember: false,
     });
-    expect(await permCache.getRole(projectId, inviteeId)).toBeNull();
 
-    // Verify immediate editor authorization succeeds & populates PermissionCache with "editor"
+    // Verify immediate direct-Turso editor authorization succeeds
     const membership = await assertProjectRole(
       projectId,
       inviteeId,
       ["editor"],
-      lookup,
-      permCache
+      lookup
     );
     expect(membership.role).toBe("editor");
-    expect(await permCache.getRole(projectId, inviteeId)).toBe("editor");
 
-    // 5. Idempotent re-click by Bob succeeds gracefully; invitation status is persisted as 'accepted'
+    // 5. Invitation is strictly single-use: status is 'accepted' and replay throws ConflictError
     const [dbInv] = await conn.db
       .select()
       .from(projectInvitations)
       .where(eq(projectInvitations.id, invitation.id));
     expect(dbInv!.status).toBe("accepted");
 
-    const reclick = await inviteSvc.acceptInvitation(rawToken, {
-      id: inviteeId,
-      email: "bob@invite.test",
-      emailVerified: true,
-    });
-    expect(reclick.alreadyMember).toBe(true);
+    await expect(
+      inviteSvc.acceptInvitation(rawToken, {
+        id: inviteeId,
+        email: "bob@invite.test",
+        emailVerified: true,
+      })
+    ).rejects.toBeInstanceOf(ConflictError);
 
-    // 6. Create a task assigned to Bob, then demote & remove Bob -> PermissionCache invalidates IMMEDIATELY
+    // 6. Create a task assigned to Bob, then demote & remove Bob -> takes effect instantaneously
     const taskSvc = new TaskService({
       database: conn.db,
       tasks: new DrizzleTaskRepository(conn.db),
+      reminders: new DrizzleReminderRepository(conn.db),
       projects: projectRepo,
       membershipLookup: lookup,
-      permissionCache: permCache,
       eventBus,
     });
     const { task: assignedTask } = await taskSvc.createTask(ownerId, {
@@ -192,22 +187,17 @@ describe("ProjectInviteService — SHA-256 tokens, expiry, ACID acceptance & Per
     expect(assignedTask.assigneeId).toBe(inviteeId);
 
     await projectSvc.updateMemberRole(projectId, ownerId, inviteeId, "viewer");
-    // Cache invalidated immediately — Bob is now rejected for editor writes!
-    expect(await permCache.getRole(projectId, inviteeId)).toBeNull();
     await expect(
-      assertProjectRole(projectId, inviteeId, ["editor"], lookup, permCache)
+      assertProjectRole(projectId, inviteeId, ["editor"], lookup)
     ).rejects.toBeInstanceOf(ForbiddenError);
 
-    // Remove Bob -> tasks unassigned inside transaction & PermissionCache invalidated immediately
     await projectSvc.removeMember(projectId, ownerId, inviteeId);
-    expect(await permCache.getRole(projectId, inviteeId)).toBeNull();
     await expect(
       assertProjectRole(
         projectId,
         inviteeId,
         ["owner", "editor", "viewer"],
-        lookup,
-        permCache
+        lookup
       )
     ).rejects.toBeInstanceOf(ForbiddenError);
 
@@ -226,7 +216,6 @@ describe("ProjectInviteService — SHA-256 tokens, expiry, ACID acceptance & Per
       projects: projectRepo,
       users: new DrizzleUserRepository(conn.db),
       membershipLookup: lookup,
-      permissionCache: permCache,
       rateLimiter: new InMemoryRateLimiter(),
       eventBus,
       now: () => clock,

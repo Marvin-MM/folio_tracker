@@ -2,17 +2,19 @@ import { inngest } from "@/server/inngest/client";
 
 export type AppDomainEvent =
   | {
+      id?: string;
       name: "app/reminder.scheduled";
       data: {
         reminderId: string;
         userId: string;
-        entityType: "task" | "note";
-        entityId: string;
+        taskId: string | null;
+        noteId: string | null;
         remindAt: number;
         version: number;
       };
     }
   | {
+      id?: string;
       name: "app/reminder.rescheduled";
       data: {
         reminderId: string;
@@ -21,6 +23,7 @@ export type AppDomainEvent =
       };
     }
   | {
+      id?: string;
       name: "app/reminder.cancelled";
       data: {
         reminderId: string;
@@ -29,6 +32,7 @@ export type AppDomainEvent =
       };
     }
   | {
+      id?: string;
       name: "app/auth.email";
       data: {
         kind: "verification" | "password_reset";
@@ -38,6 +42,7 @@ export type AppDomainEvent =
       };
     }
   | {
+      id?: string;
       name: "app/reminder.test";
       data: {
         userId: string;
@@ -45,6 +50,7 @@ export type AppDomainEvent =
       };
     }
   | {
+      id?: string;
       name: "app/project.invited";
       data: {
         invitationId: string;
@@ -63,32 +69,14 @@ export interface EventBus {
 
 /**
  * Production EventBus backed by Inngest v4.
- * Resilient in local dev (`INNGEST_DEV=1`): committed database writes are never
- * aborted if the local Inngest Dev Server is offline.
+ * Supports deterministic `id` keys for 24h deduplication across Outbox retries.
  */
 export class InngestEventBus implements EventBus {
   async emit(event: AppDomainEvent | AppDomainEvent[]): Promise<void> {
     const events = Array.isArray(event) ? event : [event];
     if (events.length === 0) return;
 
-    try {
-      await inngest.send(events);
-    } catch (error) {
-      const isLocalDev =
-        process.env.INNGEST_DEV === "1" ||
-        process.env.NODE_ENV !== "production";
-      if (isLocalDev) {
-        console.warn(
-          JSON.stringify({
-            event: "event_bus.inngest.dev_unreachable",
-            names: events.map((e) => e.name),
-            reason: error instanceof Error ? error.message : "Unknown error",
-          })
-        );
-        return;
-      }
-      throw error;
-    }
+    await inngest.send(events);
   }
 }
 

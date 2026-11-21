@@ -7,11 +7,13 @@ import {
   eq,
   gt,
   inArray,
+  isNotNull,
   isNull,
   lte,
   ne,
   or,
 } from "drizzle-orm";
+import { generateEvenPositions } from "@/lib/fractional-index";
 import { db, type AppDatabase, type DbExecutor } from "@/server/db";
 import {
   projects,
@@ -33,6 +35,17 @@ export interface TaskWithReminders {
 export interface TaskListQueryResult {
   items: TaskWithReminders[];
   referenceUtcMs: number;
+}
+
+export interface TaskAuthMetadata {
+  id: string;
+  userId: string;
+  projectId: string | null;
+  assigneeId: string | null;
+  title: string;
+  status: TaskStatus;
+  completedAt: number | null;
+  position: string;
 }
 
 export interface CreateTaskRowInput {
@@ -59,39 +72,54 @@ export interface UpdateTaskRowInput {
   assigneeId?: string | null;
 }
 
+export type TaskScope =
+  | { kind: "personal"; userId: string }
+  | { kind: "project"; projectId: string };
+
 export interface TaskRepository {
   create(
     input: CreateTaskRowInput,
     executor?: DbExecutor
   ): Promise<TaskRecord>;
-  getById(taskId: string, executor?: DbExecutor): Promise<TaskRecord | null>;
+  getAuthMetadata(
+    taskId: string,
+    executor?: DbExecutor
+  ): Promise<TaskAuthMetadata | null>;
   getByIdForUser(
     taskId: string,
     userId: string,
     executor?: DbExecutor
   ): Promise<TaskRecord | null>;
-  getLastPositionForUser(
-    userId: string,
-    projectId: string | null,
+  getLastPositionForScope(
+    scope: TaskScope,
     executor?: DbExecutor
   ): Promise<string | null>;
-  updateById(
-    taskId: string,
-    patch: UpdateTaskRowInput,
-    executor?: DbExecutor
-  ): Promise<TaskRecord | null>;
-  updateForUser(
+  updatePersonalTask(
     taskId: string,
     userId: string,
     patch: UpdateTaskRowInput,
     executor?: DbExecutor
   ): Promise<TaskRecord | null>;
-  deleteById(taskId: string, executor?: DbExecutor): Promise<boolean>;
-  deleteForUser(
+  updateProjectTask(
+    taskId: string,
+    projectId: string,
+    patch: UpdateTaskRowInput,
+    executor?: DbExecutor
+  ): Promise<TaskRecord | null>;
+  deletePersonalTask(
     taskId: string,
     userId: string,
     executor?: DbExecutor
   ): Promise<boolean>;
+  deleteProjectTask(
+    taskId: string,
+    projectId: string,
+    executor?: DbExecutor
+  ): Promise<boolean>;
+  rebalancePositions(
+    scope: TaskScope,
+    executor?: DbExecutor
+  ): Promise<number>;
   listInboxWithReminders(userId: string): Promise<TaskListQueryResult>;
   listTodayWithReminders(
     userId: string,
@@ -145,12 +173,25 @@ export class DrizzleTaskRepository implements TaskRepository {
     return created;
   }
 
-  async getById(
+  /**
+   * Minimal ownership/project metadata lookup used strictly by service-layer
+   * authorization before dispatching tenant-scoped mutations.
+   */
+  async getAuthMetadata(
     taskId: string,
     executor: DbExecutor = this.database
-  ): Promise<TaskRecord | null> {
+  ): Promise<TaskAuthMetadata | null> {
     const [row] = await executor
-      .select()
+      .select({
+        id: tasks.id,
+        userId: tasks.userId,
+        projectId: tasks.projectId,
+        assigneeId: tasks.assigneeId,
+        title: tasks.title,
+        status: tasks.status,
+        completedAt: tasks.completedAt,
+        position: tasks.position,
+      })
       .from(tasks)
       .where(eq(tasks.id, taskId))
       .limit(1);
@@ -166,49 +207,34 @@ export class DrizzleTaskRepository implements TaskRepository {
     const [row] = await executor
       .select()
       .from(tasks)
-      .where(and(eq(tasks.id, taskId), eq(tasks.userId, userId)))
+      .where(
+        and(eq(tasks.id, taskId), eq(tasks.userId, userId), isNull(tasks.projectId))
+      )
       .limit(1);
 
     return row ?? null;
   }
 
-  async getLastPositionForUser(
-    userId: string,
-    projectId: string | null,
+  async getLastPositionForScope(
+    scope: TaskScope,
     executor: DbExecutor = this.database
   ): Promise<string | null> {
+    const predicate =
+      scope.kind === "project"
+        ? eq(tasks.projectId, scope.projectId)
+        : and(eq(tasks.userId, scope.userId), isNull(tasks.projectId));
+
     const [row] = await executor
       .select({ position: tasks.position })
       .from(tasks)
-      .where(
-        projectId
-          ? eq(tasks.projectId, projectId)
-          : and(eq(tasks.userId, userId), isNull(tasks.projectId))
-      )
-      .orderBy(desc(tasks.position))
+      .where(predicate)
+      .orderBy(desc(tasks.position), desc(tasks.id))
       .limit(1);
 
     return row?.position ?? null;
   }
 
-  async updateById(
-    taskId: string,
-    patch: UpdateTaskRowInput,
-    executor: DbExecutor = this.database
-  ): Promise<TaskRecord | null> {
-    const [updated] = await executor
-      .update(tasks)
-      .set({
-        ...patch,
-        updatedAt: Date.now(),
-      })
-      .where(eq(tasks.id, taskId))
-      .returning();
-
-    return updated ?? null;
-  }
-
-  async updateForUser(
+  async updatePersonalTask(
     taskId: string,
     userId: string,
     patch: UpdateTaskRowInput,
@@ -220,35 +246,103 @@ export class DrizzleTaskRepository implements TaskRepository {
         ...patch,
         updatedAt: Date.now(),
       })
-      .where(and(eq(tasks.id, taskId), eq(tasks.userId, userId)))
+      .where(
+        and(eq(tasks.id, taskId), eq(tasks.userId, userId), isNull(tasks.projectId))
+      )
       .returning();
 
     return updated ?? null;
   }
 
-  async deleteById(
+  async updateProjectTask(
     taskId: string,
+    projectId: string,
+    patch: UpdateTaskRowInput,
     executor: DbExecutor = this.database
-  ): Promise<boolean> {
-    const deleted = await executor
-      .delete(tasks)
-      .where(eq(tasks.id, taskId))
-      .returning({ id: tasks.id });
+  ): Promise<TaskRecord | null> {
+    const [updated] = await executor
+      .update(tasks)
+      .set({
+        ...patch,
+        updatedAt: Date.now(),
+      })
+      .where(and(eq(tasks.id, taskId), eq(tasks.projectId, projectId)))
+      .returning();
 
-    return deleted.length > 0;
+    return updated ?? null;
   }
 
-  async deleteForUser(
+  async deletePersonalTask(
     taskId: string,
     userId: string,
     executor: DbExecutor = this.database
   ): Promise<boolean> {
     const deleted = await executor
       .delete(tasks)
-      .where(and(eq(tasks.id, taskId), eq(tasks.userId, userId)))
+      .where(
+        and(eq(tasks.id, taskId), eq(tasks.userId, userId), isNull(tasks.projectId))
+      )
       .returning({ id: tasks.id });
 
     return deleted.length > 0;
+  }
+
+  async deleteProjectTask(
+    taskId: string,
+    projectId: string,
+    executor: DbExecutor = this.database
+  ): Promise<boolean> {
+    const deleted = await executor
+      .delete(tasks)
+      .where(and(eq(tasks.id, taskId), eq(tasks.projectId, projectId)))
+      .returning({ id: tasks.id });
+
+    return deleted.length > 0;
+  }
+
+  /**
+   * Transactionally re-spaces all task positions within a personal Inbox or
+   * verified project scope in deterministic `(position ASC, id ASC)` order
+   * whenever a generated fractional key exceeds 32 characters.
+   */
+  async rebalancePositions(
+    scope: TaskScope,
+    executor: DbExecutor = this.database
+  ): Promise<number> {
+    const predicate =
+      scope.kind === "project"
+        ? eq(tasks.projectId, scope.projectId)
+        : and(eq(tasks.userId, scope.userId), isNull(tasks.projectId));
+
+    const ordered = await executor
+      .select({ id: tasks.id })
+      .from(tasks)
+      .where(predicate)
+      .orderBy(asc(tasks.position), asc(tasks.id));
+
+    if (ordered.length === 0) return 0;
+
+    const freshKeys = generateEvenPositions(ordered.length);
+    const now = Date.now();
+
+    for (let i = 0; i < ordered.length; i++) {
+      const row = ordered[i]!;
+      const nextKey = freshKeys[i]!;
+      const rowPredicate =
+        scope.kind === "project"
+          ? and(eq(tasks.id, row.id), eq(tasks.projectId, scope.projectId))
+          : and(
+              eq(tasks.id, row.id),
+              eq(tasks.userId, scope.userId),
+              isNull(tasks.projectId)
+            );
+      await executor
+        .update(tasks)
+        .set({ position: nextKey, updatedAt: now })
+        .where(rowPredicate);
+    }
+
+    return ordered.length;
   }
 
   private async hydrateTasks(
@@ -275,12 +369,11 @@ export class DrizzleTaskRepository implements TaskRepository {
         .where(
           and(
             eq(reminders.userId, userId),
-            eq(reminders.entityType, "task"),
-            inArray(reminders.entityId, taskIds),
+            inArray(reminders.taskId, taskIds),
             inArray(reminders.status, ["pending_far", "scheduled", "snoozed"])
           )
         )
-        .orderBy(asc(reminders.remindAt)),
+        .orderBy(asc(reminders.remindAt), asc(reminders.id)),
       projectIds.length > 0
         ? this.database
             .select({
@@ -295,9 +388,10 @@ export class DrizzleTaskRepository implements TaskRepository {
 
     const remindersByTask = new Map<string, ReminderRecord[]>();
     for (const rem of reminderRows) {
-      const list = remindersByTask.get(rem.entityId) ?? [];
+      if (!rem.taskId) continue;
+      const list = remindersByTask.get(rem.taskId) ?? [];
       list.push(rem);
-      remindersByTask.set(rem.entityId, list);
+      remindersByTask.set(rem.taskId, list);
     }
 
     const projectMap = new Map(projectRows.map((p) => [p.id, p]));
@@ -325,7 +419,7 @@ export class DrizzleTaskRepository implements TaskRepository {
           ne(tasks.status, "archived")
         )
       )
-      .orderBy(asc(tasks.position), desc(tasks.createdAt))
+      .orderBy(asc(tasks.position), asc(tasks.id))
       .limit(150);
 
     const items = await this.hydrateTasks(userId, rows);
@@ -343,19 +437,23 @@ export class DrizzleTaskRepository implements TaskRepository {
     );
 
     const dueReminderTaskRows = await this.database
-      .select({ entityId: reminders.entityId })
+      .select({ taskId: reminders.taskId })
       .from(reminders)
       .where(
         and(
           eq(reminders.userId, userId),
-          eq(reminders.entityType, "task"),
+          isNotNull(reminders.taskId),
           inArray(reminders.status, ["scheduled", "snoozed"]),
           lte(reminders.remindAt, endOfTodayMs)
         )
       );
 
     const reminderTaskIds = Array.from(
-      new Set(dueReminderTaskRows.map((r) => r.entityId))
+      new Set(
+        dueReminderTaskRows
+          .map((r) => r.taskId)
+          .filter((id): id is string => typeof id === "string")
+      )
     );
 
     const condition =
@@ -376,7 +474,7 @@ export class DrizzleTaskRepository implements TaskRepository {
           condition
         )
       )
-      .orderBy(asc(tasks.dueAt), asc(tasks.position))
+      .orderBy(asc(tasks.dueAt), asc(tasks.position), asc(tasks.id))
       .limit(150);
 
     const items = await this.hydrateTasks(userId, rows);
@@ -394,19 +492,23 @@ export class DrizzleTaskRepository implements TaskRepository {
     );
 
     const futureReminderTaskRows = await this.database
-      .select({ entityId: reminders.entityId })
+      .select({ taskId: reminders.taskId })
       .from(reminders)
       .where(
         and(
           eq(reminders.userId, userId),
-          eq(reminders.entityType, "task"),
+          isNotNull(reminders.taskId),
           inArray(reminders.status, ["pending_far", "scheduled", "snoozed"]),
           gt(reminders.remindAt, endOfTodayMs)
         )
       );
 
     const futureReminderTaskIds = Array.from(
-      new Set(futureReminderTaskRows.map((r) => r.entityId))
+      new Set(
+        futureReminderTaskRows
+          .map((r) => r.taskId)
+          .filter((id): id is string => typeof id === "string")
+      )
     );
 
     const condition =
@@ -427,7 +529,7 @@ export class DrizzleTaskRepository implements TaskRepository {
           condition
         )
       )
-      .orderBy(asc(tasks.dueAt), asc(tasks.position))
+      .orderBy(asc(tasks.dueAt), asc(tasks.position), asc(tasks.id))
       .limit(150);
 
     const items = await this.hydrateTasks(userId, rows);

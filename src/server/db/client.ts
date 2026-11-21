@@ -34,6 +34,12 @@ export function createDbConnection(options: DbClientOptions = {}): DbConnection 
 
   const enableForeignKeys = async () => {
     await client.execute("PRAGMA foreign_keys = ON;");
+    if (url.startsWith("file:")) {
+      // Enable WAL for concurrent readers; keep busy_timeout=0 so local libSQL
+      // synchronous FFI never stalls the Node.js event loop (async `withDbRetry`
+      // handles transient SQLITE_BUSY contention non-blockingly).
+      await client.execute("PRAGMA journal_mode = WAL;");
+    }
   };
 
   if (url.startsWith("file:") || url === ":memory:") {

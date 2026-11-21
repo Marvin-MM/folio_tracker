@@ -1,4 +1,4 @@
-import { and, asc, count, desc, eq, inArray, sql } from "drizzle-orm";
+import { and, asc, count, desc, eq, gt, inArray, sql } from "drizzle-orm";
 import { db, type AppDatabase, type DbExecutor } from "@/server/db";
 import {
   notes,
@@ -48,6 +48,12 @@ export interface ProjectInvitationWithMeta {
   inviterName: string;
 }
 
+export interface SoleOwnedSharedProjectSummary {
+  projectId: string;
+  projectName: string;
+  memberCount: number;
+}
+
 export interface ProjectRepository {
   createProject(
     input: {
@@ -87,6 +93,10 @@ export interface ProjectRepository {
     projectId: string,
     executor?: DbExecutor
   ): Promise<string[]>;
+  listSoleOwnedSharedProjects(
+    userId: string,
+    executor?: DbExecutor
+  ): Promise<SoleOwnedSharedProjectSummary[]>;
   findMemberByEmail(
     projectId: string,
     email: string,
@@ -139,11 +149,14 @@ export interface ProjectRepository {
   ): Promise<ProjectInvitationRecord[]>;
   updateInvitationStatus(
     invitationId: string,
+    projectId: string,
     status: InvitationStatus,
     executor?: DbExecutor
   ): Promise<ProjectInvitationRecord | null>;
   claimPendingInvitation(
     invitationId: string,
+    projectId: string,
+    nowMs: number,
     executor?: DbExecutor
   ): Promise<ProjectInvitationRecord | null>;
   recordActivity(
@@ -311,6 +324,69 @@ export class DrizzleProjectRepository implements ProjectRepository {
       .from(projectMembers)
       .where(eq(projectMembers.projectId, projectId));
     return rows.map((r) => r.userId);
+  }
+
+  /**
+   * Finds any project where `userId` is the sole `owner` AND at least one other
+   * member exists. Used by `AccountService.deleteAccount()` to prevent orphaning
+   * or silently destroying active shared projects.
+   */
+  async listSoleOwnedSharedProjects(
+    userId: string,
+    executor: DbExecutor = this.database
+  ): Promise<SoleOwnedSharedProjectSummary[]> {
+    const ownedRows = await executor
+      .select({
+        projectId: projects.id,
+        projectName: projects.name,
+      })
+      .from(projectMembers)
+      .innerJoin(projects, eq(projectMembers.projectId, projects.id))
+      .where(
+        and(
+          eq(projectMembers.userId, userId),
+          eq(projectMembers.role, "owner")
+        )
+      );
+
+    if (ownedRows.length === 0) return [];
+
+    const ownedIds = ownedRows.map((r) => r.projectId);
+    const allMembers = await executor
+      .select({
+        projectId: projectMembers.projectId,
+        userId: projectMembers.userId,
+        role: projectMembers.role,
+      })
+      .from(projectMembers)
+      .where(inArray(projectMembers.projectId, ownedIds));
+
+    const byProject = new Map<
+      string,
+      { total: number; otherOwners: number }
+    >();
+    for (const m of allMembers) {
+      const entry = byProject.get(m.projectId) ?? { total: 0, otherOwners: 0 };
+      entry.total += 1;
+      if (m.role === "owner" && m.userId !== userId) {
+        entry.otherOwners += 1;
+      }
+      byProject.set(m.projectId, entry);
+    }
+
+    const blocked: SoleOwnedSharedProjectSummary[] = [];
+    for (const row of ownedRows) {
+      const stats = byProject.get(row.projectId);
+      if (stats && stats.total > 1 && stats.otherOwners === 0) {
+        blocked.push({
+          projectId: row.projectId,
+          projectName: row.projectName,
+          memberCount: stats.total,
+        });
+      }
+    }
+
+    return blocked;
   }
 
   async findMemberByEmail(
@@ -498,19 +574,31 @@ export class DrizzleProjectRepository implements ProjectRepository {
 
   async updateInvitationStatus(
     invitationId: string,
+    projectId: string,
     status: InvitationStatus,
     executor: DbExecutor = this.database
   ): Promise<ProjectInvitationRecord | null> {
     const [updated] = await executor
       .update(projectInvitations)
       .set({ status })
-      .where(eq(projectInvitations.id, invitationId))
+      .where(
+        and(
+          eq(projectInvitations.id, invitationId),
+          eq(projectInvitations.projectId, projectId)
+        )
+      )
       .returning();
     return updated ?? null;
   }
 
+  /**
+   * Single atomic conditional UPDATE consuming a pending, unexpired invitation.
+   * Eliminates TOCTOU double-accept races: strictly ONE concurrent caller gets a row back.
+   */
   async claimPendingInvitation(
     invitationId: string,
+    projectId: string,
+    nowMs: number,
     executor: DbExecutor = this.database
   ): Promise<ProjectInvitationRecord | null> {
     const [claimed] = await executor
@@ -519,7 +607,9 @@ export class DrizzleProjectRepository implements ProjectRepository {
       .where(
         and(
           eq(projectInvitations.id, invitationId),
-          eq(projectInvitations.status, "pending")
+          eq(projectInvitations.projectId, projectId),
+          eq(projectInvitations.status, "pending"),
+          gt(projectInvitations.expiresAt, nowMs)
         )
       )
       .returning();
@@ -582,7 +672,7 @@ export class DrizzleProjectRepository implements ProjectRepository {
       .select()
       .from(tasks)
       .where(eq(tasks.projectId, projectId))
-      .orderBy(asc(tasks.position), desc(tasks.createdAt))
+      .orderBy(asc(tasks.position), asc(tasks.id))
       .limit(200);
 
     const filteredRows = rows.filter((row) => {
@@ -622,12 +712,11 @@ export class DrizzleProjectRepository implements ProjectRepository {
         .where(
           and(
             eq(reminders.userId, viewerUserId),
-            eq(reminders.entityType, "task"),
-            inArray(reminders.entityId, taskIds),
+            inArray(reminders.taskId, taskIds),
             inArray(reminders.status, ["pending_far", "scheduled", "snoozed"])
           )
         )
-        .orderBy(asc(reminders.remindAt)),
+        .orderBy(asc(reminders.remindAt), asc(reminders.id)),
       assigneeIds.length > 0
         ? this.database
             .select({ id: users.id, name: users.name })
@@ -638,9 +727,10 @@ export class DrizzleProjectRepository implements ProjectRepository {
 
     const remindersByTask = new Map<string, ReminderRecord[]>();
     for (const rem of reminderRows) {
-      const list = remindersByTask.get(rem.entityId) ?? [];
+      if (!rem.taskId) continue;
+      const list = remindersByTask.get(rem.taskId) ?? [];
       list.push(rem);
-      remindersByTask.set(rem.entityId, list);
+      remindersByTask.set(rem.taskId, list);
     }
 
     const assigneeMap = new Map(assigneeRows.map((u) => [u.id, u.name]));
@@ -668,7 +758,7 @@ export class DrizzleProjectRepository implements ProjectRepository {
       .select()
       .from(notes)
       .where(eq(notes.projectId, projectId))
-      .orderBy(desc(notes.isPinned), desc(notes.updatedAt))
+      .orderBy(desc(notes.isPinned), desc(notes.updatedAt), asc(notes.id))
       .limit(150);
 
     if (rows.length === 0) return [];
@@ -680,18 +770,18 @@ export class DrizzleProjectRepository implements ProjectRepository {
       .where(
         and(
           eq(reminders.userId, viewerUserId),
-          eq(reminders.entityType, "note"),
-          inArray(reminders.entityId, noteIds),
+          inArray(reminders.noteId, noteIds),
           inArray(reminders.status, ["pending_far", "scheduled", "snoozed"])
         )
       )
-      .orderBy(asc(reminders.remindAt));
+      .orderBy(asc(reminders.remindAt), asc(reminders.id));
 
     const remindersByNote = new Map<string, ReminderRecord[]>();
     for (const rem of reminderRows) {
-      const list = remindersByNote.get(rem.entityId) ?? [];
+      if (!rem.noteId) continue;
+      const list = remindersByNote.get(rem.noteId) ?? [];
       list.push(rem);
-      remindersByNote.set(rem.entityId, list);
+      remindersByNote.set(rem.noteId, list);
     }
 
     return rows.map((note) => ({

@@ -16,6 +16,14 @@ export interface NoteWithReminders {
   reminders: ReminderRecord[];
 }
 
+export interface NoteAuthMetadata {
+  id: string;
+  userId: string;
+  projectId: string | null;
+  title: string;
+  isPinned: boolean;
+}
+
 export interface CreateNoteRowInput {
   userId: string;
   projectId?: string | null;
@@ -38,27 +46,35 @@ export interface NoteRepository {
     input: CreateNoteRowInput,
     executor?: DbExecutor
   ): Promise<NoteRecord>;
-  getById(noteId: string, executor?: DbExecutor): Promise<NoteRecord | null>;
+  getAuthMetadata(
+    noteId: string,
+    executor?: DbExecutor
+  ): Promise<NoteAuthMetadata | null>;
   getByIdForUser(
     noteId: string,
     userId: string,
     executor?: DbExecutor
   ): Promise<NoteRecord | null>;
-  updateById(
-    noteId: string,
-    patch: UpdateNoteRowInput,
-    executor?: DbExecutor
-  ): Promise<NoteRecord | null>;
-  updateForUser(
+  updatePersonalNote(
     noteId: string,
     userId: string,
     patch: UpdateNoteRowInput,
     executor?: DbExecutor
   ): Promise<NoteRecord | null>;
-  deleteById(noteId: string, executor?: DbExecutor): Promise<boolean>;
-  deleteForUser(
+  updateProjectNote(
+    noteId: string,
+    projectId: string,
+    patch: UpdateNoteRowInput,
+    executor?: DbExecutor
+  ): Promise<NoteRecord | null>;
+  deletePersonalNote(
     noteId: string,
     userId: string,
+    executor?: DbExecutor
+  ): Promise<boolean>;
+  deleteProjectNote(
+    noteId: string,
+    projectId: string,
     executor?: DbExecutor
   ): Promise<boolean>;
   listNotesWithReminders(
@@ -94,6 +110,22 @@ export function normalizeNoteTags(tags: string[] | undefined): string[] {
   return cleaned.slice(0, 12);
 }
 
+function buildNoteUpdates(
+  patch: UpdateNoteRowInput
+): Partial<typeof notes.$inferInsert> {
+  const updates: Partial<typeof notes.$inferInsert> = {
+    updatedAt: Date.now(),
+  };
+  if (patch.title !== undefined) updates.title = patch.title;
+  if (patch.content !== undefined) updates.content = patch.content;
+  if (patch.tags !== undefined) {
+    updates.tagsJson = JSON.stringify(normalizeNoteTags(patch.tags));
+  }
+  if (patch.isPinned !== undefined) updates.isPinned = patch.isPinned;
+  if (patch.projectId !== undefined) updates.projectId = patch.projectId;
+  return updates;
+}
+
 export class DrizzleNoteRepository implements NoteRepository {
   constructor(private readonly database: AppDatabase = db) {}
 
@@ -122,12 +154,22 @@ export class DrizzleNoteRepository implements NoteRepository {
     return created;
   }
 
-  async getById(
+  /**
+   * Minimal ownership/project metadata lookup used strictly by service-layer
+   * authorization before dispatching tenant-scoped mutations.
+   */
+  async getAuthMetadata(
     noteId: string,
     executor: DbExecutor = this.database
-  ): Promise<NoteRecord | null> {
+  ): Promise<NoteAuthMetadata | null> {
     const [row] = await executor
-      .select()
+      .select({
+        id: notes.id,
+        userId: notes.userId,
+        projectId: notes.projectId,
+        title: notes.title,
+        isPinned: notes.isPinned,
+      })
       .from(notes)
       .where(eq(notes.id, noteId))
       .limit(1);
@@ -143,83 +185,69 @@ export class DrizzleNoteRepository implements NoteRepository {
     const [row] = await executor
       .select()
       .from(notes)
-      .where(and(eq(notes.id, noteId), eq(notes.userId, userId)))
+      .where(
+        and(eq(notes.id, noteId), eq(notes.userId, userId), isNull(notes.projectId))
+      )
       .limit(1);
 
     return row ?? null;
   }
 
-  async updateById(
-    noteId: string,
-    patch: UpdateNoteRowInput,
-    executor: DbExecutor = this.database
-  ): Promise<NoteRecord | null> {
-    const updates: Partial<typeof notes.$inferInsert> = {
-      updatedAt: Date.now(),
-    };
-    if (patch.title !== undefined) updates.title = patch.title;
-    if (patch.content !== undefined) updates.content = patch.content;
-    if (patch.tags !== undefined) {
-      updates.tagsJson = JSON.stringify(normalizeNoteTags(patch.tags));
-    }
-    if (patch.isPinned !== undefined) updates.isPinned = patch.isPinned;
-    if (patch.projectId !== undefined) updates.projectId = patch.projectId;
-
-    const [updated] = await executor
-      .update(notes)
-      .set(updates)
-      .where(eq(notes.id, noteId))
-      .returning();
-
-    return updated ?? null;
-  }
-
-  async updateForUser(
+  async updatePersonalNote(
     noteId: string,
     userId: string,
     patch: UpdateNoteRowInput,
     executor: DbExecutor = this.database
   ): Promise<NoteRecord | null> {
-    const updates: Partial<typeof notes.$inferInsert> = {
-      updatedAt: Date.now(),
-    };
-    if (patch.title !== undefined) updates.title = patch.title;
-    if (patch.content !== undefined) updates.content = patch.content;
-    if (patch.tags !== undefined) {
-      updates.tagsJson = JSON.stringify(normalizeNoteTags(patch.tags));
-    }
-    if (patch.isPinned !== undefined) updates.isPinned = patch.isPinned;
-    if (patch.projectId !== undefined) updates.projectId = patch.projectId;
-
     const [updated] = await executor
       .update(notes)
-      .set(updates)
-      .where(and(eq(notes.id, noteId), eq(notes.userId, userId)))
+      .set(buildNoteUpdates(patch))
+      .where(
+        and(eq(notes.id, noteId), eq(notes.userId, userId), isNull(notes.projectId))
+      )
       .returning();
 
     return updated ?? null;
   }
 
-  async deleteById(
+  async updateProjectNote(
     noteId: string,
+    projectId: string,
+    patch: UpdateNoteRowInput,
+    executor: DbExecutor = this.database
+  ): Promise<NoteRecord | null> {
+    const [updated] = await executor
+      .update(notes)
+      .set(buildNoteUpdates(patch))
+      .where(and(eq(notes.id, noteId), eq(notes.projectId, projectId)))
+      .returning();
+
+    return updated ?? null;
+  }
+
+  async deletePersonalNote(
+    noteId: string,
+    userId: string,
     executor: DbExecutor = this.database
   ): Promise<boolean> {
     const deleted = await executor
       .delete(notes)
-      .where(eq(notes.id, noteId))
+      .where(
+        and(eq(notes.id, noteId), eq(notes.userId, userId), isNull(notes.projectId))
+      )
       .returning({ id: notes.id });
 
     return deleted.length > 0;
   }
 
-  async deleteForUser(
+  async deleteProjectNote(
     noteId: string,
-    userId: string,
+    projectId: string,
     executor: DbExecutor = this.database
   ): Promise<boolean> {
     const deleted = await executor
       .delete(notes)
-      .where(and(eq(notes.id, noteId), eq(notes.userId, userId)))
+      .where(and(eq(notes.id, noteId), eq(notes.projectId, projectId)))
       .returning({ id: notes.id });
 
     return deleted.length > 0;
@@ -233,7 +261,7 @@ export class DrizzleNoteRepository implements NoteRepository {
       .select()
       .from(notes)
       .where(and(eq(notes.userId, userId), isNull(notes.projectId)))
-      .orderBy(desc(notes.isPinned), desc(notes.updatedAt))
+      .orderBy(desc(notes.isPinned), desc(notes.updatedAt), asc(notes.id))
       .limit(150);
 
     if (rows.length === 0) {
@@ -256,12 +284,11 @@ export class DrizzleNoteRepository implements NoteRepository {
         .where(
           and(
             eq(reminders.userId, userId),
-            eq(reminders.entityType, "note"),
-            inArray(reminders.entityId, noteIds),
+            inArray(reminders.noteId, noteIds),
             inArray(reminders.status, ["pending_far", "scheduled", "snoozed"])
           )
         )
-        .orderBy(asc(reminders.remindAt)),
+        .orderBy(asc(reminders.remindAt), asc(reminders.id)),
       projectIds.length > 0
         ? this.database
             .select({
@@ -276,9 +303,10 @@ export class DrizzleNoteRepository implements NoteRepository {
 
     const remindersByNote = new Map<string, ReminderRecord[]>();
     for (const rem of reminderRows) {
-      const list = remindersByNote.get(rem.entityId) ?? [];
+      if (!rem.noteId) continue;
+      const list = remindersByNote.get(rem.noteId) ?? [];
       list.push(rem);
-      remindersByNote.set(rem.entityId, list);
+      remindersByNote.set(rem.noteId, list);
     }
 
     const projectMap = new Map(projectRows.map((p) => [p.id, p]));

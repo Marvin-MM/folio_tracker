@@ -5,6 +5,8 @@ import { TaskListView } from "@/components/workspace/workspace-lists";
 import { requireSession } from "@/server/dal/auth-guard";
 import { taskRepository } from "@/server/dal/task-repository";
 
+export const dynamic = "force-dynamic";
+
 export const metadata: Metadata = {
   title: "Today",
 };

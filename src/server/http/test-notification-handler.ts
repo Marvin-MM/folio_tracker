@@ -8,13 +8,20 @@ import {
 } from "@/server/providers/redis/rate-limiter";
 import { notificationService } from "@/server/services/notification-service";
 
+const NO_STORE_HEADERS = {
+  "Cache-Control": "private, no-store",
+};
+
 export async function handleTestNotificationPost(
   limiter: RateLimiter = defaultRateLimiter
 ): Promise<Response> {
   try {
     const { user } = await requireSession();
     const limitResult = await limiter.limit("test_push", user.id);
-    const rateHeaders = buildRateLimitHeaders(limitResult);
+    const rateHeaders = {
+      ...NO_STORE_HEADERS,
+      ...buildRateLimitHeaders(limitResult),
+    };
 
     if (!limitResult.allowed) {
       return NextResponse.json(
@@ -42,7 +49,7 @@ export async function handleTestNotificationPost(
     if (error instanceof DalError) {
       return NextResponse.json(
         { ok: false, error: { code: error.code, message: error.message } },
-        { status: error.statusCode }
+        { status: error.statusCode, headers: NO_STORE_HEADERS }
       );
     }
     return NextResponse.json(
@@ -53,7 +60,7 @@ export async function handleTestNotificationPost(
           message: "Unable to dispatch test reminder.",
         },
       },
-      { status: 500 }
+      { status: 500, headers: NO_STORE_HEADERS }
     );
   }
 }

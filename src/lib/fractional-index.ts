@@ -8,6 +8,12 @@ const FIRST_CHAR = ALPHABET[0]!;
 const LAST_CHAR = ALPHABET[BASE - 1]!;
 const MID_CHAR = ALPHABET[Math.floor(BASE / 2)]!;
 
+/**
+ * Threshold beyond which sibling task positions are transactionally rebalanced
+ * back to compact 2–3 character keys.
+ */
+export const MAX_POSITION_KEY_LENGTH = 32;
+
 function charIndex(ch: string | undefined): number {
   if (!ch) return 0;
   const idx = ALPHABET.indexOf(ch);
@@ -81,4 +87,25 @@ export function generatePositionBetween(
   }
 
   return `${a}${LAST_CHAR}`;
+}
+
+/**
+ * Generates `count` strictly ascending, compact base-36 keys (`"a00"`, `"a01"`, ...)
+ * used by transactional task-position rebalancing when any key exceeds
+ * `MAX_POSITION_KEY_LENGTH`.
+ */
+export function generateEvenPositions(count: number): string[] {
+  if (count <= 0) return [];
+  const width = Math.max(2, Math.ceil(Math.log(count + 2) / Math.log(BASE)));
+  const positions: string[] = [];
+
+  for (let i = 0; i < count; i++) {
+    // Spread across the keyspace leaving room before/after every row
+    const value = (i + 1) * 4;
+    const base36 = value.toString(BASE);
+    const padded = base36.padStart(width + 1, "0");
+    positions.push(`a${padded}`);
+  }
+
+  return positions;
 }

@@ -1,4 +1,7 @@
-import { generatePositionBetween } from "@/lib/fractional-index";
+import {
+  generatePositionBetween,
+  MAX_POSITION_KEY_LENGTH,
+} from "@/lib/fractional-index";
 import {
   assertProjectRole,
   createDrizzleMembershipLookup,
@@ -19,9 +22,11 @@ import {
 } from "@/server/dal/reminder-repository";
 import {
   taskRepository,
+  type TaskAuthMetadata,
   type TaskRepository,
+  type TaskScope,
 } from "@/server/dal/task-repository";
-import { db, type AppDatabase } from "@/server/db";
+import { db, withDbRetry, type AppDatabase, type DbExecutor } from "@/server/db";
 import type {
   ReminderRecord,
   TaskPriority,
@@ -34,10 +39,9 @@ import {
   type EventBus,
 } from "@/server/providers/event-bus";
 import {
-  defaultPermissionCache,
-  type PermissionCache,
-} from "@/server/providers/redis/permission-cache";
-import { ReminderService } from "./reminder-service";
+  buildCancelledReminderEvent,
+  ReminderService,
+} from "./reminder-service";
 
 export interface CreateTaskInput {
   title: string;
@@ -66,7 +70,6 @@ export interface TaskServiceDeps {
   reminders?: ReminderRepository;
   projects?: ProjectRepository;
   membershipLookup?: ProjectMembershipLookup;
-  permissionCache?: PermissionCache;
   reminderService?: ReminderService;
   eventBus?: EventBus;
 }
@@ -77,7 +80,6 @@ export class TaskService {
   private readonly reminders: ReminderRepository;
   private readonly projects: ProjectRepository;
   private readonly membershipLookup: ProjectMembershipLookup;
-  private readonly permissionCache: PermissionCache;
   private readonly reminderService: ReminderService;
   private readonly eventBus: EventBus;
 
@@ -88,23 +90,20 @@ export class TaskService {
     this.projects = deps.projects ?? projectRepository;
     this.membershipLookup =
       deps.membershipLookup ?? createDrizzleMembershipLookup(this.database);
-    this.permissionCache = deps.permissionCache ?? defaultPermissionCache;
     this.eventBus = deps.eventBus ?? defaultEventBus;
     this.reminderService =
       deps.reminderService ??
       new ReminderService({
         database: this.database,
         reminders: this.reminders,
-        tasks: this.tasks,
-        membershipLookup: this.membershipLookup,
-        permissionCache: this.permissionCache,
         eventBus: this.eventBus,
       });
   }
 
   private async assertCanMutateTask(
-    task: TaskRecord,
-    userId: string
+    task: Pick<TaskAuthMetadata, "userId" | "projectId">,
+    userId: string,
+    executor?: DbExecutor
   ): Promise<void> {
     if (task.projectId) {
       await assertProjectRole(
@@ -112,7 +111,7 @@ export class TaskService {
         userId,
         ["owner", "editor"],
         this.membershipLookup,
-        this.permissionCache
+        executor
       );
       return;
     }
@@ -124,7 +123,8 @@ export class TaskService {
 
   private async validateAssignee(
     projectId: string | null | undefined,
-    assigneeId: string | null | undefined
+    assigneeId: string | null | undefined,
+    executor?: DbExecutor
   ): Promise<void> {
     if (!assigneeId) return;
     if (!projectId) {
@@ -134,11 +134,21 @@ export class TaskService {
     }
     const member = await this.membershipLookup.findMembership(
       projectId,
-      assigneeId
+      assigneeId,
+      executor
     );
     if (!member) {
       throw new ValidationError("Assignee must be a member of this project.");
     }
+  }
+
+  private taskScope(
+    userId: string,
+    projectId: string | null | undefined
+  ): TaskScope {
+    return projectId
+      ? { kind: "project", projectId }
+      : { kind: "personal", userId };
   }
 
   async createTask(
@@ -155,20 +165,25 @@ export class TaskService {
         input.projectId,
         userId,
         ["owner", "editor"],
-        this.membershipLookup,
-        this.permissionCache
+        this.membershipLookup
       );
     }
     await this.validateAssignee(input.projectId, input.assigneeId);
 
-    const { task, reminder, postCommitEvent } = await this.database.transaction(
-      async (tx) => {
-        const lastPos = await this.tasks.getLastPositionForUser(
-          userId,
-          input.projectId ?? null,
-          tx
-        );
-        const position = generatePositionBetween(lastPos, null);
+    const { task, reminder, shouldDispatch } = await withDbRetry(() =>
+      this.database.transaction(async (tx) => {
+        const scope = this.taskScope(userId, input.projectId);
+        const lastPos = await this.tasks.getLastPositionForScope(scope, tx);
+        let position = generatePositionBetween(lastPos, null);
+
+        if (position.length > MAX_POSITION_KEY_LENGTH) {
+          await this.tasks.rebalancePositions(scope, tx);
+          const refreshedLast = await this.tasks.getLastPositionForScope(
+            scope,
+            tx
+          );
+          position = generatePositionBetween(refreshedLast, null);
+        }
 
         const createdTask = await this.tasks.create(
           {
@@ -185,21 +200,21 @@ export class TaskService {
         );
 
         let createdReminder: ReminderRecord | null = null;
-        let eventToEmit: AppDomainEvent | null = null;
+        let dispatchReminder = false;
 
         if (input.remindAt !== undefined && input.remindAt !== null) {
           const attached = await this.reminderService.createInTransaction(
             tx,
             userId,
             {
-              entityType: "task",
-              entityId: createdTask.id,
+              taskId: createdTask.id,
+              noteId: null,
               remindAt: input.remindAt,
               timezone: input.timezone ?? "UTC",
             }
           );
           createdReminder = attached.reminder;
-          eventToEmit = attached.postCommitEvent;
+          dispatchReminder = attached.shouldDispatch;
         }
 
         if (createdTask.projectId) {
@@ -219,13 +234,13 @@ export class TaskService {
         return {
           task: createdTask,
           reminder: createdReminder,
-          postCommitEvent: eventToEmit,
+          shouldDispatch: dispatchReminder,
         };
-      }
+      })
     );
 
-    if (postCommitEvent) {
-      await this.eventBus.emit(postCommitEvent);
+    if (reminder && shouldDispatch) {
+      await this.reminderService.dispatchScheduledReminder(reminder);
     }
 
     return { task, reminder };
@@ -239,20 +254,28 @@ export class TaskService {
   ): Promise<{ task: TaskRecord; cancelledReminderCount: number }> {
     const cancelPendingReminders = options.cancelPendingReminders ?? true;
 
-    const existing = await this.tasks.getById(taskId);
+    const existing = await this.tasks.getAuthMetadata(taskId);
     if (!existing) {
       throw new NotFoundError("Task not found.");
     }
     await this.assertCanMutateTask(existing, userId);
 
-    const { updatedTask, cancelledEvents } = await this.database.transaction(
-      async (tx) => {
+    const { updatedTask, cancelledEvents } = await withDbRetry(() =>
+      this.database.transaction(async (tx) => {
         const completedAt = nextStatus === "done" ? Date.now() : null;
-        const updated = await this.tasks.updateById(
-          taskId,
-          { status: nextStatus, completedAt },
-          tx
-        );
+        const updated = existing.projectId
+          ? await this.tasks.updateProjectTask(
+              taskId,
+              existing.projectId,
+              { status: nextStatus, completedAt },
+              tx
+            )
+          : await this.tasks.updatePersonalTask(
+              taskId,
+              userId,
+              { status: nextStatus, completedAt },
+              tx
+            );
 
         if (!updated) {
           throw new NotFoundError("Task not found.");
@@ -264,24 +287,22 @@ export class TaskService {
           cancelPendingReminders &&
           (nextStatus === "done" || nextStatus === "archived")
         ) {
-          const cancelled = await this.reminders.cancelActiveForEntity(
+          const cancelled = await this.reminders.cancelActiveForTarget(
             {
               userId,
-              entityType: "task",
-              entityId: taskId,
+              taskId,
             },
             tx
           );
 
           for (const row of cancelled) {
-            events.push({
-              name: "app/reminder.cancelled",
-              data: {
+            events.push(
+              buildCancelledReminderEvent({
                 reminderId: row.id,
-                userId,
+                userId: row.userId,
                 version: row.version,
-              },
-            });
+              })
+            );
           }
         }
 
@@ -301,11 +322,11 @@ export class TaskService {
         }
 
         return { updatedTask: updated, cancelledEvents: events };
-      }
+      })
     );
 
     if (cancelledEvents.length > 0) {
-      await this.eventBus.emit(cancelledEvents);
+      await this.reminderService.emitControlEventsSafely(cancelledEvents);
     }
 
     return {
@@ -323,7 +344,7 @@ export class TaskService {
       throw new ValidationError("Task title cannot be empty.");
     }
 
-    const existing = await this.tasks.getById(taskId);
+    const existing = await this.tasks.getAuthMetadata(taskId);
     if (!existing) {
       throw new NotFoundError("Task not found.");
     }
@@ -336,16 +357,15 @@ export class TaskService {
         input.projectId,
         userId,
         ["owner", "editor"],
-        this.membershipLookup,
-        this.permissionCache
+        this.membershipLookup
       );
     }
     if (input.assigneeId !== undefined) {
       await this.validateAssignee(targetProjectId, input.assigneeId);
     }
 
-    const { updatedTask, cancelledEvents } = await this.database.transaction(
-      async (tx) => {
+    const { updatedTask, cancelledEvents } = await withDbRetry(() =>
+      this.database.transaction(async (tx) => {
         const completedAt =
           input.status !== undefined
             ? input.status === "done"
@@ -353,28 +373,31 @@ export class TaskService {
               : null
             : undefined;
 
-        const updated = await this.tasks.updateById(
-          taskId,
-          {
-            ...(input.title !== undefined ? { title: input.title.trim() } : {}),
-            ...(input.description !== undefined
-              ? { description: input.description }
-              : {}),
-            ...(input.status !== undefined ? { status: input.status } : {}),
-            ...(completedAt !== undefined ? { completedAt } : {}),
-            ...(input.priority !== undefined
-              ? { priority: input.priority }
-              : {}),
-            ...(input.dueAt !== undefined ? { dueAt: input.dueAt } : {}),
-            ...(input.projectId !== undefined
-              ? { projectId: input.projectId }
-              : {}),
-            ...(input.assigneeId !== undefined
-              ? { assigneeId: input.assigneeId }
-              : {}),
-          },
-          tx
-        );
+        const patch = {
+          ...(input.title !== undefined ? { title: input.title.trim() } : {}),
+          ...(input.description !== undefined
+            ? { description: input.description }
+            : {}),
+          ...(input.status !== undefined ? { status: input.status } : {}),
+          ...(completedAt !== undefined ? { completedAt } : {}),
+          ...(input.priority !== undefined ? { priority: input.priority } : {}),
+          ...(input.dueAt !== undefined ? { dueAt: input.dueAt } : {}),
+          ...(input.projectId !== undefined
+            ? { projectId: input.projectId }
+            : {}),
+          ...(input.assigneeId !== undefined
+            ? { assigneeId: input.assigneeId }
+            : {}),
+        };
+
+        const updated = existing.projectId
+          ? await this.tasks.updateProjectTask(
+              taskId,
+              existing.projectId,
+              patch,
+              tx
+            )
+          : await this.tasks.updatePersonalTask(taskId, userId, patch, tx);
 
         if (!updated) {
           throw new NotFoundError("Task not found.");
@@ -382,15 +405,18 @@ export class TaskService {
 
         const events: AppDomainEvent[] = [];
         if (input.status === "done" || input.status === "archived") {
-          const cancelled = await this.reminders.cancelActiveForEntity(
-            { userId, entityType: "task", entityId: taskId },
+          const cancelled = await this.reminders.cancelActiveForTarget(
+            { userId, taskId },
             tx
           );
           for (const row of cancelled) {
-            events.push({
-              name: "app/reminder.cancelled",
-              data: { reminderId: row.id, userId, version: row.version },
-            });
+            events.push(
+              buildCancelledReminderEvent({
+                reminderId: row.id,
+                userId: row.userId,
+                version: row.version,
+              })
+            );
           }
         }
 
@@ -415,11 +441,11 @@ export class TaskService {
         }
 
         return { updatedTask: updated, cancelledEvents: events };
-      }
+      })
     );
 
     if (cancelledEvents.length > 0) {
-      await this.eventBus.emit(cancelledEvents);
+      await this.reminderService.emitControlEventsSafely(cancelledEvents);
     }
 
     return updatedTask;
@@ -430,7 +456,7 @@ export class TaskService {
     taskId: string,
     bounds: { prevPosition?: string | null; nextPosition?: string | null }
   ): Promise<TaskRecord> {
-    const existing = await this.tasks.getById(taskId);
+    const existing = await this.tasks.getAuthMetadata(taskId);
     if (!existing) {
       throw new NotFoundError("Task not found.");
     }
@@ -441,58 +467,97 @@ export class TaskService {
       bounds.nextPosition ?? null
     );
 
-    const updated = await this.tasks.updateById(taskId, {
-      position: nextPosition,
-    });
+    return withDbRetry(() =>
+      this.database.transaction(async (tx) => {
+        const updated = existing.projectId
+          ? await this.tasks.updateProjectTask(
+              taskId,
+              existing.projectId,
+              { position: nextPosition },
+              tx
+            )
+          : await this.tasks.updatePersonalTask(
+              taskId,
+              userId,
+              { position: nextPosition },
+              tx
+            );
 
-    if (!updated) {
-      throw new NotFoundError("Task not found.");
-    }
+        if (!updated) {
+          throw new NotFoundError("Task not found.");
+        }
 
-    return updated;
+        // Trigger transactional keyspace rebalancing whenever fractional keys grow beyond 32 chars
+        if (nextPosition.length > MAX_POSITION_KEY_LENGTH) {
+          const scope = this.taskScope(userId, existing.projectId);
+          await this.tasks.rebalancePositions(scope, tx);
+
+          const refreshed = existing.projectId
+            ? await this.tasks.updateProjectTask(
+                taskId,
+                existing.projectId,
+                {},
+                tx
+              )
+            : await this.tasks.updatePersonalTask(taskId, userId, {}, tx);
+
+          if (refreshed) {
+            return refreshed;
+          }
+        }
+
+        return updated;
+      })
+    );
   }
 
   async deleteTask(userId: string, taskId: string): Promise<void> {
-    const existing = await this.tasks.getById(taskId);
+    const existing = await this.tasks.getAuthMetadata(taskId);
     if (!existing) {
       throw new NotFoundError("Task not found.");
     }
     await this.assertCanMutateTask(existing, userId);
 
-    const cancelledEvents = await this.database.transaction(async (tx) => {
-      const cancelled = await this.reminders.cancelActiveForEntity(
-        { userId, entityType: "task", entityId: taskId },
-        tx
-      );
+    const cancelledEvents = await withDbRetry(() =>
+      this.database.transaction(async (tx) => {
+        // Collect ALL active scheduled reminders across all users BEFORE cascade delete
+        const activeScheduled =
+          await this.reminders.findActiveScheduledForTask(taskId, tx);
 
-      await this.tasks.deleteById(taskId, tx);
+        const deleted = existing.projectId
+          ? await this.tasks.deleteProjectTask(taskId, existing.projectId, tx)
+          : await this.tasks.deletePersonalTask(taskId, userId, tx);
 
-      if (existing.projectId) {
-        await this.projects.recordActivity(
-          {
-            projectId: existing.projectId,
-            actorId: userId,
-            action: "task.deleted",
-            entityType: "task",
-            entityId: taskId,
-            metadata: { title: existing.title },
-          },
-          tx
+        if (!deleted) {
+          throw new NotFoundError("Task not found.");
+        }
+
+        if (existing.projectId) {
+          await this.projects.recordActivity(
+            {
+              projectId: existing.projectId,
+              actorId: userId,
+              action: "task.deleted",
+              entityType: "task",
+              entityId: taskId,
+              metadata: { title: existing.title },
+            },
+            tx
+          );
+        }
+
+        return activeScheduled.map((row) =>
+          buildCancelledReminderEvent({
+            reminderId: row.id,
+            userId: row.userId,
+            version: row.version,
+          })
         );
-      }
-
-      return cancelled.map<AppDomainEvent>((row) => ({
-        name: "app/reminder.cancelled",
-        data: {
-          reminderId: row.id,
-          userId,
-          version: row.version,
-        },
-      }));
-    });
+      })
+    );
 
     if (cancelledEvents.length > 0) {
-      await this.eventBus.emit(cancelledEvents);
+      await this.reminderService.emitControlEventsSafely(cancelledEvents);
     }
   }
 }

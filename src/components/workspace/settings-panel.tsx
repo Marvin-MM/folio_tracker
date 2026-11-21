@@ -1,9 +1,11 @@
 "use client";
 
 import { useState, useSyncExternalStore, useTransition, type FormEvent } from "react";
-import { Loader2 } from "lucide-react";
+import { useRouter } from "next/navigation";
+import { AlertTriangle, Loader2, Trash2 } from "lucide-react";
 import { useTheme } from "next-themes";
 import { toast } from "sonner";
+import { deleteAccountAction } from "@/actions/account";
 import { updateUserPreferencesAction } from "@/actions/user-preferences";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -14,6 +16,15 @@ import {
   CardHeader,
   CardTitle,
 } from "@/components/ui/card";
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+  DialogTrigger,
+} from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import {
@@ -24,6 +35,7 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { Switch } from "@/components/ui/switch";
+import { performSecureSignOut } from "@/lib/client-sign-out";
 import type { UserPreferencesRecord } from "@/server/dal/user-repository";
 
 interface SettingsPanelProps {
@@ -39,6 +51,7 @@ export function SettingsPanel({
   connectedProviders,
   timezoneOptions,
 }: SettingsPanelProps) {
+  const router = useRouter();
   const { theme, setTheme } = useTheme();
   const isMounted = useSyncExternalStore(
     emptySubscribe,
@@ -51,6 +64,11 @@ export function SettingsPanel({
     profile.emailRemindersEnabled
   );
   const [isPending, startTransition] = useTransition();
+
+  const [deleteDialogOpen, setDeleteDialogOpen] = useState(false);
+  const [confirmEmail, setConfirmEmail] = useState("");
+  const [deleteError, setDeleteError] = useState<string | null>(null);
+  const [isDeleting, startDeleteTransition] = useTransition();
 
   const handleUseBrowserTimezone = () => {
     const detected = Intl.DateTimeFormat().resolvedOptions().timeZone;
@@ -74,6 +92,37 @@ export function SettingsPanel({
       }
 
       toast.success("Preferences saved.");
+    });
+  };
+
+  const handleDeleteDialogChange = (open: boolean) => {
+    setDeleteDialogOpen(open);
+    if (!open) {
+      setConfirmEmail("");
+      setDeleteError(null);
+    }
+  };
+
+  const handleDeleteAccount = (event: FormEvent<HTMLFormElement>) => {
+    event.preventDefault();
+    setDeleteError(null);
+
+    startDeleteTransition(async () => {
+      const result = await deleteAccountAction({ confirmEmail });
+      if (!result.ok) {
+        setDeleteError(result.error.message);
+        return;
+      }
+
+      try {
+        await performSecureSignOut({ revokePushOnServer: false });
+      } catch {
+        // Account & sessions are already cascaded server-side
+      }
+
+      toast.success("Your account has been permanently deleted.");
+      router.push("/login");
+      router.refresh();
     });
   };
 
@@ -269,6 +318,110 @@ export function SettingsPanel({
               </Badge>
             ))
           )}
+        </CardContent>
+      </Card>
+
+      <Card className="border-overdue/30 bg-card shadow-none">
+        <CardHeader className="pb-3">
+          <CardTitle className="flex items-center gap-1.5 text-sm font-semibold text-overdue">
+            <AlertTriangle className="size-3.5" />
+            Danger zone
+          </CardTitle>
+          <CardDescription className="text-xs text-muted-foreground">
+            Permanently delete your account, personal tasks, notes, reminders,
+            and push subscriptions. Shared projects where you are the sole owner
+            with other members must be transferred or deleted first.
+          </CardDescription>
+        </CardHeader>
+        <CardContent>
+          <Dialog
+            open={deleteDialogOpen}
+            onOpenChange={handleDeleteDialogChange}
+          >
+            <DialogTrigger asChild>
+              <Button
+                type="button"
+                variant="destructive"
+                size="sm"
+                className="mira-row gap-1.5 px-3 text-xs"
+              >
+                <Trash2 className="size-3.5" />
+                Delete account
+              </Button>
+            </DialogTrigger>
+            <DialogContent className="sm:max-w-[400px]">
+              <DialogHeader>
+                <DialogTitle className="text-sm font-semibold text-foreground">
+                  Delete account permanently
+                </DialogTitle>
+                <DialogDescription className="text-xs text-muted-foreground">
+                  This action cannot be undone. Type{" "}
+                  <span className="mono-tabular font-medium text-foreground">
+                    {profile.email}
+                  </span>{" "}
+                  below to confirm permanent deletion.
+                </DialogDescription>
+              </DialogHeader>
+
+              <form onSubmit={handleDeleteAccount} className="space-y-3">
+                <div className="space-y-1.5">
+                  <Label htmlFor="delete-confirm-email" className="text-xs">
+                    Confirm email address
+                  </Label>
+                  <Input
+                    id="delete-confirm-email"
+                    name="confirmEmail"
+                    type="email"
+                    autoComplete="off"
+                    placeholder={profile.email}
+                    value={confirmEmail}
+                    onChange={(event) => setConfirmEmail(event.target.value)}
+                    required
+                    className="mira-row bg-background text-xs"
+                  />
+                </div>
+
+                {deleteError ? (
+                  <p className="rounded-md border border-overdue/30 bg-overdue/10 px-2.5 py-2 text-xs text-overdue">
+                    {deleteError}
+                  </p>
+                ) : null}
+
+                <DialogFooter className="gap-2">
+                  <Button
+                    type="button"
+                    variant="outline"
+                    size="sm"
+                    onClick={() => handleDeleteDialogChange(false)}
+                    disabled={isDeleting}
+                    className="mira-row text-xs"
+                  >
+                    Cancel
+                  </Button>
+                  <Button
+                    type="submit"
+                    variant="destructive"
+                    size="sm"
+                    disabled={
+                      isDeleting ||
+                      confirmEmail.trim().toLowerCase() !==
+                        profile.email.trim().toLowerCase()
+                    }
+                    className="mira-row text-xs"
+                  >
+                    {isDeleting ? (
+                      <>
+                        <Loader2 className="mr-1.5 size-3.5 animate-spin" />
+                        Deleting…
+                      </>
+                    ) : (
+                      "Delete permanently"
+                    )}
+                  </Button>
+                </DialogFooter>
+              </form>
+            </DialogContent>
+          </Dialog>
         </CardContent>
       </Card>
     </div>
