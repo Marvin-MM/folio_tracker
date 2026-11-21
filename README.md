@@ -1,134 +1,200 @@
-# Folio — Personal-First Productivity & Shared Projects
+# Folio
 
-**Folio** is a full-stack productivity workspace combining **Tasks**, **Markdown Notes with optional timed Reminders**, **Natural-Language Quick Capture (`⌘K`)**, **Durable Hybrid Reminders (Inngest + PWA Web Push + Resend)**, and **Shared Projects with Cryptographic Email Invitations & RBAC**.
+**Folio** is a calm, high-density productivity workspace combining **Tasks**, **Markdown Notes with optional timed Reminders**, **Natural-Language Quick Capture (`⌘K`)**, **Durable Multi-Channel Notifications (In-App, PWA Web Push, Email)**, and **Shared Projects with RBAC & Cryptographic Invitations**.
 
-Built with Next.js 16 (App Router, TypeScript `strict`), Tailwind CSS v4, `shadcn/ui` **Mira** (`Warm Paper` / `Carbon Ink`), Drizzle ORM + Turso (`libSQL`), Better Auth, Inngest v4, and Upstash / local Redis.
+Designed around a tactile **Warm Paper (Light)** and **Carbon Ink (Dark)** aesthetic (`shadcn/ui` Mira), Folio keeps personal Inbox tasks and unlinked notes strictly private while letting projects transition seamlessly into shared workspaces.
 
----
-
-## Architecture Overview
-
-Strict SOLID layering enforced across `src/`:
-
-- `src/server/db/` — Drizzle ORM schemas (`auth`, `workspace`, `reminders`, `notifications`), relations, and Turso/libSQL client.
-- `src/server/dal/` — Defense-in-Depth Data Access Layer (`requireSession()`, `assertProjectRole()` with `PermissionCache`, explicit ACID transactions).
-- `src/server/services/` — Pure domain orchestration (`TaskService`, `NoteService`, `ReminderService`, `ProjectService`, `ProjectInviteService`, `NotificationService`, `UserPreferencesService`).
-- `src/server/providers/` — Decoupled interfaces (`EventBus`, `NotificationChannel` × 3, `AuthEmailDispatcher`, `RateLimiter`, `PermissionCache`, `UnreadCounterCache`).
-- `src/server/inngest/` — Durable workflows (`scheduleReminderFn`, `farFutureReminderSweeperFn`, `sendAuthEmailFn`, `sendTestReminderFn`, `sendProjectInviteFn`).
-- `src/actions/` — Next.js Server Actions (`Zod` → `requireSession()` → Service → typed `ActionResult<T>` → `revalidatePath()`).
+> Looking for the full visual systems blueprint (ER diagrams, request/auth isolation, outbox reconciliation, reminder state machine, RBAC, and Vercel scale controls)? Read **[docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)**.
 
 ---
 
-## Local Development Setup
+## Key Capabilities
 
-### 1. Install Dependencies & Environment Variables
+- **Personal Productivity:** Inbox, Today, Upcoming, and Reminders smart views with optimistic mutations, fractional-index reordering (with automatic keyspace rebalancing), and a non-blocking `440px` desktop inspector.
+- **Quiet & Timed Markdown Notes:** Lightweight markdown notes with tags, pinning, and instant search—quiet by default, with optional timed reminders attached atomically.
+- **Natural-Language Quick Capture (`⌘K`):** Live inline date/time parsing anchored to your IANA timezone (`"Pay invoice tomorrow 9am"`, `"n: Renewal code next Friday 10am"`).
+- **Durable Hybrid Reminders & PWA Push:** 14-day scheduling horizon, 5-minute Outbox Reconciliation, optimistic version locking, Service Worker push quick actions (`Snooze 15m`, `Mark Done`), automatic `404`/`410` endpoint pruning, and Resend email fallback.
+- **Shared Projects & RBAC:** Direct-Turso `owner` / `editor` / `viewer` authorization (viewers stay read-only on shared items while still attaching private personal reminders), chronological activity feed, and SHA-256 single-use 7-day email invitations (`/invite/[token]`).
+- **Production Hardening:** Sliding-window rate limiting (`429` + `Retry-After`), delivery-time zero-leak authorization re-checks, shared-device push cleanup on sign-out, safe account offboarding, strict CSP/security headers, and `/api/health`.
+
+---
+
+## Core Stack
+
+| Layer | Technology |
+| :--- | :--- |
+| **Framework & Language** | Next.js 16 (App Router, Turbopack), React 19, TypeScript (`strict`) |
+| **UI & Styling** | Tailwind CSS v4, `shadcn/ui` (Mira preset), Geist + Geist Mono |
+| **Database & ORM** | Turso / libSQL (SQLite locally), Drizzle ORM |
+| **Authentication** | Better Auth (Email/Password + Google OAuth) |
+| **Durable Workflows** | Inngest v4 (sleeping reminders, outbox & far-future crons, async emails) |
+| **Rate Limiting & Counter Cache** | Upstash Redis (production), Local Redis (`ioredis`) or In-Memory (dev/test) |
+| **Notification Delivery** | Web Push (VAPID) + PWA Service Worker, Resend |
+
+---
+
+## Architecture at a Glance
+
+```mermaid
+flowchart LR
+  Browser["Browser / PWA\n(Warm Paper · Carbon Ink)"] --> Edge["Next.js 16 Edge & Proxy\nCSP · private, no-store · force-dynamic"]
+  Edge --> Core["Server Actions · RSC · API\nZod -> requireSession -> SOLID Services"]
+  Core --> Turso[("Turso / libSQL\nACID · Direct-Turso RBAC\nCascading FKs · Outbox")]
+  Core --> Redis[("Upstash / Local Redis\nRateLimiter & UnreadCounter ONLY")]
+  Core -->|"Post-commit deterministic events"| Inngest["Inngest v4\n14d Horizon · Outbox Reconciler\nconcurrency: 25 · LIMIT 200"]
+  Inngest --> Channels["In-App · Web Push · Resend"]
+```
+
+For full visual flowcharts, the 13-table ER schema, reminder state machine, invite sequence, and concurrency/isolation invariants, see **[docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)**.
+
+---
+
+## Getting Started (Local Development)
+
+Folio runs locally with **zero external cloud accounts required**—SQLite (`file:local.db`), in-memory rate-limiting/cache fallback, and non-sensitive console email dispatch work out of the box.
+
+### Prerequisites
+
+- **Node.js 20+**
+- **pnpm 10+** (`corepack enable`)
+
+### 1. Clone & Install
 
 ```bash
+git clone <your-repo-url> folio
+cd folio
 pnpm install
+```
+
+### 2. Configure Environment
+
+```bash
 cp .env.example .env.local
 ```
 
-Generate local cryptographic secrets:
+Generate a local `BETTER_AUTH_SECRET` (at least 32 random bytes) and paste it into `.env.local`:
 
 ```bash
-# Better Auth session secret (min 32 bytes)
 openssl rand -base64 32
-
-# Local Web Push VAPID keys (zero cloud provider required)
-npx web-push generate-vapid-keys
 ```
 
-Set `TURSO_DATABASE_URL="file:local.db"`, `INNGEST_DEV="1"`, and (if running local passwordless Redis) `REDIS_URL="redis://127.0.0.1:6379"` in `.env.local`.
+Minimal `.env.local` to boot immediately:
 
-### 2. Apply Drizzle Migrations
+```env
+TURSO_DATABASE_URL="file:local.db"
+BETTER_AUTH_SECRET="<paste-generated-secret>"
+BETTER_AUTH_URL="http://localhost:3000"
+INNGEST_DEV="1"
+```
+
+*(Optional)* To test Web Push notifications locally with no cloud provider, generate a local VAPID keypair and add it to `.env.local`:
+
+```bash
+pnpm dlx web-push generate-vapid-keys
+```
+
+### 3. Run Database Migrations
 
 ```bash
 pnpm db:migrate
 ```
 
-### 3. Run Dev Servers
+### 4. Start the App
 
 ```bash
-# Terminal 1: Next.js App Router
+# Terminal 1 — Next.js development server
 pnpm dev
 
-# Terminal 2 (optional): Local Inngest Dev Server for durable sleeping reminders
+# Terminal 2 (optional) — Local Inngest Dev Server for executing sleeping reminders
 pnpm dlx inngest-cli@latest dev
 ```
 
-Visit `http://localhost:3000` (Inngest dashboard: `http://localhost:8288`, readiness probe: `http://localhost:3000/api/health`).
+Open `http://localhost:3000` (health check: `http://localhost:3000/api/health`, local Inngest dashboard: `http://localhost:8288`).
 
-### 4. Quality & Verification Commands
+---
+
+## Environment Variables
+
+All variables are documented in [`.env.example`](.env.example).
+
+| Variable | Scope | Purpose |
+| :--- | :--- | :--- |
+| `TURSO_DATABASE_URL` | Required | `file:local.db` locally, or `libsql://<db>-<org>.turso.io` in production |
+| `TURSO_AUTH_TOKEN` | Production | Turso database auth token |
+| `BETTER_AUTH_SECRET` | Required | Session signing secret (`openssl rand -base64 32`) |
+| `BETTER_AUTH_URL` | Required | Canonical app URL (`http://localhost:3000` or `https://<domain>`) |
+| `GOOGLE_CLIENT_ID` / `GOOGLE_CLIENT_SECRET` | Optional | Enables Google OAuth sign-in |
+| `RESEND_API_KEY` / `EMAIL_FROM` | Optional | Transactional emails (falls back to redacted console logs when unset) |
+| `INNGEST_DEV` | Local Dev | Set `"1"` locally; omit in production |
+| `INNGEST_EVENT_KEY` / `INNGEST_SIGNING_KEY` | Production | Inngest Cloud authentication |
+| `REDIS_URL` | Local Dev | Optional local Redis (e.g. `redis://127.0.0.1:6379`); falls back to memory |
+| `UPSTASH_REDIS_REST_URL` / `UPSTASH_REDIS_REST_TOKEN` | Production | Serverless Upstash Redis for `RateLimiter` and `UnreadCounterCache` |
+| `NEXT_PUBLIC_VAPID_PUBLIC_KEY` / `VAPID_PRIVATE_KEY` / `VAPID_SUBJECT` | Optional | Web Push VAPID keys (`VAPID_PRIVATE_KEY` is server-only) |
+
+---
+
+## Scripts & Testing
 
 ```bash
-pnpm tsc --noEmit
-pnpm lint
-pnpm test
-pnpm build
+pnpm dev          # Start Next.js dev server (Turbopack)
+pnpm build        # Create optimized production build
+pnpm start        # Serve production build
+pnpm typecheck    # Run TypeScript strict typecheck (tsc --noEmit)
+pnpm lint         # Run ESLint
+pnpm test         # Run all 12 Vitest suites (ephemeral SQLite DBs, zero external deps)
+pnpm db:generate  # Generate Drizzle SQL migrations after schema changes
+pnpm db:migrate   # Apply Drizzle migrations to TURSO_DATABASE_URL
+pnpm db:studio    # Launch Drizzle Studio
+```
+
+The test suite (`pnpm test`) runs completely offline against isolated temporary SQLite databases and verifies schema FK/XOR constraints, ACID rollbacks, cross-tenant IDOR protection, revoked-access delivery blocking, concurrent double-accept/double-delivery races, outbox recovery, `404`/`410` push pruning, sliding-window HTTP `429` rate limiting, push endpoint reassignment, fractional rebalancing, and safe account offboarding.
+
+---
+
+## Project Layout
+
+```text
+├── docs/ARCHITECTURE.md      # Unified visual system architecture & invariants
+├── drizzle/                  # Versioned Drizzle SQL migrations & snapshots
+├── public/                   # PWA icons and Service Worker (sw.js)
+└── src/
+    ├── proxy.ts              # Next.js 16 edge boundary & cache isolation
+    ├── actions/              # Validated Server Actions (Zod -> Auth -> Service)
+    ├── app/                  # App Router pages, layouts, /invite/[token], /api/*
+    ├── components/           # Warm Paper / Carbon Ink Mira UI primitives & views
+    ├── lib/                  # Pure helpers (chrono NLP, fractional index, sign-out)
+    └── server/
+        ├── auth.ts           # Better Auth config & unverified-link policy
+        ├── db/               # Drizzle schema, relations, WAL client, withDbRetry
+        ├── dal/              # Tenant-scoped repositories & direct-Turso auth guards
+        ├── services/         # Pure ACID domain services + Vitest integration suites
+        ├── providers/        # EventBus, NotificationChannels, Redis, Auth Email
+        ├── inngest/          # Durable functions & bounded chunked crons
+        └── http/             # Rate-limited HTTP route handlers
 ```
 
 ---
 
-## Production Deployment Runbook (Vercel + Turso + Inngest + Upstash + Resend)
+## Production Deployment (Vercel + Turso + Inngest + Upstash + Resend)
 
-### Step 1: Provision Turso Database & Run Production Migrations
+1. **Provision Turso & Migrate:**
+   ```bash
+   turso db create folio-prod
+   turso db show folio-prod --url
+   turso db tokens create folio-prod
 
-```bash
-# Install Turso CLI and sign in
-curl -sSfL https://get.tur.so/install.sh | bash
-turso auth login
-
-# Create production database
-turso db create folio-prod
-
-# Retrieve connection URL & auth token
-turso db show folio-prod --url
-turso db tokens create folio-prod
-```
-
-Apply Drizzle migrations against Turso production:
-
-```bash
-TURSO_DATABASE_URL="libsql://folio-prod-<org>.turso.io" \
-TURSO_AUTH_TOKEN="<your-turso-token>" \
-pnpm db:migrate
-```
-
-### Step 2: Configure Google OAuth
-
-1. In [Google Cloud Console](https://console.cloud.google.com/apis/credentials), create an **OAuth 2.0 Client ID** (Web application).
-2. Add **Authorized redirect URIs**:
-   - Local dev: `http://localhost:3000/api/auth/callback/google`
-   - Production: `https://<your-domain>/api/auth/callback/google`
-3. Copy `GOOGLE_CLIENT_ID` and `GOOGLE_CLIENT_SECRET`.
-
-### Step 3: Generate Production VAPID Keys (Web Push)
-
-```bash
-npx web-push generate-vapid-keys
-```
-
-Set:
-- `NEXT_PUBLIC_VAPID_PUBLIC_KEY` (public key exposed to client `PushManager.subscribe`)
-- `VAPID_PRIVATE_KEY` (server secret only — never prefix with `NEXT_PUBLIC_`)
-- `VAPID_SUBJECT` (`mailto:notifications@yourdomain.com`)
-
-### Step 4: Configure Resend Transactional Email
-
-1. Verify your sending domain in [Resend](https://resend.com).
-2. Create an API key (`RESEND_API_KEY`) and set `EMAIL_FROM="Folio <notifications@yourdomain.com>"`.
-
-### Step 5: Provision Upstash Redis
-
-1. Create a serverless Redis database in [Upstash Console](https://console.upstash.com).
-2. Copy `UPSTASH_REDIS_REST_URL` and `UPSTASH_REDIS_REST_TOKEN`.
-3. When both are set in production, `RateLimiter`, `PermissionCache` (`300s` TTL), and `UnreadCounterCache` (`300s` TTL) automatically switch from local Redis / in-memory to Upstash REST.
-
-### Step 6: Deploy to Vercel & Sync Inngest Cloud
-
-1. Import the repository into [Vercel](https://vercel.com) and add all environment variables from `.env.example` (set `BETTER_AUTH_URL="https://<your-domain>"` and omit `INNGEST_DEV` in production).
-2. In [Inngest Cloud](https://app.inngest.com), connect the official Vercel integration or manually sync your deployed endpoint `https://<your-domain>/api/inngest` using `INNGEST_EVENT_KEY` and `INNGEST_SIGNING_KEY`.
-3. Verify production readiness:
-   - `GET https://<your-domain>/api/health` returns `200 { "status": "ok", "database": "connected" }`.
-   - `GET https://<your-domain>/sw.js` returns `Cache-Control: no-cache, no-store, must-revalidate`.
-   - Confirm security headers (`Content-Security-Policy`, `X-Frame-Options: DENY`, `X-Content-Type-Options: nosniff`, `Referrer-Policy`) are present on responses.
+   TURSO_DATABASE_URL="libsql://folio-prod-<org>.turso.io" \
+   TURSO_AUTH_TOKEN="<token>" \
+   pnpm db:migrate
+   ```
+2. **Google OAuth (optional):** Create a Web OAuth 2.0 Client in Google Cloud Console with callback `https://<your-domain>/api/auth/callback/google`.
+3. **Web Push VAPID Keys:** Run `pnpm dlx web-push generate-vapid-keys` and configure `NEXT_PUBLIC_VAPID_PUBLIC_KEY`, `VAPID_PRIVATE_KEY`, and `VAPID_SUBJECT="mailto:notifications@<your-domain>"`.
+4. **Resend Email:** Verify your sending domain in Resend and set `RESEND_API_KEY` + `EMAIL_FROM="Folio <notifications@your-domain>"`.
+5. **Upstash Redis:** Provision an Upstash Redis database and set `UPSTASH_REDIS_REST_URL` + `UPSTASH_REDIS_REST_TOKEN` (`RateLimiter` and `UnreadCounterCache` auto-select Upstash REST).
+6. **Deploy on Vercel & Sync Inngest Cloud:**
+   - Import the repo into Vercel, add all production environment variables (omit `INNGEST_DEV`, set `BETTER_AUTH_URL="https://<your-domain>"`), and deploy.
+   - Connect the Inngest Vercel integration (or sync `https://<your-domain>/api/inngest` with `INNGEST_EVENT_KEY` and `INNGEST_SIGNING_KEY`).
+7. **Post-Deploy Verification:**
+   - `GET https://<your-domain>/api/health` → `200 { "status": "ok", "database": "connected" }` with `Cache-Control: private, no-store`.
+   - `GET https://<your-domain>/sw.js` → `Cache-Control: no-cache, no-store, must-revalidate`.
+   - Verify `Content-Security-Policy`, `X-Frame-Options: DENY`, `X-Content-Type-Options: nosniff`, and `Referrer-Policy` headers on responses.
