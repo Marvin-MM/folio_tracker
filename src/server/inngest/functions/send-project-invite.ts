@@ -1,6 +1,9 @@
 import { Resend } from "resend";
 import { APP_NAME } from "@/lib/constants";
-import { inngest } from "@/server/inngest/client";
+import {
+  INNGEST_CONCURRENCY_LIMIT,
+  inngest,
+} from "@/server/inngest/client";
 import { projectInvitedEvent } from "@/server/inngest/events";
 
 function escapeHtml(value: string): string {
@@ -63,7 +66,7 @@ function renderInviteHtml(params: {
 export const sendProjectInviteFn = inngest.createFunction(
   {
     id: "send-project-invite",
-    concurrency: { limit: 25 },
+    concurrency: { limit: INNGEST_CONCURRENCY_LIMIT },
     retries: 4,
     triggers: [projectInvitedEvent],
   },

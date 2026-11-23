@@ -5,7 +5,10 @@ import {
 } from "@/server/dal/reminder-repository";
 import { db, type AppDatabase } from "@/server/db";
 import { getReminderTarget } from "@/server/db/schema";
-import { inngest } from "@/server/inngest/client";
+import {
+  INNGEST_CONCURRENCY_LIMIT,
+  inngest,
+} from "@/server/inngest/client";
 import { reminderScheduledEvent } from "@/server/inngest/events";
 import { EmailNotificationChannel } from "@/server/providers/channels/email-notification-channel";
 import { InAppNotificationChannel } from "@/server/providers/channels/in-app-notification-channel";
@@ -175,7 +178,7 @@ export async function executeScheduledReminderDelivery(
 export const scheduleReminderFn = inngest.createFunction(
   {
     id: "schedule-reminder",
-    concurrency: { limit: 25 },
+    concurrency: { limit: INNGEST_CONCURRENCY_LIMIT },
     retries: 4,
     triggers: [reminderScheduledEvent],
     cancelOn: [

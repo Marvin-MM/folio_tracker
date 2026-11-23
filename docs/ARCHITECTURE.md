@@ -36,7 +36,7 @@ flowchart TB
   subgraph Infra["Persistence & External Services"]
     DB[("Turso / libSQL (SQLite WAL) — 22 Tables, ULID PKs, Cascading FKs, CHECK & Partial Unique Indexes")]
     RDS[("Redis 3-Tier (Upstash -> ioredis -> Memory) — RateLimiter & UnreadCounter ONLY")]
-    ING["Inngest v4 Durable Engine — 13 Functions, Concurrency 25 & LIMIT 200 Crons"]
+    ING["Inngest v4 Durable Engine — 13 Functions, Plan-Safe Concurrency (default 5, crons 1) & LIMIT 200 Crons"]
     EXT["External Delivery & Identity (Resend, VAPID Web Push, Google OAuth)"]
   end
 
@@ -69,7 +69,7 @@ flowchart TB
 
 ## 2. SOLID Clean Layering & Dependency Direction
 
-Dependencies point strictly inward toward `src/server/db/` and `src/server/domain/`. Pure domain calculations (`habit-analytics.ts`, `comment-window-policy.ts`) have zero DB or network imports, while every service accepts repositories and providers via constructor injection (DIP) so all 16 Vitest suites execute offline against ephemeral SQLite databases.
+Dependencies point strictly inward toward `src/server/db/` and `src/server/domain/`. Pure domain calculations (`habit-analytics.ts`, `comment-window-policy.ts`) have zero DB or network imports, while every service accepts repositories and providers via constructor injection (DIP) so all 17 Vitest suites execute offline against ephemeral SQLite databases.
 
 ```mermaid
 flowchart LR
@@ -443,7 +443,7 @@ sequenceDiagram
 
 ## 5. Durable Automation Engine: Reminders, Habit Nudges & Review Digests
 
-All asynchronous scheduling and background sweeps run on **Inngest v4** (`13` registered functions in [route.ts](../src/app/api/inngest/route.ts)) with deterministic deduplication IDs, bounded `LIMIT 200` pagination inside `step.run()`, `concurrency: { limit: 25 }`, and `retries: 4`.
+All asynchronous scheduling and background sweeps run on **Inngest v4** (`13` registered functions in [route.ts](../src/app/api/inngest/route.ts)) with deterministic deduplication IDs, bounded `LIMIT 200` pagination inside `step.run()`, singleton cron concurrency (`1`), configurable worker concurrency (`INNGEST_CONCURRENCY_LIMIT`, default `5` for Inngest Free Plan), and `retries: 4`.
 
 ### 5A. Hybrid Reminder State Machine & Outbox Reconciliation
 
@@ -470,7 +470,7 @@ sequenceDiagram
   participant Svc as ReminderService
   participant Turso as Turso / libSQL
   participant Cron as Reconciler (*/5m) & Sweeper (0 0 * * *)
-  participant Sched as scheduleReminderFn (concurrency 25, retries 4)
+  participant Sched as scheduleReminderFn (concurrency 5, retries 4)
   participant Ch as In-App / Web Push / Email
 
   User->>Svc: Create or Snooze reminder (<= 14d)
@@ -507,7 +507,7 @@ flowchart TB
   subgraph Nudges["Habit Nudges (Every 15 Minutes — */15 * * * *)"]
     NCron["habitNudgeDispatcherFn — LIMIT 200 paginated step.run()"] --> NWin["Match user IANA TZ 15m bucket (habit.preferredTime or eveningCheckinTime)"]
     NWin --> NEmit["Emit app/habit.nudge (id = habit-nudge-{userId}-{dateKey}-{slot})"]
-    NEmit --> NDel["deliverHabitNudgeFn (concurrency 25, retries 4)"]
+    NEmit --> NDel["deliverHabitNudgeFn (concurrency 5, retries 4)"]
     NDel --> NDedup["DB dedup check + live re-verify still active & unlogged today"]
     NDedup --> NCh["InApp + WebPush + Email -> /app/habits"]
   end
@@ -516,13 +516,13 @@ flowchart TB
     DCron["habitReviewDigestCronFn — LIMIT 200 active monitor pairs"] --> DEval["resolveEffectivePolicy() + evaluateCommentWindow(ownerTZ)"]
     DEval --> DLook{"Opened within 65m lookback?"}
     DLook -->|Yes| DEmit["Emit app/habit.review_digest (id = habit-review-open-{monitorId}-{cycleKey})"]
-    DEmit --> DDel["deliverHabitReviewDigestFn (concurrency 25, retries 4)"]
+    DEmit --> DDel["deliverHabitReviewDigestFn (concurrency 5, retries 4)"]
     DDel --> DVerify["DB dedup + live Turso check status='active'"]
     DVerify --> DSnap["Upsert habit_weekly_snapshots -> compute % strictly over allowedHabitIds"]
     DSnap --> DCh["InApp + WebPush + Email -> /app/habits/circle/{ownerId}"]
   end
 
-  subgraph AsyncMail["Event-Driven Circle & Auth Delivery (concurrency 25, retries 4)"]
+  subgraph AsyncMail["Event-Driven Circle & Auth Delivery (concurrency 5, retries 4)"]
     EV["sendAuthEmailFn · sendTestReminderFn · sendProjectInviteFn · sendHabitMonitorRequestFn · sendHabitMonitorInviteFn · sendHabitCommentNotificationFn"]
   end
 ```
@@ -649,6 +649,6 @@ flowchart TB
 | **Outbox & Deduplication** | Scheduled reminders persist `dispatched_at = NULL` and reconcile every 5m; reminders (`reminder-sched-{id}-v{v}`), habit nudges (`habit-nudge-{userId}-{dateKey}-{slot}`), and review digests (`habit-review-open-{monitorId}-{cycleKey}`) enforce deterministic event IDs + DB dedup checks. |
 | **Zero-Leak Isolation** | `assertProjectRole()`, `canUserReadEntity()`, and `habit_monitors` checks always hit Turso directly (zero Redis security cache); `DrizzleHabitMonitorReadDal` and `deliverHabitReviewDigestFn` strictly project only `allowedHabitIds` when `scope = 'selected'`. |
 | **Anti-Enumeration** | Email monitor invites return a uniform non-enumerating status regardless of whether the target email belongs to an existing account; token URLs use 32-byte CSPRNG values hashed with SHA-256 before persistence. |
-| **Vercel Scale** | All periodic crons (`far-future`, `outbox`, `habit-nudge`, `habit-review-digest`) loop `LIMIT 200` pages inside isolated `step.run()` steps; bursty Inngest functions enforce `concurrency: { limit: 25 }` and `retries: 4`. |
+| **Vercel Scale** | All periodic crons (`far-future`, `outbox`, `habit-nudge`, `habit-review-digest`) enforce singleton `concurrency: { limit: 1 }` and loop `LIMIT 200` pages inside isolated `step.run()` steps; event-driven Inngest workers enforce `concurrency: { limit: INNGEST_CONCURRENCY_LIMIT }` (default `5`, Free-Plan safe) and `retries: 4`. |
 | **Edge Cache Isolation** | Every `/app/*`, `/invite/*`, and `/api/*` endpoint uses `force-dynamic`, zero unscoped `unstable_cache`, and `Cache-Control: private, no-store` alongside strict CSP & `X-Frame-Options: DENY`. |
 | **Design System & Scope** | `shadcn/ui` **Mira** in Warm Paper (Light) and Carbon Ink (Dark), WCAG AA contrast, `Geist` + `Geist Mono tabular-nums`, zero glassmorphism, `>= 36px` mobile / `28px` desktop targets, and strictly in-app sharing (zero PNG/canvas/image-card exports). |

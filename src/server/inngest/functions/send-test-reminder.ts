@@ -1,4 +1,7 @@
-import { inngest } from "@/server/inngest/client";
+import {
+  INNGEST_CONCURRENCY_LIMIT,
+  inngest,
+} from "@/server/inngest/client";
 import { testReminderEvent } from "@/server/inngest/events";
 import { EmailNotificationChannel } from "@/server/providers/channels/email-notification-channel";
 import { InAppNotificationChannel } from "@/server/providers/channels/in-app-notification-channel";
@@ -12,6 +15,7 @@ const emailChannel = new EmailNotificationChannel();
 export const sendTestReminderFn = inngest.createFunction(
   {
     id: "send-test-reminder",
+    concurrency: { limit: INNGEST_CONCURRENCY_LIMIT },
     triggers: [testReminderEvent],
   },
   async ({ event, step }) => {

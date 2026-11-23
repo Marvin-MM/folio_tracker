@@ -1,4 +1,7 @@
-import { inngest } from "@/server/inngest/client";
+import {
+  INNGEST_CRON_CONCURRENCY,
+  inngest,
+} from "@/server/inngest/client";
 import {
   DEFAULT_OUTBOX_MIN_AGE_MS,
   DEFAULT_SWEEPER_BATCH_SIZE,
@@ -16,6 +19,7 @@ const MAX_BATCHES_PER_INVOCATION = 50;
 export const reconcileUndispatchedRemindersFn = inngest.createFunction(
   {
     id: "reconcile-undispatched-reminders",
+    concurrency: { limit: INNGEST_CRON_CONCURRENCY },
     retries: 4,
     triggers: [{ cron: "*/5 * * * *" }],
   },

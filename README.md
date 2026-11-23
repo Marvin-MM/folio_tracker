@@ -43,7 +43,7 @@ flowchart LR
   Edge --> Core["Server Actions · RSC · API\nZod -> requireSession -> Pure Domain & Services"]
   Core --> Turso[("Turso / libSQL (22 Tables)\nACID · Direct-Turso RBAC & Circle Scope\nCascading FKs · Outbox")]
   Core --> Redis[("Upstash / Local Redis\nRateLimiter & UnreadCounter ONLY")]
-  Core -->|"Post-commit deterministic events"| Inngest["Inngest v4 (13 Functions)\nReminders · Nudges · Review Digests\nconcurrency: 25 · LIMIT 200"]
+  Core -->|"Post-commit deterministic events"| Inngest["Inngest v4 (13 Functions)\nReminders · Nudges · Review Digests\nconcurrency: 5 (env-configurable) · LIMIT 200"]
   Inngest --> Channels["In-App · Web Push · Resend"]
 ```
 
@@ -129,6 +129,7 @@ All variables are documented in [`.env.example`](.env.example).
 | `RESEND_API_KEY` / `EMAIL_FROM` | Optional | Transactional emails (falls back to redacted console logs when unset) |
 | `INNGEST_DEV` | Local Dev | Set `"1"` locally; omit in production |
 | `INNGEST_EVENT_KEY` / `INNGEST_SIGNING_KEY` | Production | Inngest Cloud authentication |
+| `INNGEST_CONCURRENCY_LIMIT` | Optional | Per-function worker concurrency cap (defaults to `5` for Inngest Free Plan) |
 | `REDIS_URL` | Local Dev | Optional local Redis (e.g. `redis://127.0.0.1:6379`); falls back to memory |
 | `UPSTASH_REDIS_REST_URL` / `UPSTASH_REDIS_REST_TOKEN` | Production | Serverless Upstash Redis for `RateLimiter` and `UnreadCounterCache` |
 | `NEXT_PUBLIC_VAPID_PUBLIC_KEY` / `VAPID_PRIVATE_KEY` / `VAPID_SUBJECT` | Optional | Web Push VAPID keys (`VAPID_PRIVATE_KEY` is server-only) |
@@ -143,7 +144,7 @@ pnpm build        # Create optimized production build
 pnpm start        # Serve production build
 pnpm typecheck    # Run TypeScript strict typecheck (tsc --noEmit)
 pnpm lint         # Run ESLint
-pnpm test         # Run all 16 Vitest suites (66 tests, ephemeral SQLite DBs)
+pnpm test         # Run all 17 Vitest suites (68 tests, ephemeral SQLite DBs)
 pnpm db:generate  # Generate Drizzle SQL migrations after schema changes
 pnpm db:migrate   # Apply Drizzle migrations to TURSO_DATABASE_URL
 pnpm db:studio    # Launch Drizzle Studio

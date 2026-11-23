@@ -23,7 +23,11 @@ import {
   isHabitScheduledOnDate,
   parseScheduledDaysJson,
 } from "@/server/domain/habit-analytics";
-import { inngest } from "@/server/inngest/client";
+import {
+  INNGEST_CONCURRENCY_LIMIT,
+  INNGEST_CRON_CONCURRENCY,
+  inngest,
+} from "@/server/inngest/client";
 import {
   habitCommentPostedEvent,
   habitMonitorInvitedEvent,
@@ -463,6 +467,7 @@ export async function executeHabitReviewDigestDelivery(
 export const habitReviewDigestCronFn = inngest.createFunction(
   {
     id: "habit-review-digest-cron",
+    concurrency: { limit: INNGEST_CRON_CONCURRENCY },
     retries: 4,
     triggers: [{ cron: "0 * * * *" }],
   },
@@ -503,7 +508,7 @@ export const habitReviewDigestCronFn = inngest.createFunction(
 export const deliverHabitReviewDigestFn = inngest.createFunction(
   {
     id: "deliver-habit-review-digest",
-    concurrency: { limit: 25 },
+    concurrency: { limit: INNGEST_CONCURRENCY_LIMIT },
     retries: 4,
     triggers: [habitReviewDigestEvent],
   },
@@ -518,7 +523,7 @@ export const deliverHabitReviewDigestFn = inngest.createFunction(
 export const sendHabitMonitorRequestFn = inngest.createFunction(
   {
     id: "send-habit-monitor-request",
-    concurrency: { limit: 25 },
+    concurrency: { limit: INNGEST_CONCURRENCY_LIMIT },
     retries: 4,
     triggers: [habitMonitorRequestedEvent],
   },
@@ -547,7 +552,7 @@ export const sendHabitMonitorRequestFn = inngest.createFunction(
 export const sendHabitMonitorInviteFn = inngest.createFunction(
   {
     id: "send-habit-monitor-invite",
-    concurrency: { limit: 25 },
+    concurrency: { limit: INNGEST_CONCURRENCY_LIMIT },
     retries: 4,
     triggers: [habitMonitorInvitedEvent],
   },
@@ -592,7 +597,7 @@ export const sendHabitMonitorInviteFn = inngest.createFunction(
 export const sendHabitCommentNotificationFn = inngest.createFunction(
   {
     id: "send-habit-comment-notification",
-    concurrency: { limit: 25 },
+    concurrency: { limit: INNGEST_CONCURRENCY_LIMIT },
     retries: 4,
     triggers: [habitCommentPostedEvent],
   },

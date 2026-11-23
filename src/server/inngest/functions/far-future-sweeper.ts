@@ -1,4 +1,7 @@
-import { inngest } from "@/server/inngest/client";
+import {
+  INNGEST_CRON_CONCURRENCY,
+  inngest,
+} from "@/server/inngest/client";
 import {
   DEFAULT_SWEEPER_BATCH_SIZE,
   reminderService,
@@ -14,6 +17,7 @@ const MAX_BATCHES_PER_INVOCATION = 50;
 export const farFutureReminderSweeperFn = inngest.createFunction(
   {
     id: "far-future-reminder-sweeper",
+    concurrency: { limit: INNGEST_CRON_CONCURRENCY },
     retries: 4,
     triggers: [{ cron: "0 0 * * *" }],
   },

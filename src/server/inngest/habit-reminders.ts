@@ -13,7 +13,11 @@ import {
   isValidTimeHHmm,
   parseScheduledDaysJson,
 } from "@/server/domain/habit-analytics";
-import { inngest } from "@/server/inngest/client";
+import {
+  INNGEST_CONCURRENCY_LIMIT,
+  INNGEST_CRON_CONCURRENCY,
+  inngest,
+} from "@/server/inngest/client";
 import { habitNudgeEvent } from "@/server/inngest/events";
 import { EmailNotificationChannel } from "@/server/providers/channels/email-notification-channel";
 import { InAppNotificationChannel } from "@/server/providers/channels/in-app-notification-channel";
@@ -324,6 +328,7 @@ export async function executeHabitNudgeDelivery(
 export const habitNudgeDispatcherFn = inngest.createFunction(
   {
     id: "habit-nudge-dispatcher",
+    concurrency: { limit: INNGEST_CRON_CONCURRENCY },
     retries: 4,
     triggers: [{ cron: "*/15 * * * *" }],
   },
@@ -364,7 +369,7 @@ export const habitNudgeDispatcherFn = inngest.createFunction(
 export const deliverHabitNudgeFn = inngest.createFunction(
   {
     id: "deliver-habit-nudge",
-    concurrency: { limit: 25 },
+    concurrency: { limit: INNGEST_CONCURRENCY_LIMIT },
     retries: 4,
     triggers: [habitNudgeEvent],
   },
