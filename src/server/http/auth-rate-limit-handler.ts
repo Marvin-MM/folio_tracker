@@ -2,6 +2,10 @@ import { toNextJsHandler } from "better-auth/next-js";
 import { NextResponse, type NextRequest } from "next/server";
 import { auth } from "@/server/auth";
 import {
+  isEmailPasswordAuthEnabled,
+  isEmailPasswordAuthPath,
+} from "@/server/auth-policy";
+import {
   buildRateLimitHeaders,
   defaultRateLimiter,
   type RateLimiter,
@@ -16,6 +20,25 @@ const RATE_LIMITED_AUTH_PATHS = [
   "/reset-password",
   "/send-verification-email",
 ];
+
+function buildAuthMethodDisabledResponse(): Response {
+  return NextResponse.json(
+    {
+      ok: false,
+      error: {
+        code: "AUTH_METHOD_DISABLED",
+        message:
+          "Email and password authentication is disabled in production. Please sign in with Google.",
+      },
+    },
+    {
+      status: 403,
+      headers: {
+        "Cache-Control": "private, no-store",
+      },
+    }
+  );
+}
 
 function extractClientIp(request: NextRequest): string {
   const forwarded = request.headers.get("x-forwarded-for");
@@ -41,7 +64,10 @@ async function extractEmailIdentifier(request: NextRequest): Promise<string> {
   return "anon";
 }
 
-function attachPrivateNoStore(response: Response, extra?: Record<string, string>): Response {
+function attachPrivateNoStore(
+  response: Response,
+  extra?: Record<string, string>
+): Response {
   const nextHeaders = new Headers(response.headers);
   nextHeaders.set("Cache-Control", "private, no-store");
   if (extra) {
@@ -56,17 +82,31 @@ function attachPrivateNoStore(response: Response, extra?: Record<string, string>
   });
 }
 
-export async function handleAuthGet(request: NextRequest): Promise<Response> {
-  const response = await authHandler.GET(request);
+export async function handleAuthGet(
+  request: NextRequest,
+  delegate: (req: NextRequest) => Promise<Response> = authHandler.GET,
+  emailPasswordEnabled: boolean = isEmailPasswordAuthEnabled()
+): Promise<Response> {
+  if (!emailPasswordEnabled && isEmailPasswordAuthPath(request.nextUrl.pathname)) {
+    return buildAuthMethodDisabledResponse();
+  }
+
+  const response = await delegate(request);
   return attachPrivateNoStore(response);
 }
 
 export async function handleRateLimitedAuthPost(
   request: NextRequest,
   limiter: RateLimiter = defaultRateLimiter,
-  delegate: (req: NextRequest) => Promise<Response> = authHandler.POST
+  delegate: (req: NextRequest) => Promise<Response> = authHandler.POST,
+  emailPasswordEnabled: boolean = isEmailPasswordAuthEnabled()
 ): Promise<Response> {
   const pathname = request.nextUrl.pathname;
+
+  if (!emailPasswordEnabled && isEmailPasswordAuthPath(pathname)) {
+    return buildAuthMethodDisabledResponse();
+  }
+
   const shouldRateLimit = RATE_LIMITED_AUTH_PATHS.some((suffix) =>
     pathname.endsWith(suffix)
   );

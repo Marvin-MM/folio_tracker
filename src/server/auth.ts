@@ -6,6 +6,7 @@ import { ulid } from "ulidx";
 import { APP_NAME } from "@/lib/constants";
 import {
   assertCanLinkAccount,
+  isEmailPasswordAuthEnabled,
   TRUSTED_OAUTH_PROVIDERS,
   UnverifiedAccountLinkingError,
   type AccountLinkingLookup,
@@ -46,6 +47,8 @@ const drizzleAccountLinkingLookup: AccountLinkingLookup = {
   },
 };
 
+export { isEmailPasswordAuthEnabled };
+
 export function isGoogleOAuthConfigured(): boolean {
   return Boolean(
     process.env.GOOGLE_CLIENT_ID?.trim() &&
@@ -56,6 +59,7 @@ export function isGoogleOAuthConfigured(): boolean {
 const googleClientId = process.env.GOOGLE_CLIENT_ID?.trim();
 const googleClientSecret = process.env.GOOGLE_CLIENT_SECRET?.trim();
 const isProduction = process.env.NODE_ENV === "production";
+const emailPasswordEnabled = isEmailPasswordAuthEnabled();
 
 export const auth = betterAuth({
   appName: APP_NAME,
@@ -83,7 +87,7 @@ export const auth = betterAuth({
     },
   },
   emailAndPassword: {
-    enabled: true,
+    enabled: emailPasswordEnabled,
     requireEmailVerification: true,
     revokeSessionsOnPasswordReset: true,
     minPasswordLength: 8,
@@ -105,7 +109,7 @@ export const auth = betterAuth({
     },
   },
   emailVerification: {
-    sendOnSignUp: true,
+    sendOnSignUp: emailPasswordEnabled,
     autoSignInAfterVerification: true,
     sendVerificationEmail: async ({ user, url }) => {
       void authEmailDispatcher
@@ -152,10 +156,14 @@ export const auth = betterAuth({
       create: {
         before: async (account) => {
           try {
-            await assertCanLinkAccount(drizzleAccountLinkingLookup, {
-              userId: account.userId,
-              providerId: account.providerId,
-            });
+            await assertCanLinkAccount(
+              drizzleAccountLinkingLookup,
+              {
+                userId: account.userId,
+                providerId: account.providerId,
+              },
+              { emailPasswordEnabled }
+            );
           } catch (error) {
             if (error instanceof UnverifiedAccountLinkingError) {
               throw new APIError("FORBIDDEN", {

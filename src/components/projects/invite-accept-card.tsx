@@ -23,6 +23,7 @@ import type { InvitationPreviewResult } from "@/server/services/project-invite-s
 interface InviteAcceptCardProps {
   token: string;
   preview: InvitationPreviewResult;
+  emailPasswordEnabled: boolean;
   currentUser: {
     email: string;
     name: string;
@@ -33,6 +34,7 @@ interface InviteAcceptCardProps {
 export function InviteAcceptCard({
   token,
   preview,
+  emailPasswordEnabled,
   currentUser,
 }: InviteAcceptCardProps) {
   const router = useRouter();
@@ -160,20 +162,24 @@ export function InviteAcceptCard({
               <Link
                 href={`/login?callbackURL=${encodeURIComponent(callbackPath)}`}
               >
-                Sign in to accept
+                {emailPasswordEnabled
+                  ? "Sign in to accept"
+                  : "Continue with Google to accept"}
               </Link>
             </Button>
-            <Button
-              asChild
-              variant="outline"
-              className="mira-row w-full border-border text-xs"
-            >
-              <Link
-                href={`/register?callbackURL=${encodeURIComponent(callbackPath)}`}
+            {emailPasswordEnabled ? (
+              <Button
+                asChild
+                variant="outline"
+                className="mira-row w-full border-border text-xs"
               >
-                Create account
-              </Link>
-            </Button>
+                <Link
+                  href={`/register?callbackURL=${encodeURIComponent(callbackPath)}`}
+                >
+                  Create account
+                </Link>
+              </Button>
+            ) : null}
           </div>
         ) : !emailMatches ? (
           <div className="space-y-3">
@@ -210,17 +216,36 @@ export function InviteAcceptCard({
         ) : !currentUser.emailVerified ? (
           <div className="space-y-2">
             <p className="rounded-md border border-reminder/40 bg-reminder/10 p-3 text-xs text-foreground">
-              Verify your email address before accepting this invitation.
+              {emailPasswordEnabled
+                ? "Verify your email address before accepting this invitation."
+                : "Sign in with a verified Google account to accept this invitation."}
             </p>
-            <Button asChild variant="outline" className="mira-row w-full text-xs">
-              <Link
-                href={`/verify-email?email=${encodeURIComponent(
-                  currentUser.email
-                )}&callbackURL=${encodeURIComponent(callbackPath)}`}
+            {emailPasswordEnabled ? (
+              <Button asChild variant="outline" className="mira-row w-full text-xs">
+                <Link
+                  href={`/verify-email?email=${encodeURIComponent(
+                    currentUser.email
+                  )}&callbackURL=${encodeURIComponent(callbackPath)}`}
+                >
+                  Verify email
+                </Link>
+              </Button>
+            ) : (
+              <Button
+                type="button"
+                variant="outline"
+                disabled={switchingAccount}
+                onClick={handleSwitchAccount}
+                className="mira-row w-full gap-1.5 border-border text-xs"
               >
-                Verify email
-              </Link>
-            </Button>
+                {switchingAccount ? (
+                  <Loader2 className="size-3.5 animate-spin" />
+                ) : (
+                  <LogOut className="size-3.5" />
+                )}
+                Switch account
+              </Button>
+            )}
           </div>
         ) : (
           <Button

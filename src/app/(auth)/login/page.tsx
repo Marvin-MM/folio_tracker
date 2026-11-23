@@ -2,8 +2,13 @@ import type { Metadata } from "next";
 import { redirect } from "next/navigation";
 import { LoginForm } from "@/components/auth/login-form";
 import { sanitizeCallbackUrl } from "@/lib/redirect";
-import { isGoogleOAuthConfigured } from "@/server/auth";
+import {
+  isEmailPasswordAuthEnabled,
+  isGoogleOAuthConfigured,
+} from "@/server/auth";
 import { getOptionalSession } from "@/server/dal/auth-guard";
+
+export const dynamic = "force-dynamic";
 
 export const metadata: Metadata = {
   title: "Sign in",
@@ -25,12 +30,15 @@ export default async function LoginPage({ searchParams }: LoginPageProps) {
     redirect(callbackURL);
   }
 
+  const emailPasswordEnabled = isEmailPasswordAuthEnabled();
+
   return (
     <LoginForm
       callbackURL={callbackURL}
       googleEnabled={isGoogleOAuthConfigured()}
-      resetSuccess={params.reset === "success"}
-      verifiedSuccess={params.verified === "1"}
+      emailPasswordEnabled={emailPasswordEnabled}
+      resetSuccess={emailPasswordEnabled && params.reset === "success"}
+      verifiedSuccess={emailPasswordEnabled && params.verified === "1"}
     />
   );
 }

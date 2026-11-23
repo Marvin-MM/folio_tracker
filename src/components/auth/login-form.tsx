@@ -23,6 +23,7 @@ import { sanitizeCallbackUrl } from "@/lib/redirect";
 interface LoginFormProps {
   callbackURL: string;
   googleEnabled: boolean;
+  emailPasswordEnabled: boolean;
   resetSuccess?: boolean;
   verifiedSuccess?: boolean;
 }
@@ -30,6 +31,7 @@ interface LoginFormProps {
 export function LoginForm({
   callbackURL,
   googleEnabled,
+  emailPasswordEnabled,
   resetSuccess = false,
   verifiedSuccess = false,
 }: LoginFormProps) {
@@ -43,6 +45,10 @@ export function LoginForm({
 
   const handleSubmit = async (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
+    if (!emailPasswordEnabled) {
+      return;
+    }
+
     setErrorMessage(null);
     setIsSubmitting(true);
 
@@ -71,6 +77,32 @@ export function LoginForm({
       setIsSubmitting(false);
     }
   };
+
+  if (!emailPasswordEnabled) {
+    return (
+      <Card className="border-border bg-card shadow-none">
+        <CardHeader className="space-y-1">
+          <CardTitle className="text-base font-semibold tracking-tight">
+            Sign in
+          </CardTitle>
+          <CardDescription className="text-xs text-muted-foreground">
+            Continue with your Google account to access your workspace.
+          </CardDescription>
+        </CardHeader>
+
+        <CardContent className="space-y-3">
+          <GoogleAuthButton
+            callbackURL={safeCallback}
+            googleEnabled={googleEnabled}
+            hideConfigHint
+          />
+          <p className="text-center text-[11px] text-muted-foreground">
+            New to Folio? Your workspace is created automatically on first sign-in.
+          </p>
+        </CardContent>
+      </Card>
+    );
+  }
 
   const registerHref =
     safeCallback !== "/app/inbox"

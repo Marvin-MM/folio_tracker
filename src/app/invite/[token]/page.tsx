@@ -5,7 +5,7 @@ import { BrandMark } from "@/components/brand-mark";
 import { InviteAcceptCard } from "@/components/projects/invite-accept-card";
 import { ThemeToggle } from "@/components/theme-toggle";
 import { APP_NAME } from "@/lib/constants";
-import { auth } from "@/server/auth";
+import { auth, isEmailPasswordAuthEnabled } from "@/server/auth";
 import { projectInviteService } from "@/server/services/project-invite-service";
 
 export const dynamic = "force-dynamic";
@@ -43,6 +43,7 @@ export default async function InvitePage({ params }: InvitePageProps) {
           <InviteAcceptCard
             token={token}
             preview={preview}
+            emailPasswordEnabled={isEmailPasswordAuthEnabled()}
             currentUser={
               session
                 ? {

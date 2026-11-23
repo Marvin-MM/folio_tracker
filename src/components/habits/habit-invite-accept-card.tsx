@@ -19,6 +19,7 @@ import type { HabitInviteTokenPreview } from "@/server/services/habit-monitor-se
 interface HabitInviteAcceptCardProps {
   token: string;
   preview: HabitInviteTokenPreview;
+  emailPasswordEnabled: boolean;
   currentUser: {
     email: string;
     name: string;
@@ -29,6 +30,7 @@ interface HabitInviteAcceptCardProps {
 export function HabitInviteAcceptCard({
   token,
   preview,
+  emailPasswordEnabled,
   currentUser,
 }: HabitInviteAcceptCardProps) {
   const router = useRouter();
@@ -130,34 +132,61 @@ export function HabitInviteAcceptCard({
 
       {!currentUser ? (
         <div className="space-y-2.5 pt-1">
-          <Button asChild className="mira-row w-full text-xs">
-            <Link
-              href={`/register?callbackURL=${encodeURIComponent(callbackUrl)}`}
-            >
-              Create account to accept
-            </Link>
-          </Button>
-          <Button
-            asChild
-            variant="outline"
-            className="mira-row w-full text-xs"
-          >
-            <Link
-              href={`/login?callbackURL=${encodeURIComponent(callbackUrl)}`}
-            >
-              Sign in with existing account
-            </Link>
-          </Button>
+          {emailPasswordEnabled ? (
+            <>
+              <Button asChild className="mira-row w-full text-xs">
+                <Link
+                  href={`/register?callbackURL=${encodeURIComponent(callbackUrl)}`}
+                >
+                  Create account to accept
+                </Link>
+              </Button>
+              <Button
+                asChild
+                variant="outline"
+                className="mira-row w-full text-xs"
+              >
+                <Link
+                  href={`/login?callbackURL=${encodeURIComponent(callbackUrl)}`}
+                >
+                  Sign in with existing account
+                </Link>
+              </Button>
+            </>
+          ) : (
+            <Button asChild className="mira-row w-full text-xs">
+              <Link
+                href={`/login?callbackURL=${encodeURIComponent(callbackUrl)}`}
+              >
+                Continue with Google to accept
+              </Link>
+            </Button>
+          )}
         </div>
       ) : !currentUser.emailVerified ? (
         <div className="space-y-3 rounded-md border border-reminder/40 bg-reminder/10 p-3 text-xs">
           <p className="text-foreground">
-            Please verify your email address ({currentUser.email}) before
-            accepting this accountability invitation.
+            {emailPasswordEnabled
+              ? `Please verify your email address (${currentUser.email}) before accepting this accountability invitation.`
+              : `Please sign in with a verified Google account to accept this accountability invitation.`}
           </p>
-          <Button asChild variant="outline" size="sm" className="mira-row text-xs">
-            <Link href="/verify-email">Check verification status</Link>
-          </Button>
+          {emailPasswordEnabled ? (
+            <Button asChild variant="outline" size="sm" className="mira-row text-xs">
+              <Link href="/verify-email">Check verification status</Link>
+            </Button>
+          ) : (
+            <Button
+              type="button"
+              variant="outline"
+              size="sm"
+              disabled={signingOut}
+              onClick={handleSwitchAccount}
+              className="mira-row gap-1.5 text-xs"
+            >
+              <LogOut className="size-3.5" />
+              {signingOut ? "Signing out…" : "Switch account"}
+            </Button>
+          )}
         </div>
       ) : !emailMatches ? (
         <div className="space-y-3 rounded-md border border-overdue/35 bg-overdue/10 p-3 text-xs">

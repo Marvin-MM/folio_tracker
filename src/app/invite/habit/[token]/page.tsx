@@ -5,7 +5,7 @@ import { BrandMark } from "@/components/brand-mark";
 import { HabitInviteAcceptCard } from "@/components/habits/habit-invite-accept-card";
 import { ThemeToggle } from "@/components/theme-toggle";
 import { APP_NAME } from "@/lib/constants";
-import { auth } from "@/server/auth";
+import { auth, isEmailPasswordAuthEnabled } from "@/server/auth";
 import { habitMonitorService } from "@/server/services/habit-monitor-service";
 
 export const dynamic = "force-dynamic";
@@ -45,6 +45,7 @@ export default async function HabitInvitePage({
           <HabitInviteAcceptCard
             token={token}
             preview={preview}
+            emailPasswordEnabled={isEmailPasswordAuthEnabled()}
             currentUser={
               session
                 ? {

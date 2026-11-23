@@ -435,7 +435,7 @@ sequenceDiagram
 ```
 
 **Authentication & Tenant Security Controls:**
-- **Credential + Google OAuth Only:** Better Auth enforces `requireEmailVerification: true`, `revokeSessionsOnPasswordReset: true`, `HttpOnly` / `SameSite=Lax` / `Secure` (prod) cookies, and open-redirect sanitization (`sanitizeCallbackUrl`).
+- **Environment-Gated Providers (Google-Only in Production):** Better Auth runs **Google OAuth exclusively in production** (`NODE_ENV === "production"`, hiding email/password UI, redirecting `/register`, `/forgot-password`, `/reset-password`, and `/verify-email` to `/login`, disabling `emailAndPassword`, and returning `403 AUTH_METHOD_DISABLED` on credential API endpoints) while keeping **both Email/Password and Google OAuth** active in local development. Better Auth enforces `requireEmailVerification: true`, `revokeSessionsOnPasswordReset: true`, `HttpOnly` / `SameSite=Lax` / `Secure` (prod) cookies, and open-redirect sanitization (`sanitizeCallbackUrl`).
 - **Account Takeover Prevention:** `databaseHooks.account.create.before` ([auth-policy.ts](../src/server/auth-policy.ts)) rejects OAuth auto-linking into any pre-existing unverified credential account (`emailVerified === false`).
 - **Zero-Leak Selective Scope:** `DrizzleHabitMonitorReadDal` resolves `habit_monitors` + `habit_monitor_items` in Turso first and filters habits, logs, analytics, snapshots, and `target_habit_id` comments to `allowedHabitIds` before returning a payload—unshared habits never cross the DAL boundary.
 

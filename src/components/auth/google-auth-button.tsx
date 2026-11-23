@@ -10,12 +10,14 @@ interface GoogleAuthButtonProps {
   callbackURL: string;
   googleEnabled: boolean;
   label?: string;
+  hideConfigHint?: boolean;
 }
 
 export function GoogleAuthButton({
   callbackURL,
   googleEnabled,
   label = "Continue with Google",
+  hideConfigHint = false,
 }: GoogleAuthButtonProps) {
   const [isLoading, setIsLoading] = useState(false);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
@@ -24,7 +26,9 @@ export function GoogleAuthButton({
     setErrorMessage(null);
     if (!googleEnabled) {
       setErrorMessage(
-        "Google OAuth is not configured in this environment. Set GOOGLE_CLIENT_ID and GOOGLE_CLIENT_SECRET."
+        hideConfigHint
+          ? "Google sign-in is temporarily unavailable. Please try again later."
+          : "Google OAuth is not configured in this environment. Set GOOGLE_CLIENT_ID and GOOGLE_CLIENT_SECRET."
       );
       return;
     }

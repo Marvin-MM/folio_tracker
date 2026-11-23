@@ -28,7 +28,7 @@ Designed around a tactile **Warm Paper (Light)** and **Carbon Ink (Dark)** aesth
 | **Framework & Language** | Next.js 16 (App Router, Turbopack), React 19, TypeScript (`strict`) |
 | **UI & Visualization** | Tailwind CSS v4, `shadcn/ui` (Mira preset), Recharts |
 | **Database & ORM** | Turso / libSQL (SQLite locally), Drizzle ORM |
-| **Authentication** | Better Auth (Email/Password + Google OAuth) |
+| **Authentication** | Better Auth (Google OAuth in production; Email/Password + Google OAuth in local dev) |
 | **Durable Workflows** | Inngest v4 (reminders, outbox reconciliation, habit nudges, review digests, async emails) |
 | **Rate Limiting & Counter Cache** | Upstash Redis (production), Local Redis or In-Memory (dev/test) |
 | **Notification Delivery** | Web Push (VAPID) + PWA Service Worker, Resend |
@@ -125,7 +125,7 @@ All variables are documented in [`.env.example`](.env.example).
 | `TURSO_AUTH_TOKEN` | Production | Turso database auth token |
 | `BETTER_AUTH_SECRET` | Required | Session signing secret (`openssl rand -base64 32`) |
 | `BETTER_AUTH_URL` | Required | Canonical app URL (`http://localhost:3000` or `https://<domain>`) |
-| `GOOGLE_CLIENT_ID` / `GOOGLE_CLIENT_SECRET` | Optional | Enables Google OAuth sign-in |
+| `GOOGLE_CLIENT_ID` / `GOOGLE_CLIENT_SECRET` | Production (optional locally) | Powers Google OAuth sign-in (sole sign-in method in production; local dev supports both Google and Email/Password) |
 | `RESEND_API_KEY` / `EMAIL_FROM` | Optional | Transactional emails (falls back to redacted console logs when unset) |
 | `INNGEST_DEV` | Local Dev | Set `"1"` locally; omit in production |
 | `INNGEST_EVENT_KEY` / `INNGEST_SIGNING_KEY` | Production | Inngest Cloud authentication |
@@ -144,7 +144,7 @@ pnpm build        # Create optimized production build
 pnpm start        # Serve production build
 pnpm typecheck    # Run TypeScript strict typecheck (tsc --noEmit)
 pnpm lint         # Run ESLint
-pnpm test         # Run all 17 Vitest suites (68 tests, ephemeral SQLite DBs)
+pnpm test         # Run all 17 Vitest suites (73 tests, ephemeral SQLite DBs)
 pnpm db:generate  # Generate Drizzle SQL migrations after schema changes
 pnpm db:migrate   # Apply Drizzle migrations to TURSO_DATABASE_URL
 pnpm db:studio    # Launch Drizzle Studio
