@@ -1,10 +1,10 @@
 # Folio
 
-**Folio** is a calm, high-density productivity workspace combining **Tasks**, **Markdown Notes with optional timed Reminders**, **Natural-Language Quick Capture (`⌘K`)**, **Durable Multi-Channel Notifications (In-App, PWA Web Push, Email)**, and **Shared Projects with RBAC & Cryptographic Invitations**.
+**Folio** is a calm, high-density productivity workspace combining **Tasks**, **Markdown Notes**, **Natural-Language Quick Capture (`⌘K`)**, **Durable Multi-Channel Reminders**, **Shared Projects with RBAC**, **Real-Calendar Habit Tracking with Bidirectional Task Sync**, and an **Accountability Circle** with configurable review windows.
 
-Designed around a tactile **Warm Paper (Light)** and **Carbon Ink (Dark)** aesthetic (`shadcn/ui` Mira), Folio keeps personal Inbox tasks and unlinked notes strictly private while letting projects transition seamlessly into shared workspaces.
+Designed around a tactile **Warm Paper (Light)** and **Carbon Ink (Dark)** aesthetic (`shadcn/ui` Mira), Folio keeps personal Inbox tasks, unlinked notes, and habits strictly private by default while allowing deliberate, auditable collaboration inside the app.
 
-> Looking for the full visual systems blueprint (ER diagrams, request/auth isolation, outbox reconciliation, reminder state machine, RBAC, and Vercel scale controls)? Read **[docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)**.
+> Looking for the complete visual systems blueprint (ER schemas, request/auth isolation, outbox reconciliation, reminder state machine, Task ↔ Habit ACID sync, dynamic comment-window policy, and Vercel scale invariants)? Read **[docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)**.
 
 ---
 
@@ -14,7 +14,9 @@ Designed around a tactile **Warm Paper (Light)** and **Carbon Ink (Dark)** aesth
 - **Quiet & Timed Markdown Notes:** Lightweight markdown notes with tags, pinning, and instant search—quiet by default, with optional timed reminders attached atomically.
 - **Natural-Language Quick Capture (`⌘K`):** Live inline date/time parsing anchored to your IANA timezone (`"Pay invoice tomorrow 9am"`, `"n: Renewal code next Friday 10am"`).
 - **Durable Hybrid Reminders & PWA Push:** 14-day scheduling horizon, 5-minute Outbox Reconciliation, optimistic version locking, Service Worker push quick actions (`Snooze 15m`, `Mark Done`), automatic `404`/`410` endpoint pruning, and Resend email fallback.
-- **Shared Projects & RBAC:** Direct-Turso `owner` / `editor` / `viewer` authorization (viewers stay read-only on shared items while still attaching private personal reminders), chronological activity feed, and SHA-256 single-use 7-day email invitations (`/invite/[token]`).
+- **Real-Calendar Habit Tracking & Honest Analytics:** Full 28–31 day monthly calendar matrix with optimistic cell cycling (`done` / `skipped` / `missed`), elapsed-to-date scoring, mid-month `startDate` support, weekly-target habits, rest passes that protect streaks, bulk newline/CSV import, monochrome Recharts trend visualizations, bidirectional ACID Task ↔ Habit sync, and 15-minute timezone-aware habit nudges.
+- **Accountability Circle & Dynamic Review Windows:** Invite accountability monitors via Quick-Pick collaborators or anti-enumeration email/token links (`/invite/habit/[token]`), share all or strictly selected habits (zero-leak DAL projection), enforce global or per-monitor commenting cadences (`weekly_window`, `interval_days`, or `anytime`) evaluated in the owner's IANA timezone, exchange threaded cycle reviews and monochrome reactions (`ack`, `solid`, `push`), and send automated hourly review-open digests.
+- **Shared Projects & RBAC:** Direct-Turso `owner` / `editor` / `viewer` authorization (viewers remain read-only on shared items while still attaching private personal reminders), chronological activity feed, and SHA-256 single-use 7-day email invitations (`/invite/[token]`).
 - **Production Hardening:** Sliding-window rate limiting (`429` + `Retry-After`), delivery-time zero-leak authorization re-checks, shared-device push cleanup on sign-out, safe account offboarding, strict CSP/security headers, and `/api/health`.
 
 ---
@@ -24,11 +26,11 @@ Designed around a tactile **Warm Paper (Light)** and **Carbon Ink (Dark)** aesth
 | Layer | Technology |
 | :--- | :--- |
 | **Framework & Language** | Next.js 16 (App Router, Turbopack), React 19, TypeScript (`strict`) |
-| **UI & Styling** | Tailwind CSS v4, `shadcn/ui` (Mira preset), Geist + Geist Mono |
+| **UI & Visualization** | Tailwind CSS v4, `shadcn/ui` (Mira preset), Recharts |
 | **Database & ORM** | Turso / libSQL (SQLite locally), Drizzle ORM |
 | **Authentication** | Better Auth (Email/Password + Google OAuth) |
-| **Durable Workflows** | Inngest v4 (sleeping reminders, outbox & far-future crons, async emails) |
-| **Rate Limiting & Counter Cache** | Upstash Redis (production), Local Redis (`ioredis`) or In-Memory (dev/test) |
+| **Durable Workflows** | Inngest v4 (reminders, outbox reconciliation, habit nudges, review digests, async emails) |
+| **Rate Limiting & Counter Cache** | Upstash Redis (production), Local Redis or In-Memory (dev/test) |
 | **Notification Delivery** | Web Push (VAPID) + PWA Service Worker, Resend |
 
 ---
@@ -38,20 +40,20 @@ Designed around a tactile **Warm Paper (Light)** and **Carbon Ink (Dark)** aesth
 ```mermaid
 flowchart LR
   Browser["Browser / PWA\n(Warm Paper · Carbon Ink)"] --> Edge["Next.js 16 Edge & Proxy\nCSP · private, no-store · force-dynamic"]
-  Edge --> Core["Server Actions · RSC · API\nZod -> requireSession -> SOLID Services"]
-  Core --> Turso[("Turso / libSQL\nACID · Direct-Turso RBAC\nCascading FKs · Outbox")]
+  Edge --> Core["Server Actions · RSC · API\nZod -> requireSession -> Pure Domain & Services"]
+  Core --> Turso[("Turso / libSQL (22 Tables)\nACID · Direct-Turso RBAC & Circle Scope\nCascading FKs · Outbox")]
   Core --> Redis[("Upstash / Local Redis\nRateLimiter & UnreadCounter ONLY")]
-  Core -->|"Post-commit deterministic events"| Inngest["Inngest v4\n14d Horizon · Outbox Reconciler\nconcurrency: 25 · LIMIT 200"]
+  Core -->|"Post-commit deterministic events"| Inngest["Inngest v4 (13 Functions)\nReminders · Nudges · Review Digests\nconcurrency: 25 · LIMIT 200"]
   Inngest --> Channels["In-App · Web Push · Resend"]
 ```
 
-For full visual flowcharts, the 13-table ER schema, reminder state machine, invite sequence, and concurrency/isolation invariants, see **[docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)**.
+For full visual flowcharts, the 22-table ER model, reminder state machine, Task ↔ Habit sync, Accountability Circle invite/policy flows, and production invariants, see **[docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)**.
 
 ---
 
 ## Getting Started (Local Development)
 
-Folio runs locally with **zero external cloud accounts required**—SQLite (`file:local.db`), in-memory rate-limiting/cache fallback, and non-sensitive console email dispatch work out of the box.
+Folio boots locally with **zero external cloud accounts required**—local SQLite (`file:local.db`), in-memory rate-limiting/cache fallback, and redacted console email dispatch work out of the box.
 
 ### Prerequisites
 
@@ -78,7 +80,7 @@ Generate a local `BETTER_AUTH_SECRET` (at least 32 random bytes) and paste it in
 openssl rand -base64 32
 ```
 
-Minimal `.env.local` to boot immediately:
+Minimal `.env.local` to start immediately:
 
 ```env
 TURSO_DATABASE_URL="file:local.db"
@@ -87,13 +89,13 @@ BETTER_AUTH_URL="http://localhost:3000"
 INNGEST_DEV="1"
 ```
 
-*(Optional)* To test Web Push notifications locally with no cloud provider, generate a local VAPID keypair and add it to `.env.local`:
+*(Optional)* To test PWA Web Push notifications locally with no cloud service, generate a local VAPID keypair and add it to `.env.local`:
 
 ```bash
 pnpm dlx web-push generate-vapid-keys
 ```
 
-### 3. Run Database Migrations
+### 3. Apply Database Migrations
 
 ```bash
 pnpm db:migrate
@@ -105,7 +107,7 @@ pnpm db:migrate
 # Terminal 1 — Next.js development server
 pnpm dev
 
-# Terminal 2 (optional) — Local Inngest Dev Server for executing sleeping reminders
+# Terminal 2 (optional) — Local Inngest Dev Server for reminders, nudges & review digests
 pnpm dlx inngest-cli@latest dev
 ```
 
@@ -141,35 +143,36 @@ pnpm build        # Create optimized production build
 pnpm start        # Serve production build
 pnpm typecheck    # Run TypeScript strict typecheck (tsc --noEmit)
 pnpm lint         # Run ESLint
-pnpm test         # Run all 12 Vitest suites (ephemeral SQLite DBs, zero external deps)
+pnpm test         # Run all 16 Vitest suites (66 tests, ephemeral SQLite DBs)
 pnpm db:generate  # Generate Drizzle SQL migrations after schema changes
 pnpm db:migrate   # Apply Drizzle migrations to TURSO_DATABASE_URL
 pnpm db:studio    # Launch Drizzle Studio
 ```
 
-The test suite (`pnpm test`) runs completely offline against isolated temporary SQLite databases and verifies schema FK/XOR constraints, ACID rollbacks, cross-tenant IDOR protection, revoked-access delivery blocking, concurrent double-accept/double-delivery races, outbox recovery, `404`/`410` push pruning, sliding-window HTTP `429` rate limiting, push endpoint reassignment, fractional rebalancing, and safe account offboarding.
+`pnpm test` executes completely offline against isolated temporary SQLite databases and verifies schema FK/XOR/partial-unique constraints, ACID rollbacks, cross-tenant IDOR protection, revoked-access delivery blocking, concurrent double-accept/double-delivery races, outbox recovery, `404`/`410` push pruning, sliding-window HTTP `429` rate limiting, real-calendar habit analytics, bidirectional Task ↔ Habit sync, dynamic global/per-monitor comment windows, zero-leak selective-scope projections, anti-enumeration dual monitor invites, fractional rebalancing, and safe account offboarding.
 
 ---
 
 ## Project Layout
 
 ```text
-├── docs/ARCHITECTURE.md      # Unified visual system architecture & invariants
+├── docs/ARCHITECTURE.md      # Unified visual system architecture & production invariants
 ├── drizzle/                  # Versioned Drizzle SQL migrations & snapshots
 ├── public/                   # PWA icons and Service Worker (sw.js)
 └── src/
     ├── proxy.ts              # Next.js 16 edge boundary & cache isolation
     ├── actions/              # Validated Server Actions (Zod -> Auth -> Service)
-    ├── app/                  # App Router pages, layouts, /invite/[token], /api/*
+    ├── app/                  # App Router pages (/app/*, /app/habits*, /invite/*, /api/*)
     ├── components/           # Warm Paper / Carbon Ink Mira UI primitives & views
     ├── lib/                  # Pure helpers (chrono NLP, fractional index, sign-out)
     └── server/
         ├── auth.ts           # Better Auth config & unverified-link policy
-        ├── db/               # Drizzle schema, relations, WAL client, withDbRetry
-        ├── dal/              # Tenant-scoped repositories & direct-Turso auth guards
-        ├── services/         # Pure ACID domain services + Vitest integration suites
+        ├── db/               # 22 Drizzle tables, relations, WAL client, withDbRetry
+        ├── domain/           # Pure zero-I/O engines (habit analytics, comment-window policy)
+        ├── dal/              # Tenant-scoped repos, direct-Turso guards, zero-leak read DAL
+        ├── services/         # ACID domain services + Vitest integration suites
         ├── providers/        # EventBus, NotificationChannels, Redis, Auth Email
-        ├── inngest/          # Durable functions & bounded chunked crons
+        ├── inngest/          # 13 durable workflows & bounded LIMIT 200 crons
         └── http/             # Rate-limited HTTP route handlers
 ```
 
@@ -192,7 +195,7 @@ The test suite (`pnpm test`) runs completely offline against isolated temporary 
 4. **Resend Email:** Verify your sending domain in Resend and set `RESEND_API_KEY` + `EMAIL_FROM="Folio <notifications@your-domain>"`.
 5. **Upstash Redis:** Provision an Upstash Redis database and set `UPSTASH_REDIS_REST_URL` + `UPSTASH_REDIS_REST_TOKEN` (`RateLimiter` and `UnreadCounterCache` auto-select Upstash REST).
 6. **Deploy on Vercel & Sync Inngest Cloud:**
-   - Import the repo into Vercel, add all production environment variables (omit `INNGEST_DEV`, set `BETTER_AUTH_URL="https://<your-domain>"`), and deploy.
+   - Import the repository into Vercel, add all production environment variables (omit `INNGEST_DEV`, set `BETTER_AUTH_URL="https://<your-domain>"`), and deploy.
    - Connect the Inngest Vercel integration (or sync `https://<your-domain>/api/inngest` with `INNGEST_EVENT_KEY` and `INNGEST_SIGNING_KEY`).
 7. **Post-Deploy Verification:**
    - `GET https://<your-domain>/api/health` → `200 { "status": "ok", "database": "connected" }` with `Cache-Control: private, no-store`.
