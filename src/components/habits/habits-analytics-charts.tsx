@@ -1,5 +1,6 @@
 "use client";
 
+import { useTheme } from "next-themes";
 import {
   Bar,
   BarChart,
@@ -145,6 +146,9 @@ export function HabitsAnalyticsCharts({
   dailySeries,
   weeklySeries,
 }: HabitsAnalyticsChartsProps) {
+  const { resolvedTheme } = useTheme();
+  const themeKey = resolvedTheme ?? "light";
+
   return (
     <section
       aria-label="Habit analytics charts"
@@ -175,6 +179,7 @@ export function HabitsAnalyticsCharts({
         </div>
 
         <ChartContainer
+          key={`daily-${themeKey}`}
           config={DAILY_CHART_CONFIG}
           className="aspect-auto h-[210px] w-full"
         >
@@ -247,6 +252,7 @@ export function HabitsAnalyticsCharts({
         </div>
 
         <ChartContainer
+          key={`weekly-${themeKey}`}
           config={WEEKLY_CHART_CONFIG}
           className="aspect-auto h-[170px] w-full"
         >

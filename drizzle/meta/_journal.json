@@ -22,6 +22,13 @@
       "when": 1795421090252,
       "tag": "0002_habits_phase_a",
       "breakpoints": true
+    },
+    {
+      "idx": 3,
+      "version": "6",
+      "when": 1795424262005,
+      "tag": "0003_habits_phase_b",
+      "breakpoints": true
     }
   ]
 }

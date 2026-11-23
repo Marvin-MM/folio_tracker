@@ -17,7 +17,7 @@ export function ViewHeader({ title, subtitle, meta, actions }: ViewHeaderProps) 
   const { openQuickCapture, notifications, timezone } = useWorkspaceChrome();
 
   return (
-    <div className="sticky top-0 z-10 flex h-11 shrink-0 items-center justify-between gap-3 border-b border-border bg-background px-4 md:px-6">
+    <div className="sticky top-0 z-30 flex h-11 shrink-0 items-center justify-between gap-3 border-b border-border bg-background px-4 md:px-6">
       <div className="flex min-w-0 items-baseline gap-2.5">
         <h1 className="shrink-0 text-sm font-semibold tracking-tight text-foreground">
           {title}

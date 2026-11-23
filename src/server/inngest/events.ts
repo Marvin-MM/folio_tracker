@@ -67,3 +67,52 @@ export const habitNudgeEvent = eventType("app/habit.nudge", {
     timezone: z.string(),
   }),
 });
+
+export const habitMonitorRequestedEvent = eventType(
+  "app/habit.monitor_requested",
+  {
+    schema: z.object({
+      requestId: z.string(),
+      ownerId: z.string(),
+      ownerName: z.string(),
+      targetUserId: z.string(),
+      scope: z.enum(["all", "selected"]),
+    }),
+  }
+);
+
+export const habitMonitorInvitedEvent = eventType("app/habit.monitor_invited", {
+  schema: z.object({
+    requestId: z.string(),
+    ownerId: z.string(),
+    ownerName: z.string(),
+    targetEmail: z.string().email(),
+    scope: z.enum(["all", "selected"]),
+    inviteUrl: z.string().url(),
+  }),
+});
+
+export const habitReviewDigestEvent = eventType("app/habit.review_digest", {
+  schema: z.object({
+    monitorId: z.string(),
+    ownerId: z.string(),
+    monitorUserId: z.string(),
+    cycleKey: z.string(),
+    periodStartDate: z.string(),
+    periodEndDate: z.string(),
+    dedupKey: z.string(),
+  }),
+});
+
+export const habitCommentPostedEvent = eventType("app/habit.comment_posted", {
+  schema: z.object({
+    commentId: z.string(),
+    ownerId: z.string(),
+    authorId: z.string(),
+    authorName: z.string(),
+    recipientUserId: z.string(),
+    cycleKey: z.string(),
+    bodyPreview: z.string(),
+    deepLink: z.string(),
+  }),
+});

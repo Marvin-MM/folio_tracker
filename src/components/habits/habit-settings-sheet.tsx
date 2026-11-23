@@ -75,6 +75,9 @@ export function HabitSettingsSheet({
   const [defaultIntervalDays, setDefaultIntervalDays] = useState(
     settings.defaultIntervalDays ? String(settings.defaultIntervalDays) : "5"
   );
+  const [defaultIntervalAnchorDate, setDefaultIntervalAnchorDate] = useState(
+    settings.defaultIntervalAnchorDate ?? "2026-11-01"
+  );
   const [defaultIntervalOpenHours, setDefaultIntervalOpenHours] = useState(
     String(settings.defaultIntervalOpenHours)
   );
@@ -95,6 +98,9 @@ export function HabitSettingsSheet({
       setDefaultIntervalDays(
         settings.defaultIntervalDays ? String(settings.defaultIntervalDays) : "5"
       );
+      setDefaultIntervalAnchorDate(
+        settings.defaultIntervalAnchorDate ?? "2026-11-01"
+      );
       setDefaultIntervalOpenHours(String(settings.defaultIntervalOpenHours));
       setAllowReactionsWhenLocked(settings.allowReactionsWhenLocked);
     }
@@ -105,7 +111,7 @@ export function HabitSettingsSheet({
     startTransition(async () => {
       const intervalDaysNum =
         defaultCommentMode === "interval_days"
-          ? Math.max(1, Math.min(30, Number(defaultIntervalDays) || 5))
+          ? Math.max(2, Math.min(30, Number(defaultIntervalDays) || 5))
           : null;
       const openHoursNum = Math.max(
         1,
@@ -121,6 +127,10 @@ export function HabitSettingsSheet({
         defaultWindowEndDay,
         defaultWindowEndTime,
         defaultIntervalDays: intervalDaysNum,
+        defaultIntervalAnchorDate:
+          defaultCommentMode === "interval_days"
+            ? defaultIntervalAnchorDate.trim() || null
+            : null,
         defaultIntervalOpenHours: openHoursNum,
         allowReactionsWhenLocked,
       });
@@ -319,39 +329,58 @@ export function HabitSettingsSheet({
             ) : null}
 
             {defaultCommentMode === "interval_days" ? (
-              <div className="grid grid-cols-2 gap-2.5">
-                <div className="space-y-1">
-                  <Label
-                    htmlFor="settings-interval-days"
-                    className="text-[11px] text-muted-foreground"
-                  >
-                    Every N days
-                  </Label>
-                  <Input
-                    id="settings-interval-days"
-                    type="number"
-                    min={1}
-                    max={30}
-                    value={defaultIntervalDays}
-                    onChange={(e) => setDefaultIntervalDays(e.target.value)}
-                    className="mono-tabular mira-row bg-background text-xs"
-                  />
+              <div className="space-y-2.5">
+                <div className="grid grid-cols-2 gap-2.5">
+                  <div className="space-y-1">
+                    <Label
+                      htmlFor="settings-interval-days"
+                      className="text-[11px] text-muted-foreground"
+                    >
+                      Every N days (2–30)
+                    </Label>
+                    <Input
+                      id="settings-interval-days"
+                      type="number"
+                      min={2}
+                      max={30}
+                      value={defaultIntervalDays}
+                      onChange={(e) => setDefaultIntervalDays(e.target.value)}
+                      className="mono-tabular mira-row bg-background text-xs"
+                    />
+                  </div>
+                  <div className="space-y-1">
+                    <Label
+                      htmlFor="settings-open-hours"
+                      className="text-[11px] text-muted-foreground"
+                    >
+                      Open for (hours)
+                    </Label>
+                    <Input
+                      id="settings-open-hours"
+                      type="number"
+                      min={1}
+                      max={168}
+                      value={defaultIntervalOpenHours}
+                      onChange={(e) =>
+                        setDefaultIntervalOpenHours(e.target.value)
+                      }
+                      className="mono-tabular mira-row bg-background text-xs"
+                    />
+                  </div>
                 </div>
                 <div className="space-y-1">
                   <Label
-                    htmlFor="settings-open-hours"
+                    htmlFor="settings-interval-anchor"
                     className="text-[11px] text-muted-foreground"
                   >
-                    Open for (hours)
+                    Cycle anchor date
                   </Label>
                   <Input
-                    id="settings-open-hours"
-                    type="number"
-                    min={1}
-                    max={168}
-                    value={defaultIntervalOpenHours}
+                    id="settings-interval-anchor"
+                    type="date"
+                    value={defaultIntervalAnchorDate}
                     onChange={(e) =>
-                      setDefaultIntervalOpenHours(e.target.value)
+                      setDefaultIntervalAnchorDate(e.target.value)
                     }
                     className="mono-tabular mira-row bg-background text-xs"
                   />

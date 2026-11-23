@@ -74,6 +74,56 @@ export type AppDomainEvent =
         dedupKey: string;
         timezone: string;
       };
+    }
+  | {
+      id?: string;
+      name: "app/habit.monitor_requested";
+      data: {
+        requestId: string;
+        ownerId: string;
+        ownerName: string;
+        targetUserId: string;
+        scope: "all" | "selected";
+      };
+    }
+  | {
+      id?: string;
+      name: "app/habit.monitor_invited";
+      data: {
+        requestId: string;
+        ownerId: string;
+        ownerName: string;
+        targetEmail: string;
+        scope: "all" | "selected";
+        inviteUrl: string;
+      };
+    }
+  | {
+      id?: string;
+      name: "app/habit.review_digest";
+      data: {
+        monitorId: string;
+        ownerId: string;
+        monitorUserId: string;
+        cycleKey: string;
+        periodStartDate: string;
+        periodEndDate: string;
+        dedupKey: string;
+      };
+    }
+  | {
+      id?: string;
+      name: "app/habit.comment_posted";
+      data: {
+        commentId: string;
+        ownerId: string;
+        authorId: string;
+        authorName: string;
+        recipientUserId: string;
+        cycleKey: string;
+        bodyPreview: string;
+        deepLink: string;
+      };
     };
 
 export interface EventBus {

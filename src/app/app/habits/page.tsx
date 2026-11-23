@@ -1,9 +1,11 @@
 import type { Metadata } from "next";
+import { HabitsSubnav } from "@/components/habits/habits-subnav";
 import { HabitsWorkspaceView } from "@/components/habits/habits-workspace-view";
 import { ViewHeader } from "@/components/workspace/view-header";
 import { requireSession } from "@/server/dal/auth-guard";
 import { workspaceRepository } from "@/server/dal/workspace-repository";
 import type { ScoringMode } from "@/server/domain/habit-analytics";
+import { habitMonitorService } from "@/server/services/habit-monitor-service";
 import { habitService } from "@/server/services/habit-service";
 
 export const dynamic = "force-dynamic";
@@ -26,12 +28,13 @@ export default async function HabitsPage({ searchParams }: HabitsPageProps) {
   const scoringMode: ScoringMode =
     params.mode === "full_month" ? "full_month" : "elapsed";
 
-  const [workspace, sidebarSummary] = await Promise.all([
+  const [workspace, sidebarSummary, circleBadgeCount] = await Promise.all([
     habitService.getMonthWorkspace(user.id, timezone, {
       yearMonth: params.month,
       scoringMode,
     }),
     workspaceRepository.getSidebarSummary(user.id, timezone),
+    habitMonitorService.getCircleBadgeCount(user.id),
   ]);
 
   return (
@@ -41,6 +44,7 @@ export default async function HabitsPage({ searchParams }: HabitsPageProps) {
         subtitle="Real-calendar tracking, streaks, and honest monthly analytics"
         meta={`${workspace.analytics.calendar.monthLabel} · ${workspace.habits.length} active`}
       />
+      <HabitsSubnav circleBadgeCount={circleBadgeCount} />
       <div className="mx-auto w-full max-w-[1400px] min-w-0 p-4 md:p-6">
         <HabitsWorkspaceView
           workspace={workspace}

@@ -1,6 +1,14 @@
 import { relations } from "drizzle-orm";
 import { accounts, sessions, users } from "./auth";
 import { habitLogs, habits, habitTrackerSettings } from "./habits";
+import {
+  habitComments,
+  habitMonitorItems,
+  habitMonitorRequests,
+  habitMonitors,
+  habitReactions,
+  habitWeeklySnapshots,
+} from "./habits-social";
 import { notifications, pushSubscriptions } from "./notifications";
 import { reminders } from "./reminders";
 import {
@@ -31,6 +39,31 @@ export const usersRelations = relations(users, ({ one, many }) => ({
   }),
   habits: many(habits),
   habitLogs: many(habitLogs),
+  habitMonitorsAsOwner: many(habitMonitors, {
+    relationName: "habitMonitorOwner",
+  }),
+  habitMonitorsAsMonitor: many(habitMonitors, {
+    relationName: "habitMonitorWatcher",
+  }),
+  sentHabitMonitorRequests: many(habitMonitorRequests, {
+    relationName: "habitRequestOwner",
+  }),
+  receivedHabitMonitorRequests: many(habitMonitorRequests, {
+    relationName: "habitRequestTarget",
+  }),
+  habitWeeklySnapshots: many(habitWeeklySnapshots),
+  habitCommentsOwned: many(habitComments, {
+    relationName: "habitCommentOwner",
+  }),
+  habitCommentsAuthored: many(habitComments, {
+    relationName: "habitCommentAuthor",
+  }),
+  habitReactionsOwned: many(habitReactions, {
+    relationName: "habitReactionOwner",
+  }),
+  habitReactionsAuthored: many(habitReactions, {
+    relationName: "habitReactionAuthor",
+  }),
 }));
 
 export const sessionsRelations = relations(sessions, ({ one }) => ({
@@ -186,6 +219,8 @@ export const habitsRelations = relations(habits, ({ one, many }) => ({
   }),
   logs: many(habitLogs),
   linkedTasks: many(tasks),
+  monitorItems: many(habitMonitorItems),
+  comments: many(habitComments),
 }));
 
 export const habitLogsRelations = relations(habitLogs, ({ one }) => ({
@@ -196,5 +231,103 @@ export const habitLogsRelations = relations(habitLogs, ({ one }) => ({
   user: one(users, {
     fields: [habitLogs.userId],
     references: [users.id],
+  }),
+}));
+
+export const habitMonitorsRelations = relations(
+  habitMonitors,
+  ({ one, many }) => ({
+    owner: one(users, {
+      fields: [habitMonitors.ownerId],
+      references: [users.id],
+      relationName: "habitMonitorOwner",
+    }),
+    monitorUser: one(users, {
+      fields: [habitMonitors.monitorUserId],
+      references: [users.id],
+      relationName: "habitMonitorWatcher",
+    }),
+    items: many(habitMonitorItems),
+  })
+);
+
+export const habitMonitorItemsRelations = relations(
+  habitMonitorItems,
+  ({ one }) => ({
+    monitor: one(habitMonitors, {
+      fields: [habitMonitorItems.monitorId],
+      references: [habitMonitors.id],
+    }),
+    habit: one(habits, {
+      fields: [habitMonitorItems.habitId],
+      references: [habits.id],
+    }),
+  })
+);
+
+export const habitMonitorRequestsRelations = relations(
+  habitMonitorRequests,
+  ({ one }) => ({
+    owner: one(users, {
+      fields: [habitMonitorRequests.ownerId],
+      references: [users.id],
+      relationName: "habitRequestOwner",
+    }),
+    targetUser: one(users, {
+      fields: [habitMonitorRequests.targetUserId],
+      references: [users.id],
+      relationName: "habitRequestTarget",
+    }),
+  })
+);
+
+export const habitWeeklySnapshotsRelations = relations(
+  habitWeeklySnapshots,
+  ({ one }) => ({
+    owner: one(users, {
+      fields: [habitWeeklySnapshots.ownerId],
+      references: [users.id],
+    }),
+  })
+);
+
+export const habitCommentsRelations = relations(
+  habitComments,
+  ({ one, many }) => ({
+    owner: one(users, {
+      fields: [habitComments.ownerId],
+      references: [users.id],
+      relationName: "habitCommentOwner",
+    }),
+    author: one(users, {
+      fields: [habitComments.authorId],
+      references: [users.id],
+      relationName: "habitCommentAuthor",
+    }),
+    targetHabit: one(habits, {
+      fields: [habitComments.targetHabitId],
+      references: [habits.id],
+    }),
+    parent: one(habitComments, {
+      fields: [habitComments.parentCommentId],
+      references: [habitComments.id],
+      relationName: "habitCommentThread",
+    }),
+    replies: many(habitComments, {
+      relationName: "habitCommentThread",
+    }),
+  })
+);
+
+export const habitReactionsRelations = relations(habitReactions, ({ one }) => ({
+  owner: one(users, {
+    fields: [habitReactions.ownerId],
+    references: [users.id],
+    relationName: "habitReactionOwner",
+  }),
+  author: one(users, {
+    fields: [habitReactions.authorId],
+    references: [users.id],
+    relationName: "habitReactionAuthor",
   }),
 }));

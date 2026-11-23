@@ -30,6 +30,25 @@ export class EmailMismatchError extends DalError {
   }
 }
 
+export class CommentWindowClosedError extends DalError {
+  readonly opensAtUtcMs: number | null;
+  readonly summary: string;
+
+  constructor(params: {
+    message?: string;
+    opensAtUtcMs: number | null;
+    summary: string;
+  }) {
+    super(
+      params.message ?? `Commenting is currently locked (${params.summary}).`,
+      "COMMENT_WINDOW_CLOSED",
+      403
+    );
+    this.opensAtUtcMs = params.opensAtUtcMs;
+    this.summary = params.summary;
+  }
+}
+
 export class NotFoundError extends DalError {
   constructor(message = "Requested resource was not found.") {
     super(message, "NOT_FOUND", 404);

@@ -116,6 +116,7 @@ const bulkImportHabitsSchema = z.object({
 function revalidateHabitPaths() {
   revalidatePath("/app", "layout");
   revalidatePath("/app/habits");
+  revalidatePath("/app/habits/circle", "layout");
   revalidatePath("/app/today");
   revalidatePath("/app/inbox");
   revalidatePath("/app/upcoming");

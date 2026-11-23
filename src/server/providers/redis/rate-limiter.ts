@@ -3,7 +3,11 @@ import type { Redis as UpstashRedis } from "@upstash/redis";
 import type IORedis from "ioredis";
 import { getRedisBackend } from "./client";
 
-export type RateLimitBucket = "auth" | "project_invite" | "test_push";
+export type RateLimitBucket =
+  | "auth"
+  | "project_invite"
+  | "habit_monitor_invite"
+  | "test_push";
 
 export interface RateLimitPolicy {
   maxRequests: number;
@@ -18,6 +22,11 @@ export const RATE_LIMIT_POLICIES: Record<RateLimitBucket, RateLimitPolicy> = {
     upstashWindow: "10 m",
   },
   project_invite: {
+    maxRequests: 20,
+    windowMs: 60 * 60 * 1000,
+    upstashWindow: "1 h",
+  },
+  habit_monitor_invite: {
     maxRequests: 20,
     windowMs: 60 * 60 * 1000,
     upstashWindow: "1 h",
@@ -226,6 +235,14 @@ export class UpstashRateLimiter implements RateLimiter {
           RATE_LIMIT_POLICIES.project_invite.upstashWindow
         ),
         prefix: "folio:rl:invite",
+      }),
+      habit_monitor_invite: new Ratelimit({
+        redis,
+        limiter: Ratelimit.slidingWindow(
+          RATE_LIMIT_POLICIES.habit_monitor_invite.maxRequests,
+          RATE_LIMIT_POLICIES.habit_monitor_invite.upstashWindow
+        ),
+        prefix: "folio:rl:habit_monitor_invite",
       }),
       test_push: new Ratelimit({
         redis,

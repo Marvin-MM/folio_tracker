@@ -10,6 +10,13 @@ import {
   deliverHabitNudgeFn,
   habitNudgeDispatcherFn,
 } from "@/server/inngest/habit-reminders";
+import {
+  deliverHabitReviewDigestFn,
+  habitReviewDigestCronFn,
+  sendHabitCommentNotificationFn,
+  sendHabitMonitorInviteFn,
+  sendHabitMonitorRequestFn,
+} from "@/server/inngest/habit-review-digest";
 
 export const { GET, POST, PUT } = serve({
   client: inngest,
@@ -22,5 +29,10 @@ export const { GET, POST, PUT } = serve({
     sendProjectInviteFn,
     habitNudgeDispatcherFn,
     deliverHabitNudgeFn,
+    habitReviewDigestCronFn,
+    deliverHabitReviewDigestFn,
+    sendHabitMonitorRequestFn,
+    sendHabitMonitorInviteFn,
+    sendHabitCommentNotificationFn,
   ],
 });

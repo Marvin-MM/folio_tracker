@@ -171,6 +171,17 @@ export class DrizzleHabitRepository implements HabitRepository {
     userId: string,
     executor: DbExecutor = this.database
   ): Promise<HabitTrackerSettingsRecord> {
+    // Fast read-only path: avoids acquiring a SQLite write lock when settings already exist
+    const [existing] = await executor
+      .select()
+      .from(habitTrackerSettings)
+      .where(eq(habitTrackerSettings.userId, userId))
+      .limit(1);
+
+    if (existing) {
+      return existing;
+    }
+
     await executor
       .insert(habitTrackerSettings)
       .values({

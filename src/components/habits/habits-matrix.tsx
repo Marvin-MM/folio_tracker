@@ -36,20 +36,21 @@ interface HabitsMatrixProps {
   todayDateKey: string;
   habits: HabitRecord[];
   logsByKey: Record<string, HabitLogRecord>;
-  linkedTaskByKey: Record<string, LinkedHabitTaskSummary>;
+  linkedTaskByKey?: Record<string, LinkedHabitTaskSummary>;
   summaryByHabitId: Record<string, HabitRowSummary>;
-  onCycleLog: (
+  readOnly?: boolean;
+  onCycleLog?: (
     habit: HabitRecord,
     dateKey: string,
     nextStatus: HabitLogStatus | null
   ) => void;
-  onSaveCellDetail: (
+  onSaveCellDetail?: (
     habit: HabitRecord,
     dateKey: string,
     status: HabitLogStatus | null,
     note: string | null
   ) => void;
-  onInspectHabit: (habit: HabitRecord) => void;
+  onInspectHabit?: (habit: HabitRecord) => void;
 }
 
 const WEEKDAY_TINY = ["Su", "Mo", "Tu", "We", "Th", "Fr", "Sa"] as const;
@@ -226,8 +227,9 @@ export function HabitsMatrix({
   todayDateKey,
   habits,
   logsByKey,
-  linkedTaskByKey,
+  linkedTaskByKey = {},
   summaryByHabitId,
+  readOnly = false,
   onCycleLog,
   onSaveCellDetail,
   onInspectHabit,
@@ -365,34 +367,53 @@ export function HabitsMatrix({
                     scope="row"
                     className="sticky left-0 z-10 border-r border-b border-border bg-card px-3 py-1.5 font-normal group-hover:bg-accent/25"
                   >
-                    <button
-                      type="button"
-                      onClick={() => onInspectHabit(habit)}
-                      className="flex min-h-9 w-full flex-col justify-center text-left focus:outline-none md:min-h-7"
-                    >
-                      <span className="flex items-center gap-1.5">
-                        <span className="max-w-[130px] truncate text-xs font-medium text-foreground sm:max-w-[165px]">
+                    {readOnly ? (
+                      <div className="flex min-h-9 w-full flex-col justify-center text-left md:min-h-7">
+                        <span className="max-w-[140px] truncate text-xs font-medium text-foreground sm:max-w-[175px]">
                           {habit.title}
                         </span>
-                        {hasLinkedTask || habit.autoSyncDailyTask ? (
-                          <Link2
-                            aria-label="Linked with tasks"
-                            className="size-3 shrink-0 text-done"
-                          />
-                        ) : null}
-                      </span>
-                      <span className="mt-0.5 flex items-center gap-1.5 text-[10px] text-muted-foreground">
-                        <span className="mono-tabular">{cadenceTag}</span>
-                        {habit.category ? (
-                          <>
-                            <span>·</span>
-                            <span className="max-w-[80px] truncate">
-                              {habit.category}
-                            </span>
-                          </>
-                        ) : null}
-                      </span>
-                    </button>
+                        <span className="mt-0.5 flex items-center gap-1.5 text-[10px] text-muted-foreground">
+                          <span className="mono-tabular">{cadenceTag}</span>
+                          {habit.category ? (
+                            <>
+                              <span>·</span>
+                              <span className="max-w-[80px] truncate">
+                                {habit.category}
+                              </span>
+                            </>
+                          ) : null}
+                        </span>
+                      </div>
+                    ) : (
+                      <button
+                        type="button"
+                        onClick={() => onInspectHabit?.(habit)}
+                        className="flex min-h-9 w-full flex-col justify-center text-left focus:outline-none md:min-h-7"
+                      >
+                        <span className="flex items-center gap-1.5">
+                          <span className="max-w-[130px] truncate text-xs font-medium text-foreground sm:max-w-[165px]">
+                            {habit.title}
+                          </span>
+                          {hasLinkedTask || habit.autoSyncDailyTask ? (
+                            <Link2
+                              aria-label="Linked with tasks"
+                              className="size-3 shrink-0 text-done"
+                            />
+                          ) : null}
+                        </span>
+                        <span className="mt-0.5 flex items-center gap-1.5 text-[10px] text-muted-foreground">
+                          <span className="mono-tabular">{cadenceTag}</span>
+                          {habit.category ? (
+                            <>
+                              <span>·</span>
+                              <span className="max-w-[80px] truncate">
+                                {habit.category}
+                              </span>
+                            </>
+                          ) : null}
+                        </span>
+                      </button>
+                    )}
                   </th>
 
                   {/* Scrollable Real Calendar Day Cells */}
@@ -455,7 +476,7 @@ export function HabitsMatrix({
                             <PopoverAnchor asChild>
                               <button
                                 type="button"
-                                disabled={isDisabled}
+                                disabled={isDisabled || (readOnly && !hasNote)}
                                 title={tooltipParts.join(" — ")}
                                 aria-label={`${habit.title} on ${day.dateKey}: ${
                                   isBeforeStart
@@ -469,12 +490,16 @@ export function HabitsMatrix({
                                 data-status={status ?? "unlogged"}
                                 onClick={(event) => {
                                   if (isDisabled) return;
+                                  if (readOnly) {
+                                    if (hasNote) setOpenCellKey(cellKey);
+                                    return;
+                                  }
                                   if (event.shiftKey) {
                                     event.preventDefault();
                                     setOpenCellKey(cellKey);
                                     return;
                                   }
-                                  onCycleLog(
+                                  onCycleLog?.(
                                     habit,
                                     day.dateKey,
                                     nextCycleStatus(status)
@@ -482,6 +507,13 @@ export function HabitsMatrix({
                                 }}
                                 onContextMenu={(event) => {
                                   if (isDisabled) return;
+                                  if (readOnly) {
+                                    if (hasNote) {
+                                      event.preventDefault();
+                                      setOpenCellKey(cellKey);
+                                    }
+                                    return;
+                                  }
                                   event.preventDefault();
                                   setOpenCellKey(cellKey);
                                 }}
@@ -490,14 +522,25 @@ export function HabitsMatrix({
                                   isDisabled
                                     ? "cursor-not-allowed border-transparent bg-transparent opacity-30"
                                     : status === "done"
-                                      ? "border-done/55 bg-done/15 text-done hover:bg-done/25"
+                                      ? readOnly
+                                        ? "border-done/55 bg-done/15 text-done"
+                                        : "border-done/55 bg-done/15 text-done hover:bg-done/25"
                                       : status === "missed"
-                                        ? "border-overdue/45 bg-overdue/12 text-overdue hover:bg-overdue/20"
+                                        ? readOnly
+                                          ? "border-overdue/45 bg-overdue/12 text-overdue"
+                                          : "border-overdue/45 bg-overdue/12 text-overdue hover:bg-overdue/20"
                                         : status === "skipped"
-                                          ? "border-border bg-muted text-muted-foreground hover:bg-accent"
+                                          ? readOnly
+                                            ? "border-border bg-muted text-muted-foreground"
+                                            : "border-border bg-muted text-muted-foreground hover:bg-accent"
                                           : isScheduled
-                                            ? "border-border/80 bg-background text-muted-foreground/40 hover:border-foreground/35 hover:bg-accent/70"
-                                            : "border-dashed border-border/50 bg-transparent text-muted-foreground/25 hover:border-border hover:bg-accent/40"
+                                            ? readOnly
+                                              ? "border-border/80 bg-background text-muted-foreground/40"
+                                              : "border-border/80 bg-background text-muted-foreground/40 hover:border-foreground/35 hover:bg-accent/70"
+                                            : readOnly
+                                              ? "border-dashed border-border/50 bg-transparent text-muted-foreground/25"
+                                              : "border-dashed border-border/50 bg-transparent text-muted-foreground/25 hover:border-border hover:bg-accent/40",
+                                  readOnly && !hasNote && "cursor-default"
                                 )}
                               >
                                 {status === "done" ? (
@@ -537,24 +580,46 @@ export function HabitsMatrix({
                                 side="bottom"
                                 className="w-72 border-border bg-popover p-3 shadow-none"
                               >
-                                <CellNotePopoverBody
-                                  key={`${cellKey}-${status ?? "none"}-${log?.note ?? ""}`}
-                                  habit={habit}
-                                  dateKey={day.dateKey}
-                                  initialStatus={status}
-                                  initialNote={log?.note ?? ""}
-                                  isBackfilledLate={isLate}
-                                  linkedTask={linkedTask}
-                                  onSave={(nextStatus, nextNote) =>
-                                    onSaveCellDetail(
-                                      habit,
-                                      day.dateKey,
-                                      nextStatus,
-                                      nextNote
-                                    )
-                                  }
-                                  onClose={() => setOpenCellKey(null)}
-                                />
+                                {readOnly ? (
+                                  <div className="space-y-1.5">
+                                    <div className="flex items-center justify-between gap-2">
+                                      <span className="truncate text-xs font-semibold text-foreground">
+                                        {habit.title}
+                                      </span>
+                                      <span className="mono-tabular text-[11px] text-muted-foreground">
+                                        {day.dateKey}
+                                      </span>
+                                    </div>
+                                    <p className="text-xs leading-relaxed text-foreground">
+                                      {log?.note}
+                                    </p>
+                                    {isLate ? (
+                                      <p className="inline-flex items-center gap-1 text-[10px] text-muted-foreground">
+                                        <Clock className="size-2.5" />
+                                        Backfilled &gt;48h after date
+                                      </p>
+                                    ) : null}
+                                  </div>
+                                ) : (
+                                  <CellNotePopoverBody
+                                    key={`${cellKey}-${status ?? "none"}-${log?.note ?? ""}`}
+                                    habit={habit}
+                                    dateKey={day.dateKey}
+                                    initialStatus={status}
+                                    initialNote={log?.note ?? ""}
+                                    isBackfilledLate={isLate}
+                                    linkedTask={linkedTask}
+                                    onSave={(nextStatus, nextNote) =>
+                                      onSaveCellDetail?.(
+                                        habit,
+                                        day.dateKey,
+                                        nextStatus,
+                                        nextNote
+                                      )
+                                    }
+                                    onClose={() => setOpenCellKey(null)}
+                                  />
+                                )}
                               </PopoverContent>
                             ) : null}
                           </Popover>
@@ -639,7 +704,9 @@ export function HabitsMatrix({
 
         <span className="inline-flex items-center gap-1">
           <Repeat2 className="size-3" />
-          Click to cycle · Right-click or Shift+click for note
+          {readOnly
+            ? "Read-only ledger · Tap or hover noted cells for context"
+            : "Click to cycle · Right-click or Shift+click for note"}
         </span>
       </div>
     </section>
