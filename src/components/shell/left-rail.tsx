@@ -14,6 +14,7 @@ import {
   Inbox,
   LogOut,
   Plus,
+  Repeat2,
   Settings,
   Users,
 } from "lucide-react";
@@ -119,6 +120,12 @@ export function LeftRail({
       label: "Notes",
       icon: FileText,
       count: summary.notesCount,
+    },
+    {
+      href: "/app/habits",
+      label: "Habits",
+      icon: Repeat2,
+      count: summary.habitsCount,
     },
   ] as const;
 

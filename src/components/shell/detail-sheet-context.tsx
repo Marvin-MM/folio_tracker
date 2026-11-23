@@ -12,6 +12,9 @@ import type { NoteWithReminders } from "@/server/dal/note-repository";
 import type { ProjectMemberWithUser } from "@/server/dal/project-repository";
 import type { EnrichedReminderItem } from "@/server/dal/reminder-repository";
 import type { TaskWithReminders } from "@/server/dal/task-repository";
+import type { SidebarProjectItem } from "@/server/dal/workspace-repository";
+import type { HabitRecord } from "@/server/db/schema";
+import type { HabitRowSummary } from "@/server/domain/habit-analytics";
 
 export type DetailSheetItem =
   | {
@@ -25,7 +28,15 @@ export type DetailSheetItem =
       data: NoteWithReminders;
       readOnly?: boolean;
     }
-  | { kind: "reminder"; data: EnrichedReminderItem };
+  | { kind: "reminder"; data: EnrichedReminderItem }
+  | {
+      kind: "habit";
+      data: {
+        habit: HabitRecord;
+        summary: HabitRowSummary | null;
+        projects: SidebarProjectItem[];
+      };
+    };
 
 interface DetailSheetContextValue {
   activeItem: DetailSheetItem | null;

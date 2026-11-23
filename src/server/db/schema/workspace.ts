@@ -6,9 +6,11 @@ import {
   primaryKey,
   sqliteTable,
   text,
+  type AnySQLiteColumn,
 } from "drizzle-orm/sqlite-core";
 import { ulid } from "ulidx";
 import { users } from "./auth";
+import { habits } from "./habits";
 
 export const PROJECT_ROLES = ["owner", "editor", "viewer"] as const;
 export type ProjectRole = (typeof PROJECT_ROLES)[number];
@@ -142,6 +144,10 @@ export const tasks = sqliteTable(
     assigneeId: text("assignee_id").references(() => users.id, {
       onDelete: "set null",
     }),
+    habitId: text("habit_id").references((): AnySQLiteColumn => habits.id, {
+      onDelete: "set null",
+    }),
+    habitDateKey: text("habit_date_key"),
     title: text("title").notNull(),
     description: text("description"),
     status: text("status", { enum: TASK_STATUSES }).notNull().default("todo"),
@@ -170,6 +176,7 @@ export const tasks = sqliteTable(
       table.position
     ),
     index("tasks_assignee_status_idx").on(table.assigneeId, table.status),
+    index("tasks_habit_date_idx").on(table.habitId, table.habitDateKey),
     check(
       "tasks_status_check",
       sql`${table.status} IN ('todo', 'in_progress', 'done', 'archived')`

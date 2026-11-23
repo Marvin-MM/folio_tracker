@@ -6,6 +6,10 @@ import { scheduleReminderFn } from "@/server/inngest/functions/schedule-reminder
 import { sendAuthEmailFn } from "@/server/inngest/functions/send-auth-email";
 import { sendProjectInviteFn } from "@/server/inngest/functions/send-project-invite";
 import { sendTestReminderFn } from "@/server/inngest/functions/send-test-reminder";
+import {
+  deliverHabitNudgeFn,
+  habitNudgeDispatcherFn,
+} from "@/server/inngest/habit-reminders";
 
 export const { GET, POST, PUT } = serve({
   client: inngest,
@@ -16,5 +20,7 @@ export const { GET, POST, PUT } = serve({
     sendAuthEmailFn,
     sendTestReminderFn,
     sendProjectInviteFn,
+    habitNudgeDispatcherFn,
+    deliverHabitNudgeFn,
   ],
 });

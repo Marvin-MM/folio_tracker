@@ -55,3 +55,15 @@ export const projectInvitedEvent = eventType("app/project.invited", {
     inviteUrl: z.string().url(),
   }),
 });
+
+export const habitNudgeEvent = eventType("app/habit.nudge", {
+  schema: z.object({
+    userId: z.string(),
+    dateKey: z.string(),
+    slot: z.string(),
+    kind: z.enum(["habit_preferred", "evening_checkin"]),
+    habitId: z.string().nullable(),
+    dedupKey: z.string(),
+    timezone: z.string(),
+  }),
+});

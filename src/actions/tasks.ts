@@ -60,6 +60,7 @@ function revalidateWorkspacePaths() {
   revalidatePath("/app/today");
   revalidatePath("/app/upcoming");
   revalidatePath("/app/reminders");
+  revalidatePath("/app/habits");
   revalidatePath("/app/projects", "layout");
 }
 
@@ -102,7 +103,10 @@ export async function toggleTaskStatusAction(
       user.id,
       parsed.data.taskId,
       parsed.data.status,
-      { cancelPendingReminders: parsed.data.cancelPendingReminders }
+      {
+        cancelPendingReminders: parsed.data.cancelPendingReminders,
+        timezone: user.timezone || "UTC",
+      }
     );
     revalidateWorkspacePaths();
     return actionOk(result);
@@ -126,7 +130,9 @@ export async function updateTaskAction(
   try {
     const { user } = await requireSession();
     const { taskId, ...patch } = parsed.data;
-    const updated = await taskService.updateTask(user.id, taskId, patch);
+    const updated = await taskService.updateTask(user.id, taskId, patch, {
+      timezone: user.timezone || "UTC",
+    });
     revalidateWorkspacePaths();
     return actionOk(updated);
   } catch (error) {

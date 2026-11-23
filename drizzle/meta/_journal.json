@@ -15,6 +15,13 @@
       "when": 1795297682173,
       "tag": "0001_harden_reminders_fk_outbox",
       "breakpoints": true
+    },
+    {
+      "idx": 2,
+      "version": "6",
+      "when": 1795421090252,
+      "tag": "0002_habits_phase_a",
+      "breakpoints": true
     }
   ]
 }

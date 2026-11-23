@@ -43,6 +43,13 @@ function getDeepLink(notif: NotificationRecord): string {
   if (notif.type === "reminder.test") {
     return "/app/settings/notifications";
   }
+  if (
+    notif.entityType === "habit" ||
+    notif.entityType === "habit_nudge" ||
+    notif.type === "habit.nudge"
+  ) {
+    return "/app/habits";
+  }
   if (notif.entityType === "note" && entityId) {
     return `/app/notes?item=${encodeURIComponent(entityId)}`;
   }

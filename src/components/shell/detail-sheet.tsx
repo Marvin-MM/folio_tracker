@@ -4,18 +4,27 @@ import { useState, useSyncExternalStore, useTransition } from "react";
 import Link from "next/link";
 import { formatInTimeZone } from "date-fns-tz";
 import {
+  Archive,
   Bell,
   Calendar,
   CheckSquare,
   Clock,
   ExternalLink,
   FileText,
+  Flame,
   Loader2,
   Pin,
+  Repeat2,
   Trash2,
   X,
 } from "lucide-react";
 import { toast } from "sonner";
+import {
+  archiveHabitAction,
+  deleteHabitAction,
+  promoteTaskToHabitAction,
+  updateHabitAction,
+} from "@/actions/habits";
 import { deleteNoteAction, updateNoteAction } from "@/actions/notes";
 import { cancelReminderAction, snoozeReminderAction } from "@/actions/reminders";
 import { deleteTaskAction, updateTaskAction } from "@/actions/tasks";
@@ -43,20 +52,29 @@ import {
   SheetHeader,
   SheetTitle,
 } from "@/components/ui/sheet";
+import { Switch } from "@/components/ui/switch";
 import { Textarea } from "@/components/ui/textarea";
 import {
   zonedWallClockToUtcMs,
   type SnoozePreset,
 } from "@/lib/reminder-presets";
+import { cn } from "@/lib/utils";
 import type { NoteWithReminders } from "@/server/dal/note-repository";
 import type { ProjectMemberWithUser } from "@/server/dal/project-repository";
 import type { EnrichedReminderItem } from "@/server/dal/reminder-repository";
 import type { TaskWithReminders } from "@/server/dal/task-repository";
+import type { SidebarProjectItem } from "@/server/dal/workspace-repository";
 import type {
+  HabitCadenceType,
+  HabitRecord,
   ReminderRecord,
   TaskPriority,
   TaskStatus,
 } from "@/server/db/schema";
+import {
+  parseScheduledDaysJson,
+  type HabitRowSummary,
+} from "@/server/domain/habit-analytics";
 
 interface DetailSheetProps {
   timezone: string;
@@ -296,12 +314,66 @@ function TaskInspectorForm({
     });
   };
 
+  const handlePromoteToHabit = () => {
+    if (readOnly || item.task.habitId) return;
+    startTransition(async () => {
+      const result = await promoteTaskToHabitAction({
+        taskId: item.task.id,
+      });
+      if (!result.ok) {
+        toast.error(result.error.message);
+        return;
+      }
+      onSync({
+        ...item,
+        task: result.data.task,
+      });
+      toast.success(`"${result.data.habit.title}" is now tracked as a habit.`);
+    });
+  };
+
   return (
     <div className="space-y-4">
       {readOnly ? (
         <p className="rounded-md border border-collab/35 bg-collab/10 px-2.5 py-1.5 text-[11px] text-foreground">
           Read-only viewer mode. You can still attach private reminders above.
         </p>
+      ) : null}
+
+      {/* Habit link / Track as Habit bar */}
+      {item.task.habitId ? (
+        <div className="flex items-center justify-between gap-2 rounded-md border border-done/35 bg-done/10 px-2.5 py-1.5 text-[11px]">
+          <span className="inline-flex min-w-0 items-center gap-1.5 font-medium text-done">
+            <Repeat2 className="size-3.5 shrink-0" />
+            <span className="truncate">
+              Linked habit{item.task.habitDateKey ? ` · ${item.task.habitDateKey}` : ""}
+            </span>
+          </span>
+          <Link
+            href="/app/habits"
+            className="inline-flex shrink-0 items-center gap-0.5 text-[11px] font-medium text-foreground underline-offset-2 hover:underline"
+          >
+            Open Habits
+            <ExternalLink className="size-2.5" />
+          </Link>
+        </div>
+      ) : !readOnly ? (
+        <div className="flex items-center justify-between gap-2 rounded-md border border-border bg-background px-2.5 py-1.5">
+          <span className="text-[11px] text-muted-foreground">
+            Repeating routine?
+          </span>
+          <Button
+            type="button"
+            variant="outline"
+            size="xs"
+            disabled={isPending}
+            onClick={handlePromoteToHabit}
+            className="h-7 gap-1 px-2 text-[11px]"
+          >
+            <Repeat2 className="size-3 text-done" />
+            Track as Habit
+          </Button>
+        </div>
       ) : null}
 
       <div className="space-y-1.5">
@@ -963,6 +1035,464 @@ function ReminderInspectorBody({
   );
 }
 
+const WEEKDAY_PICKER = [
+  { day: 1, short: "Mon", letter: "M" },
+  { day: 2, short: "Tue", letter: "T" },
+  { day: 3, short: "Wed", letter: "W" },
+  { day: 4, short: "Thu", letter: "T" },
+  { day: 5, short: "Fri", letter: "F" },
+  { day: 6, short: "Sat", letter: "S" },
+  { day: 0, short: "Sun", letter: "S" },
+] as const;
+
+function HabitInspectorForm({
+  habit,
+  summary,
+  projects,
+  timezone,
+  onSync,
+  onClose,
+}: {
+  habit: HabitRecord;
+  summary: HabitRowSummary | null;
+  projects: SidebarProjectItem[];
+  timezone: string;
+  onSync: (nextHabit: HabitRecord) => void;
+  onClose: () => void;
+}) {
+  const [title, setTitle] = useState(habit.title);
+  const [category, setCategory] = useState(habit.category ?? "");
+  const [description, setDescription] = useState(habit.description ?? "");
+  const [cadenceType, setCadenceType] = useState<HabitCadenceType>(
+    habit.cadenceType
+  );
+  const [scheduledDays, setScheduledDays] = useState<number[]>(() => {
+    const parsed = parseScheduledDaysJson(habit.scheduledDaysJson);
+    return parsed.length > 0 ? parsed : [1, 2, 3, 4, 5];
+  });
+  const [weeklyTargetCount, setWeeklyTargetCount] = useState<number>(
+    habit.weeklyTargetCount ?? 4
+  );
+  const [startDate, setStartDate] = useState(habit.startDate);
+  const [preferredTime, setPreferredTime] = useState(habit.preferredTime ?? "");
+  const [linkedProjectId, setLinkedProjectId] = useState(
+    habit.linkedProjectId ?? "none"
+  );
+  const [autoSyncDailyTask, setAutoSyncDailyTask] = useState(
+    habit.autoSyncDailyTask
+  );
+  const [isPending, startTransition] = useTransition();
+
+  const editableProjects = projects.filter(
+    (p) => p.role === "owner" || p.role === "editor"
+  );
+
+  const toggleWeekday = (day: number) => {
+    setScheduledDays((prev) => {
+      if (prev.includes(day)) {
+        if (prev.length === 1) return prev;
+        return prev.filter((d) => d !== day);
+      }
+      return [...prev, day].sort((a, b) => a - b);
+    });
+  };
+
+  const handleSave = () => {
+    if (!title.trim() || isPending) return;
+    startTransition(async () => {
+      const result = await updateHabitAction({
+        habitId: habit.id,
+        title: title.trim(),
+        category: category.trim() || null,
+        description: description.trim() || null,
+        cadenceType,
+        scheduledDays: cadenceType === "specific_days" ? scheduledDays : [],
+        weeklyTargetCount:
+          cadenceType === "weekly_target" ? weeklyTargetCount : null,
+        startDate,
+        preferredTime: preferredTime.trim() || null,
+        linkedProjectId: linkedProjectId === "none" ? null : linkedProjectId,
+        autoSyncDailyTask,
+      });
+
+      if (!result.ok) {
+        toast.error(result.error.message);
+        return;
+      }
+
+      onSync(result.data);
+      toast.success("Habit updated.");
+    });
+  };
+
+  const handleArchiveToggle = () => {
+    startTransition(async () => {
+      const result = await archiveHabitAction({
+        habitId: habit.id,
+        isArchived: !habit.isArchived,
+      });
+      if (!result.ok) {
+        toast.error(result.error.message);
+        return;
+      }
+      toast.success(
+        result.data.isArchived ? "Habit archived." : "Habit restored."
+      );
+      onClose();
+    });
+  };
+
+  const handleDelete = () => {
+    startTransition(async () => {
+      const result = await deleteHabitAction({ habitId: habit.id });
+      if (!result.ok) {
+        toast.error(result.error.message);
+        return;
+      }
+      toast.success("Habit deleted.");
+      onClose();
+    });
+  };
+
+  return (
+    <div className="space-y-4">
+      {summary ? (
+        <div className="grid grid-cols-3 gap-2 rounded-md border border-border bg-background p-2.5">
+          <div>
+            <p className="text-[10px] uppercase tracking-wider text-muted-foreground">
+              Streak
+            </p>
+            <p className="mono-tabular mt-0.5 inline-flex items-center gap-1 text-xs font-semibold text-foreground">
+              <Flame className="size-3 text-reminder" />
+              {summary.currentStreak}
+              {summary.streakUnit === "weeks" ? "w" : "d"}
+            </p>
+          </div>
+          <div>
+            <p className="text-[10px] uppercase tracking-wider text-muted-foreground">
+              Best
+            </p>
+            <p className="mono-tabular mt-0.5 text-xs font-semibold text-foreground">
+              {summary.bestStreak}
+              {summary.streakUnit === "weeks" ? "w" : "d"}
+            </p>
+          </div>
+          <div>
+            <p className="text-[10px] uppercase tracking-wider text-muted-foreground">
+              Month
+            </p>
+            <p className="mono-tabular mt-0.5 text-xs font-semibold text-done">
+              {summary.completionRate !== null
+                ? `${Math.round(summary.completionRate * 100)}%`
+                : "—"}
+            </p>
+          </div>
+        </div>
+      ) : null}
+
+      <div className="space-y-1.5">
+        <Label
+          htmlFor="inspector-habit-title"
+          className="text-[11px] text-muted-foreground"
+        >
+          Title
+        </Label>
+        <Input
+          id="inspector-habit-title"
+          name="habitTitle"
+          maxLength={120}
+          value={title}
+          onChange={(e) => setTitle(e.target.value)}
+          className="mira-row bg-background text-xs font-medium"
+        />
+      </div>
+
+      <div className="grid grid-cols-2 gap-2.5">
+        <div className="space-y-1.5">
+          <Label
+            htmlFor="inspector-habit-category"
+            className="text-[11px] text-muted-foreground"
+          >
+            Category
+          </Label>
+          <Input
+            id="inspector-habit-category"
+            name="habitCategory"
+            maxLength={48}
+            placeholder="Health, Craft, Focus…"
+            value={category}
+            onChange={(e) => setCategory(e.target.value)}
+            className="mira-row bg-background text-xs"
+          />
+        </div>
+        <div className="space-y-1.5">
+          <Label
+            htmlFor="inspector-habit-start"
+            className="text-[11px] text-muted-foreground"
+          >
+            Start date
+          </Label>
+          <Input
+            id="inspector-habit-start"
+            name="habitStartDate"
+            type="date"
+            value={startDate}
+            onChange={(e) => setStartDate(e.target.value)}
+            className="mono-tabular mira-row bg-background text-xs"
+          />
+        </div>
+      </div>
+
+      <div className="space-y-1.5">
+        <Label
+          htmlFor="inspector-habit-cadence"
+          className="text-[11px] text-muted-foreground"
+        >
+          Cadence
+        </Label>
+        <Select
+          name="habitCadence"
+          value={cadenceType}
+          onValueChange={(val) => setCadenceType(val as HabitCadenceType)}
+        >
+          <SelectTrigger
+            id="inspector-habit-cadence"
+            className="mira-row bg-background text-xs"
+          >
+            <SelectValue />
+          </SelectTrigger>
+          <SelectContent>
+            <SelectItem value="daily" className="text-xs">
+              Daily (every day)
+            </SelectItem>
+            <SelectItem value="specific_days" className="text-xs">
+              Specific weekdays
+            </SelectItem>
+            <SelectItem value="weekly_target" className="text-xs">
+              Weekly target (N× per week)
+            </SelectItem>
+          </SelectContent>
+        </Select>
+      </div>
+
+      {cadenceType === "specific_days" ? (
+        <div className="space-y-1.5">
+          <span className="text-[11px] text-muted-foreground">
+            Scheduled weekdays
+          </span>
+          <div className="grid grid-cols-7 gap-1">
+            {WEEKDAY_PICKER.map((item) => {
+              const active = scheduledDays.includes(item.day);
+              return (
+                <button
+                  key={item.day}
+                  type="button"
+                  aria-label={item.short}
+                  aria-pressed={active}
+                  onClick={() => toggleWeekday(item.day)}
+                  className={cn(
+                    "mira-row rounded border text-xs font-medium transition-colors",
+                    active
+                      ? "border-primary bg-primary text-primary-foreground"
+                      : "border-border bg-background text-muted-foreground hover:text-foreground"
+                  )}
+                >
+                  {item.letter}
+                </button>
+              );
+            })}
+          </div>
+        </div>
+      ) : null}
+
+      {cadenceType === "weekly_target" ? (
+        <div className="space-y-1.5">
+          <span className="text-[11px] text-muted-foreground">
+            Target completions per week
+          </span>
+          <div className="grid grid-cols-7 gap-1">
+            {[1, 2, 3, 4, 5, 6, 7].map((n) => (
+              <button
+                key={n}
+                type="button"
+                aria-pressed={weeklyTargetCount === n}
+                onClick={() => setWeeklyTargetCount(n)}
+                className={cn(
+                  "mono-tabular mira-row rounded border text-xs font-medium transition-colors",
+                  weeklyTargetCount === n
+                    ? "border-primary bg-primary text-primary-foreground"
+                    : "border-border bg-background text-muted-foreground hover:text-foreground"
+                )}
+              >
+                {n}×
+              </button>
+            ))}
+          </div>
+        </div>
+      ) : null}
+
+      <div className="grid grid-cols-2 gap-2.5">
+        <div className="space-y-1.5">
+          <div className="flex items-center justify-between">
+            <Label
+              htmlFor="inspector-habit-time"
+              className="text-[11px] text-muted-foreground"
+            >
+              Nudge time
+            </Label>
+            {preferredTime ? (
+              <button
+                type="button"
+                onClick={() => setPreferredTime("")}
+                className="text-[10px] text-muted-foreground hover:text-foreground"
+              >
+                Clear
+              </button>
+            ) : null}
+          </div>
+          <Input
+            id="inspector-habit-time"
+            name="habitPreferredTime"
+            type="time"
+            value={preferredTime}
+            onChange={(e) => setPreferredTime(e.target.value)}
+            className="mono-tabular mira-row bg-background text-xs"
+          />
+        </div>
+
+        <div className="space-y-1.5">
+          <Label
+            htmlFor="inspector-habit-project"
+            className="text-[11px] text-muted-foreground"
+          >
+            Linked project
+          </Label>
+          <Select
+            name="habitProject"
+            value={linkedProjectId}
+            onValueChange={setLinkedProjectId}
+          >
+            <SelectTrigger
+              id="inspector-habit-project"
+              className="mira-row bg-background text-xs"
+            >
+              <SelectValue />
+            </SelectTrigger>
+            <SelectContent>
+              <SelectItem value="none" className="text-xs">
+                Personal (none)
+              </SelectItem>
+              {editableProjects.map((project) => (
+                <SelectItem
+                  key={project.id}
+                  value={project.id}
+                  className="text-xs"
+                >
+                  {project.name}
+                </SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
+        </div>
+      </div>
+
+      <div className="flex items-center justify-between rounded-md border border-border bg-background px-3 py-2">
+        <div className="space-y-0.5 pr-3">
+          <Label
+            htmlFor="inspector-habit-autosync"
+            className="text-xs font-medium text-foreground"
+          >
+            Auto-sync daily task
+          </Label>
+          <p className="text-[11px] text-muted-foreground">
+            Keep linked tasks synchronized with this habit&apos;s check-ins.
+          </p>
+        </div>
+        <Switch
+          id="inspector-habit-autosync"
+          checked={autoSyncDailyTask}
+          onCheckedChange={setAutoSyncDailyTask}
+        />
+      </div>
+
+      <div className="space-y-1.5">
+        <Label
+          htmlFor="inspector-habit-desc"
+          className="text-[11px] text-muted-foreground"
+        >
+          Notes / cue
+        </Label>
+        <Textarea
+          id="inspector-habit-desc"
+          name="habitDescription"
+          rows={3}
+          placeholder="What triggers this habit or defines done?"
+          value={description}
+          onChange={(e) => setDescription(e.target.value)}
+          className="bg-background text-xs leading-relaxed"
+        />
+      </div>
+
+      <div className="flex flex-wrap items-center justify-between gap-2 pt-1">
+        <div className="flex items-center gap-1">
+          <Button
+            type="button"
+            variant="ghost"
+            size="sm"
+            disabled={isPending}
+            onClick={handleArchiveToggle}
+            className="mira-row gap-1 text-xs text-muted-foreground hover:text-foreground"
+          >
+            <Archive className="size-3.5" />
+            {habit.isArchived ? "Restore" : "Archive"}
+          </Button>
+          <Button
+            type="button"
+            variant="ghost"
+            size="sm"
+            disabled={isPending}
+            onClick={handleDelete}
+            className="mira-row gap-1 text-xs text-overdue hover:text-overdue"
+          >
+            <Trash2 className="size-3.5" />
+            Delete
+          </Button>
+        </div>
+
+        <Button
+          type="button"
+          size="sm"
+          disabled={isPending || !title.trim()}
+          onClick={handleSave}
+          className="mira-row px-4 text-xs"
+        >
+          {isPending ? (
+            <>
+              <Loader2 className="mr-1.5 size-3 animate-spin" />
+              Saving…
+            </>
+          ) : (
+            "Save habit"
+          )}
+        </Button>
+      </div>
+
+      <Separator />
+
+      <dl className="grid grid-cols-[88px_1fr] gap-y-1.5 text-[11px]">
+        <dt className="text-muted-foreground">Created</dt>
+        <dd className="mono-tabular text-muted-foreground">
+          {formatUtcMs(habit.createdAt, timezone)}
+        </dd>
+        <dt className="text-muted-foreground">Updated</dt>
+        <dd className="mono-tabular text-muted-foreground">
+          {formatUtcMs(habit.updatedAt, timezone)}
+        </dd>
+      </dl>
+    </div>
+  );
+}
+
 const DESKTOP_MEDIA_QUERY = "(min-width: 1024px)";
 
 function subscribeDesktopViewport(callback: () => void): () => void {
@@ -1012,12 +1542,19 @@ export function DetailSheet({ timezone }: DetailSheetProps) {
             entityType: "note" as const,
             entityId: activeItem.data.note.id,
           }
-        : {
-            icon: Bell,
-            label: "Reminder",
-            entityType: null,
-            entityId: null,
-          };
+        : activeItem.kind === "habit"
+          ? {
+              icon: Repeat2,
+              label: "Habit",
+              entityType: null,
+              entityId: null,
+            }
+          : {
+              icon: Bell,
+              label: "Reminder",
+              entityType: null,
+              entityId: null,
+            };
 
   const HeaderIcon = headerMeta.icon;
 
@@ -1055,6 +1592,25 @@ export function DetailSheet({ timezone }: DetailSheetProps) {
               kind: "note",
               data: next,
               readOnly: item.readOnly,
+            }))
+          }
+          onClose={closeDetail}
+        />
+      );
+    }
+
+    if (item.kind === "habit") {
+      return (
+        <HabitInspectorForm
+          key={`${item.data.habit.id}-${item.data.habit.updatedAt}`}
+          habit={item.data.habit}
+          summary={item.data.summary}
+          projects={item.data.projects}
+          timezone={timezone}
+          onSync={(nextHabit) =>
+            updateActiveDetail(() => ({
+              kind: "habit",
+              data: { ...item.data, habit: nextHabit },
             }))
           }
           onClose={closeDetail}

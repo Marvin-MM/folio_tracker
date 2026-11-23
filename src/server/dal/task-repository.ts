@@ -42,8 +42,11 @@ export interface TaskAuthMetadata {
   userId: string;
   projectId: string | null;
   assigneeId: string | null;
+  habitId: string | null;
+  habitDateKey: string | null;
   title: string;
   status: TaskStatus;
+  dueAt: number | null;
   completedAt: number | null;
   position: string;
 }
@@ -52,6 +55,8 @@ export interface CreateTaskRowInput {
   userId: string;
   projectId?: string | null;
   assigneeId?: string | null;
+  habitId?: string | null;
+  habitDateKey?: string | null;
   title: string;
   description?: string | null;
   status?: TaskStatus;
@@ -70,6 +75,8 @@ export interface UpdateTaskRowInput {
   completedAt?: number | null;
   projectId?: string | null;
   assigneeId?: string | null;
+  habitId?: string | null;
+  habitDateKey?: string | null;
 }
 
 export type TaskScope =
@@ -120,6 +127,16 @@ export interface TaskRepository {
     scope: TaskScope,
     executor?: DbExecutor
   ): Promise<number>;
+  syncLinkedTasksForHabitDay(
+    params: {
+      userId: string;
+      habitId: string;
+      dateKey: string;
+      completed: boolean;
+      nowMs: number;
+    },
+    executor?: DbExecutor
+  ): Promise<number>;
   listInboxWithReminders(userId: string): Promise<TaskListQueryResult>;
   listTodayWithReminders(
     userId: string,
@@ -155,6 +172,8 @@ export class DrizzleTaskRepository implements TaskRepository {
         userId: input.userId,
         projectId: input.projectId ?? null,
         assigneeId: input.assigneeId ?? null,
+        habitId: input.habitId ?? null,
+        habitDateKey: input.habitDateKey ?? null,
         title: input.title,
         description: input.description ?? null,
         status: input.status ?? "todo",
@@ -187,8 +206,11 @@ export class DrizzleTaskRepository implements TaskRepository {
         userId: tasks.userId,
         projectId: tasks.projectId,
         assigneeId: tasks.assigneeId,
+        habitId: tasks.habitId,
+        habitDateKey: tasks.habitDateKey,
         title: tasks.title,
         status: tasks.status,
+        dueAt: tasks.dueAt,
         completedAt: tasks.completedAt,
         position: tasks.position,
       })
@@ -343,6 +365,36 @@ export class DrizzleTaskRepository implements TaskRepository {
     }
 
     return ordered.length;
+  }
+
+  async syncLinkedTasksForHabitDay(
+    params: {
+      userId: string;
+      habitId: string;
+      dateKey: string;
+      completed: boolean;
+      nowMs: number;
+    },
+    executor: DbExecutor = this.database
+  ): Promise<number> {
+    const updated = await executor
+      .update(tasks)
+      .set({
+        status: params.completed ? "done" : "todo",
+        completedAt: params.completed ? params.nowMs : null,
+        updatedAt: params.nowMs,
+      })
+      .where(
+        and(
+          eq(tasks.userId, params.userId),
+          eq(tasks.habitId, params.habitId),
+          eq(tasks.habitDateKey, params.dateKey),
+          ne(tasks.status, "archived")
+        )
+      )
+      .returning({ id: tasks.id });
+
+    return updated.length;
   }
 
   private async hydrateTasks(

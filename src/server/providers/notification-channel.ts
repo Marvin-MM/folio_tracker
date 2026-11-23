@@ -3,7 +3,7 @@ export interface NotificationPayload {
   type: string;
   title: string;
   body: string;
-  entityType: "task" | "note";
+  entityType: "task" | "note" | "habit" | "habit_nudge";
   entityId: string;
   reminderId?: string;
   deepLink: string;

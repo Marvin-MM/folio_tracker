@@ -61,6 +61,19 @@ export type AppDomainEvent =
         role: "editor" | "viewer";
         inviteUrl: string;
       };
+    }
+  | {
+      id?: string;
+      name: "app/habit.nudge";
+      data: {
+        userId: string;
+        dateKey: string;
+        slot: string;
+        kind: "habit_preferred" | "evening_checkin";
+        habitId: string | null;
+        dedupKey: string;
+        timezone: string;
+      };
     };
 
 export interface EventBus {

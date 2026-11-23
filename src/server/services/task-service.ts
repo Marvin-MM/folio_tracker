@@ -13,6 +13,10 @@ import {
   ValidationError,
 } from "@/server/dal/errors";
 import {
+  habitRepository,
+  type HabitRepository,
+} from "@/server/dal/habits";
+import {
   projectRepository,
   type ProjectRepository,
 } from "@/server/dal/project-repository";
@@ -26,6 +30,10 @@ import {
   type TaskRepository,
   type TaskScope,
 } from "@/server/dal/task-repository";
+import {
+  userRepository,
+  type UserRepository,
+} from "@/server/dal/user-repository";
 import { db, withDbRetry, type AppDatabase, type DbExecutor } from "@/server/db";
 import type {
   ReminderRecord,
@@ -33,6 +41,7 @@ import type {
   TaskRecord,
   TaskStatus,
 } from "@/server/db/schema";
+import { computeIsBackfilledLate } from "@/server/domain/habit-analytics";
 import {
   defaultEventBus,
   type AppDomainEvent,
@@ -69,6 +78,8 @@ export interface TaskServiceDeps {
   tasks?: TaskRepository;
   reminders?: ReminderRepository;
   projects?: ProjectRepository;
+  habits?: HabitRepository;
+  users?: UserRepository;
   membershipLookup?: ProjectMembershipLookup;
   reminderService?: ReminderService;
   eventBus?: EventBus;
@@ -79,6 +90,8 @@ export class TaskService {
   private readonly tasks: TaskRepository;
   private readonly reminders: ReminderRepository;
   private readonly projects: ProjectRepository;
+  private readonly habits: HabitRepository;
+  private readonly users: UserRepository;
   private readonly membershipLookup: ProjectMembershipLookup;
   private readonly reminderService: ReminderService;
   private readonly eventBus: EventBus;
@@ -88,6 +101,8 @@ export class TaskService {
     this.tasks = deps.tasks ?? taskRepository;
     this.reminders = deps.reminders ?? reminderRepository;
     this.projects = deps.projects ?? projectRepository;
+    this.habits = deps.habits ?? habitRepository;
+    this.users = deps.users ?? userRepository;
     this.membershipLookup =
       deps.membershipLookup ?? createDrizzleMembershipLookup(this.database);
     this.eventBus = deps.eventBus ?? defaultEventBus;
@@ -98,6 +113,78 @@ export class TaskService {
         reminders: this.reminders,
         eventBus: this.eventBus,
       });
+  }
+
+  /**
+   * Synchronizes a task's linked habit log inside the active SQLite transaction
+   * whenever a task owned by `userId` transitions into or out of `'done'`.
+   */
+  private async syncHabitLogInTransaction(
+    tx: DbExecutor,
+    params: {
+      userId: string;
+      existing: Pick<
+        TaskAuthMetadata,
+        "userId" | "habitId" | "habitDateKey" | "status"
+      >;
+      nextStatus: TaskStatus;
+      nowMs: number;
+      timezone?: string;
+    }
+  ): Promise<void> {
+    const { existing, userId, nextStatus, nowMs } = params;
+    if (
+      !existing.habitId ||
+      !existing.habitDateKey ||
+      existing.userId !== userId
+    ) {
+      return;
+    }
+
+    const habit = await this.habits.getHabitForUser(userId, existing.habitId, tx);
+    if (!habit) {
+      return;
+    }
+
+    if (nextStatus === "done") {
+      const tz =
+        params.timezone ??
+        (await this.users.getById(userId, tx))?.timezone ??
+        "UTC";
+      const existingLog = await this.habits.getLogForHabitDay(
+        userId,
+        habit.id,
+        existing.habitDateKey,
+        tx
+      );
+      const isBackfilledLate = computeIsBackfilledLate(
+        existing.habitDateKey,
+        nowMs,
+        tz
+      );
+      await this.habits.upsertLog(
+        {
+          habitId: habit.id,
+          userId,
+          dateKey: existing.habitDateKey,
+          status: "done",
+          note: existingLog?.note ?? null,
+          loggedAt: nowMs,
+          isBackfilledLate,
+        },
+        tx
+      );
+    } else if (
+      existing.status === "done" &&
+      (nextStatus === "todo" || nextStatus === "in_progress")
+    ) {
+      await this.habits.deleteLogForUser(
+        userId,
+        habit.id,
+        existing.habitDateKey,
+        tx
+      );
+    }
   }
 
   private async assertCanMutateTask(
@@ -250,7 +337,7 @@ export class TaskService {
     userId: string,
     taskId: string,
     nextStatus: TaskStatus,
-    options: { cancelPendingReminders?: boolean } = {}
+    options: { cancelPendingReminders?: boolean; timezone?: string } = {}
   ): Promise<{ task: TaskRecord; cancelledReminderCount: number }> {
     const cancelPendingReminders = options.cancelPendingReminders ?? true;
 
@@ -262,7 +349,8 @@ export class TaskService {
 
     const { updatedTask, cancelledEvents } = await withDbRetry(() =>
       this.database.transaction(async (tx) => {
-        const completedAt = nextStatus === "done" ? Date.now() : null;
+        const nowMs = Date.now();
+        const completedAt = nextStatus === "done" ? nowMs : null;
         const updated = existing.projectId
           ? await this.tasks.updateProjectTask(
               taskId,
@@ -280,6 +368,15 @@ export class TaskService {
         if (!updated) {
           throw new NotFoundError("Task not found.");
         }
+
+        // Bidirectional ACID Task -> Habit log synchronization
+        await this.syncHabitLogInTransaction(tx, {
+          userId,
+          existing,
+          nextStatus,
+          nowMs,
+          timezone: options.timezone,
+        });
 
         const events: AppDomainEvent[] = [];
 
@@ -338,7 +435,8 @@ export class TaskService {
   async updateTask(
     userId: string,
     taskId: string,
-    input: UpdateTaskInput
+    input: UpdateTaskInput,
+    options: { timezone?: string } = {}
   ): Promise<TaskRecord> {
     if (input.title !== undefined && !input.title.trim()) {
       throw new ValidationError("Task title cannot be empty.");
@@ -366,10 +464,11 @@ export class TaskService {
 
     const { updatedTask, cancelledEvents } = await withDbRetry(() =>
       this.database.transaction(async (tx) => {
+        const nowMs = Date.now();
         const completedAt =
           input.status !== undefined
             ? input.status === "done"
-              ? existing.completedAt ?? Date.now()
+              ? existing.completedAt ?? nowMs
               : null
             : undefined;
 
@@ -401,6 +500,16 @@ export class TaskService {
 
         if (!updated) {
           throw new NotFoundError("Task not found.");
+        }
+
+        if (input.status !== undefined && input.status !== existing.status) {
+          await this.syncHabitLogInTransaction(tx, {
+            userId,
+            existing,
+            nextStatus: input.status,
+            nowMs,
+            timezone: options.timezone,
+          });
         }
 
         const events: AppDomainEvent[] = [];

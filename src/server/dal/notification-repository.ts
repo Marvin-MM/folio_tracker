@@ -34,6 +34,11 @@ export interface NotificationRepository {
     limit?: number
   ): Promise<NotificationRecord[]>;
   countUnreadForUser(userId: string): Promise<number>;
+  hasNotificationForEntity(
+    userId: string,
+    type: string,
+    entityId: string
+  ): Promise<boolean>;
   markRead(userId: string, notificationId: string): Promise<boolean>;
   markAllRead(userId: string): Promise<number>;
   upsertPushSubscription(
@@ -98,6 +103,26 @@ export class DrizzleNotificationRepository implements NotificationRepository {
       );
 
     return row?.value ?? 0;
+  }
+
+  async hasNotificationForEntity(
+    userId: string,
+    type: string,
+    entityId: string
+  ): Promise<boolean> {
+    const [row] = await this.database
+      .select({ id: notifications.id })
+      .from(notifications)
+      .where(
+        and(
+          eq(notifications.userId, userId),
+          eq(notifications.type, type),
+          eq(notifications.entityId, entityId)
+        )
+      )
+      .limit(1);
+
+    return Boolean(row);
   }
 
   async markRead(userId: string, notificationId: string): Promise<boolean> {

@@ -15,6 +15,7 @@ import {
 } from "drizzle-orm";
 import { db, type AppDatabase } from "@/server/db";
 import {
+  habits,
   notes,
   notifications,
   projectMembers,
@@ -45,6 +46,7 @@ export interface SidebarSummary {
   upcomingCount: number;
   remindersCount: number;
   notesCount: number;
+  habitsCount: number;
   unreadNotificationsCount: number;
   projects: SidebarProjectItem[];
 }
@@ -92,6 +94,7 @@ export class DrizzleWorkspaceRepository implements WorkspaceRepository {
       upcomingReminderTaskRows,
       reminderRows,
       noteRows,
+      habitRows,
       unreadRows,
       memberProjects,
     ] = await Promise.all([
@@ -140,6 +143,10 @@ export class DrizzleWorkspaceRepository implements WorkspaceRepository {
         .select({ value: count() })
         .from(notes)
         .where(and(eq(notes.userId, userId), isNull(notes.projectId))),
+      this.database
+        .select({ value: count() })
+        .from(habits)
+        .where(and(eq(habits.userId, userId), eq(habits.isArchived, false))),
       cachedUnread === null
         ? this.database
             .select({ value: count() })
@@ -245,6 +252,7 @@ export class DrizzleWorkspaceRepository implements WorkspaceRepository {
       upcomingCount: upcomingRows[0]?.value ?? 0,
       remindersCount: reminderRows[0]?.value ?? 0,
       notesCount: noteRows[0]?.value ?? 0,
+      habitsCount: habitRows[0]?.value ?? 0,
       unreadNotificationsCount: unreadCount,
       projects: memberProjects.map((project) => ({
         ...project,

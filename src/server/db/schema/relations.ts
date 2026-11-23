@@ -1,5 +1,6 @@
 import { relations } from "drizzle-orm";
 import { accounts, sessions, users } from "./auth";
+import { habitLogs, habits, habitTrackerSettings } from "./habits";
 import { notifications, pushSubscriptions } from "./notifications";
 import { reminders } from "./reminders";
 import {
@@ -11,7 +12,7 @@ import {
   tasks,
 } from "./workspace";
 
-export const usersRelations = relations(users, ({ many }) => ({
+export const usersRelations = relations(users, ({ one, many }) => ({
   sessions: many(sessions),
   accounts: many(accounts),
   ownedProjects: many(projects),
@@ -24,6 +25,12 @@ export const usersRelations = relations(users, ({ many }) => ({
   reminders: many(reminders),
   pushSubscriptions: many(pushSubscriptions),
   notifications: many(notifications),
+  habitTrackerSettings: one(habitTrackerSettings, {
+    fields: [users.id],
+    references: [habitTrackerSettings.userId],
+  }),
+  habits: many(habits),
+  habitLogs: many(habitLogs),
 }));
 
 export const sessionsRelations = relations(sessions, ({ one }) => ({
@@ -50,6 +57,7 @@ export const projectsRelations = relations(projects, ({ one, many }) => ({
   tasks: many(tasks),
   notes: many(notes),
   activities: many(projectActivities),
+  linkedHabits: many(habits),
 }));
 
 export const projectMembersRelations = relations(projectMembers, ({ one }) => ({
@@ -91,6 +99,10 @@ export const tasksRelations = relations(tasks, ({ one, many }) => ({
   project: one(projects, {
     fields: [tasks.projectId],
     references: [projects.id],
+  }),
+  habit: one(habits, {
+    fields: [tasks.habitId],
+    references: [habits.id],
   }),
   reminders: many(reminders),
 }));
@@ -149,6 +161,40 @@ export const pushSubscriptionsRelations = relations(
 export const notificationsRelations = relations(notifications, ({ one }) => ({
   user: one(users, {
     fields: [notifications.userId],
+    references: [users.id],
+  }),
+}));
+
+export const habitTrackerSettingsRelations = relations(
+  habitTrackerSettings,
+  ({ one }) => ({
+    user: one(users, {
+      fields: [habitTrackerSettings.userId],
+      references: [users.id],
+    }),
+  })
+);
+
+export const habitsRelations = relations(habits, ({ one, many }) => ({
+  user: one(users, {
+    fields: [habits.userId],
+    references: [users.id],
+  }),
+  linkedProject: one(projects, {
+    fields: [habits.linkedProjectId],
+    references: [projects.id],
+  }),
+  logs: many(habitLogs),
+  linkedTasks: many(tasks),
+}));
+
+export const habitLogsRelations = relations(habitLogs, ({ one }) => ({
+  habit: one(habits, {
+    fields: [habitLogs.habitId],
+    references: [habits.id],
+  }),
+  user: one(users, {
+    fields: [habitLogs.userId],
     references: [users.id],
   }),
 }));
