@@ -1,7 +1,8 @@
-import { and, asc, desc, eq, gte, inArray, isNotNull, lte, or } from "drizzle-orm";
+import { and, asc, desc, eq, gte, inArray, isNotNull, lte, or, sql } from "drizzle-orm";
 import { generateEvenPositions } from "@/lib/fractional-index";
 import { db, type AppDatabase, type DbExecutor } from "@/server/db";
 import {
+  habitImportAliases,
   habitLogs,
   habits,
   habitTrackerSettings,
@@ -10,6 +11,7 @@ import {
   type HabitCadenceType,
   type HabitCommentMode,
   type HabitLogRecord,
+  type HabitImportAliasRecord,
   type HabitLogStatus,
   type HabitRecord,
   type HabitTrackerSettingsRecord,
@@ -29,6 +31,15 @@ export interface CreateHabitRowInput {
   linkedProjectId?: string | null;
   autoSyncDailyTask?: boolean;
   position: string;
+}
+
+export interface UpsertAliasRowInput {
+  userId: string;
+  habitId: string;
+  sourceTitle: string;
+  normalizedTitle: string;
+  firstSeenDateKey: string;
+  lastSeenDateKey: string;
 }
 
 export interface UpdateHabitRowInput {
@@ -121,6 +132,14 @@ export interface HabitRepository {
     patch: UpdateHabitRowInput,
     executor?: DbExecutor
   ): Promise<HabitRecord | null>;
+  listAliasesForUser(
+    userId: string,
+    executor?: DbExecutor
+  ): Promise<HabitImportAliasRecord[]>;
+  upsertAliasesBatch(
+    inputs: UpsertAliasRowInput[],
+    executor?: DbExecutor
+  ): Promise<HabitImportAliasRecord[]>;
   deleteHabitForUser(
     userId: string,
     habitId: string,
@@ -146,6 +165,11 @@ export interface HabitRepository {
     input: UpsertHabitLogRowInput,
     executor?: DbExecutor
   ): Promise<HabitLogRecord>;
+  /** Batch variant of `upsertLog` for backfills; uses the same unique key. */
+  upsertLogsBatch(
+    inputs: UpsertHabitLogRowInput[],
+    executor?: DbExecutor
+  ): Promise<HabitLogRecord[]>;
   deleteLogForUser(
     userId: string,
     habitId: string,
@@ -348,6 +372,59 @@ export class DrizzleHabitRepository implements HabitRepository {
     return updated ?? null;
   }
 
+  async listAliasesForUser(
+    userId: string,
+    executor: DbExecutor = this.database
+  ): Promise<HabitImportAliasRecord[]> {
+    return executor
+      .select()
+      .from(habitImportAliases)
+      .where(eq(habitImportAliases.userId, userId))
+      .orderBy(asc(habitImportAliases.normalizedTitle));
+  }
+
+  async upsertAliasesBatch(
+    inputs: UpsertAliasRowInput[],
+    executor: DbExecutor = this.database
+  ): Promise<HabitImportAliasRecord[]> {
+    if (inputs.length === 0) return [];
+    const saved: HabitImportAliasRecord[] = [];
+    const chunkSize = 200;
+
+    for (let i = 0; i < inputs.length; i += chunkSize) {
+      const chunk = inputs.slice(i, i + chunkSize);
+      const rows = await executor
+        .insert(habitImportAliases)
+        .values(
+          chunk.map((input) => ({
+            userId: input.userId,
+            habitId: input.habitId,
+            sourceTitle: input.sourceTitle,
+            normalizedTitle: input.normalizedTitle,
+            firstSeenDateKey: input.firstSeenDateKey,
+            lastSeenDateKey: input.lastSeenDateKey,
+          }))
+        )
+        .onConflictDoUpdate({
+          target: [
+            habitImportAliases.userId,
+            habitImportAliases.normalizedTitle,
+          ],
+          set: {
+            habitId: sql`excluded.habit_id`,
+            sourceTitle: sql`excluded.source_title`,
+            firstSeenDateKey: sql`excluded.first_seen_date_key`,
+            lastSeenDateKey: sql`excluded.last_seen_date_key`,
+          },
+          setWhere: eq(habitImportAliases.userId, chunk[0]!.userId),
+        })
+        .returning();
+      saved.push(...rows);
+    }
+
+    return saved;
+  }
+
   async deleteHabitForUser(
     userId: string,
     habitId: string,
@@ -456,6 +533,46 @@ export class DrizzleHabitRepository implements HabitRepository {
     if (!saved) {
       throw new Error("Failed to upsert habit log.");
     }
+    return saved;
+  }
+
+  async upsertLogsBatch(
+    inputs: UpsertHabitLogRowInput[],
+    executor: DbExecutor = this.database
+  ): Promise<HabitLogRecord[]> {
+    if (inputs.length === 0) return [];
+    const saved: HabitLogRecord[] = [];
+    const chunkSize = 400;
+
+    for (let i = 0; i < inputs.length; i += chunkSize) {
+      const chunk = inputs.slice(i, i + chunkSize);
+      const rows = await executor
+        .insert(habitLogs)
+        .values(
+          chunk.map((input) => ({
+            habitId: input.habitId,
+            userId: input.userId,
+            dateKey: input.dateKey,
+            status: input.status,
+            note: input.note ?? null,
+            loggedAt: input.loggedAt,
+            isBackfilledLate: input.isBackfilledLate,
+          }))
+        )
+        .onConflictDoUpdate({
+          target: [habitLogs.habitId, habitLogs.dateKey],
+          set: {
+            status: sql`excluded.status`,
+            note: sql`excluded.note`,
+            loggedAt: sql`excluded.logged_at`,
+            isBackfilledLate: sql`excluded.is_backfilled_late`,
+          },
+          setWhere: eq(habitLogs.userId, chunk[0]!.userId),
+        })
+        .returning();
+      saved.push(...rows);
+    }
+
     return saved;
   }
 
