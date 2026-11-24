@@ -9,6 +9,10 @@ import {
   habitNudgeDispatcherFn,
 } from "@/server/inngest/habit-reminders";
 import {
+  deliverHabitStreakRiskFn,
+  habitStreakRiskCronFn,
+} from "@/server/inngest/habit-streak-nudges";
+import {
   deliverHabitReviewDigestFn,
   habitReviewDigestCronFn,
   sendHabitCommentNotificationFn,
@@ -30,4 +34,6 @@ export const inngestFunctions = [
   sendHabitMonitorRequestFn,
   sendHabitMonitorInviteFn,
   sendHabitCommentNotificationFn,
+  habitStreakRiskCronFn,
+  deliverHabitStreakRiskFn,
 ];

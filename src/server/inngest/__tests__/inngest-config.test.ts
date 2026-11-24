@@ -49,8 +49,8 @@ describe("Inngest Free-Plan Concurrency & Function Registry", () => {
     expect(resolveInngestConcurrency("25")).toBe(25);
   });
 
-  it("registers all 13 unique functions within the Free-Plan concurrency limit (<= 5)", () => {
-    expect(inngestFunctions).toHaveLength(13);
+  it("registers all 15 unique functions within the Free-Plan concurrency limit (<= 5)", () => {
+    expect(inngestFunctions).toHaveLength(15);
 
     const seenIds = new Set<string>();
 

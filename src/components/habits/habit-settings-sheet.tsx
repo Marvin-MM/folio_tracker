@@ -60,6 +60,18 @@ const DAY_OPTIONS = [
   { value: 6, label: "Saturday" },
 ] as const;
 
+function clampSettingNumber(
+  raw: string,
+  fallback: number,
+  min: number,
+  max: number
+): number {
+  const parsed = Number(raw);
+  // `Number("0") || fallback` would silently replace a valid midnight hour.
+  if (!Number.isFinite(parsed)) return fallback;
+  return Math.max(min, Math.min(max, Math.trunc(parsed)));
+}
+
 export function HabitSettingsSheet({
   open,
   onOpenChange,
@@ -97,6 +109,21 @@ export function HabitSettingsSheet({
   );
   const [allowReactionsWhenLocked, setAllowReactionsWhenLocked] = useState(
     settings.allowReactionsWhenLocked
+  );
+  const [partnerNudgesEnabled, setPartnerNudgesEnabled] = useState(
+    settings.partnerNudgesEnabled
+  );
+  const [partnerNudgeStartHour, setPartnerNudgeStartHour] = useState(
+    String(settings.partnerNudgeStartHour)
+  );
+  const [partnerNudgeMinStreak, setPartnerNudgeMinStreak] = useState(
+    String(settings.partnerNudgeMinStreak)
+  );
+  const [nudgeQuietHoursStart, setNudgeQuietHoursStart] = useState(
+    settings.nudgeQuietHoursStart
+  );
+  const [nudgeQuietHoursEnd, setNudgeQuietHoursEnd] = useState(
+    settings.nudgeQuietHoursEnd
   );
   const [monthLockEnabled, setMonthLockEnabled] = useState(
     settings.monthLockEnabled
@@ -138,6 +165,11 @@ export function HabitSettingsSheet({
       );
       setDefaultIntervalOpenHours(String(settings.defaultIntervalOpenHours));
       setAllowReactionsWhenLocked(settings.allowReactionsWhenLocked);
+      setPartnerNudgesEnabled(settings.partnerNudgesEnabled);
+      setPartnerNudgeStartHour(String(settings.partnerNudgeStartHour));
+      setPartnerNudgeMinStreak(String(settings.partnerNudgeMinStreak));
+      setNudgeQuietHoursStart(settings.nudgeQuietHoursStart);
+      setNudgeQuietHoursEnd(settings.nudgeQuietHoursEnd);
       setMonthLockEnabled(settings.monthLockEnabled);
       setMonthLockGraceDays(settings.monthLockGraceDays);
       resetPinForm();
@@ -205,6 +237,18 @@ export function HabitSettingsSheet({
         1,
         Math.min(168, Number(defaultIntervalOpenHours) || 24)
       );
+      const nudgeStartHourNum = clampSettingNumber(
+        partnerNudgeStartHour,
+        18,
+        0,
+        23
+      );
+      const nudgeMinStreakNum = clampSettingNumber(
+        partnerNudgeMinStreak,
+        2,
+        1,
+        365
+      );
 
       const result = await updateHabitSettingsAction({
         weekStartsOn,
@@ -221,6 +265,11 @@ export function HabitSettingsSheet({
             : null,
         defaultIntervalOpenHours: openHoursNum,
         allowReactionsWhenLocked,
+        partnerNudgesEnabled,
+        partnerNudgeStartHour: nudgeStartHourNum,
+        partnerNudgeMinStreak: nudgeMinStreakNum,
+        nudgeQuietHoursStart,
+        nudgeQuietHoursEnd,
         monthLockEnabled,
         monthLockGraceDays,
       });
@@ -308,6 +357,120 @@ export function HabitSettingsSheet({
             <p className="text-[11px] text-muted-foreground">
               Sends one reminder at this local time if any scheduled habits are
               still unlogged today.
+            </p>
+          </div>
+
+          <Separator />
+
+          {/* Partner Streak Nudges */}
+          <div className="space-y-3">
+            <div>
+              <p className="text-xs font-medium text-foreground">
+                Partner streak nudges
+              </p>
+              <p className="mt-0.5 text-[11px] text-muted-foreground">
+                Controls both alerts you send to group partners and alerts they
+                send to you. Off by default.
+              </p>
+            </div>
+
+            <div className="flex items-center justify-between rounded-md border border-border bg-background px-3 py-2">
+              <div className="space-y-0.5 pr-3">
+                <Label
+                  htmlFor="settings-partner-nudges"
+                  className="text-xs font-medium"
+                >
+                  Enable streak nudges
+                </Label>
+                <p className="text-[11px] text-muted-foreground">
+                  Rally a partner when an established streak is at risk.
+                </p>
+              </div>
+              <Switch
+                id="settings-partner-nudges"
+                checked={partnerNudgesEnabled}
+                onCheckedChange={setPartnerNudgesEnabled}
+              />
+            </div>
+
+            <div className="grid grid-cols-2 gap-2">
+              <div className="space-y-1">
+                <Label
+                  htmlFor="settings-nudge-hour"
+                  className="text-[11px] text-muted-foreground"
+                >
+                  Alert after local hour (0–23)
+                </Label>
+                <Input
+                  id="settings-nudge-hour"
+                  type="number"
+                  min={0}
+                  max={23}
+                  value={partnerNudgeStartHour}
+                  onChange={(event) =>
+                    setPartnerNudgeStartHour(event.target.value)
+                  }
+                  className="mono-tabular mira-row bg-background text-xs"
+                />
+              </div>
+              <div className="space-y-1">
+                <Label
+                  htmlFor="settings-nudge-streak"
+                  className="text-[11px] text-muted-foreground"
+                >
+                  Minimum streak to protect
+                </Label>
+                <Input
+                  id="settings-nudge-streak"
+                  type="number"
+                  min={1}
+                  max={365}
+                  value={partnerNudgeMinStreak}
+                  onChange={(event) =>
+                    setPartnerNudgeMinStreak(event.target.value)
+                  }
+                  className="mono-tabular mira-row bg-background text-xs"
+                />
+              </div>
+            </div>
+
+            <div className="grid grid-cols-2 gap-2">
+              <div className="space-y-1">
+                <Label
+                  htmlFor="settings-quiet-start"
+                  className="text-[11px] text-muted-foreground"
+                >
+                  Quiet hours start
+                </Label>
+                <Input
+                  id="settings-quiet-start"
+                  type="time"
+                  value={nudgeQuietHoursStart}
+                  onChange={(event) =>
+                    setNudgeQuietHoursStart(event.target.value)
+                  }
+                  className="mono-tabular mira-row bg-background text-xs"
+                />
+              </div>
+              <div className="space-y-1">
+                <Label
+                  htmlFor="settings-quiet-end"
+                  className="text-[11px] text-muted-foreground"
+                >
+                  Quiet hours end
+                </Label>
+                <Input
+                  id="settings-quiet-end"
+                  type="time"
+                  value={nudgeQuietHoursEnd}
+                  onChange={(event) => setNudgeQuietHoursEnd(event.target.value)}
+                  className="mono-tabular mira-row bg-background text-xs"
+                />
+              </div>
+            </div>
+            <p className="text-[11px] text-muted-foreground">
+              Nudges only fire for established streaks, never for a rest day,
+              and never during your quiet hours.
             </p>
           </div>
 

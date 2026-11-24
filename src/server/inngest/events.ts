@@ -104,6 +104,26 @@ export const habitReviewDigestEvent = eventType("app/habit.review_digest", {
   }),
 });
 
+export const habitStreakRiskEvent = eventType("app/habit.streak_at_risk", {
+  schema: z.object({
+    groupId: z.string(),
+    groupName: z.string(),
+    ownerId: z.string(),
+    ownerName: z.string(),
+    ownerTimezone: z.string(),
+    recipientId: z.string(),
+    recipientName: z.string(),
+    recipientTimezone: z.string(),
+    habitId: z.string(),
+    habitTitle: z.string(),
+    dateKey: z.string(),
+    currentStreak: z.number().int().min(1),
+    streakUnit: z.enum(["days", "weeks"]),
+    reason: z.enum(["unlogged", "missed"]),
+    dedupKey: z.string(),
+  }),
+});
+
 export const habitCommentPostedEvent = eventType("app/habit.comment_posted", {
   schema: z.object({
     commentId: z.string(),

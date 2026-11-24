@@ -85,6 +85,11 @@ export interface UpdateHabitSettingsRowInput {
   defaultIntervalOpenHours?: number;
   allowReactionsWhenLocked?: boolean;
   eveningCheckinTime?: string | null;
+  partnerNudgesEnabled?: boolean;
+  partnerNudgeStartHour?: number;
+  partnerNudgeMinStreak?: number;
+  nudgeQuietHoursStart?: string;
+  nudgeQuietHoursEnd?: string;
   monthLockEnabled?: boolean;
   monthLockGraceDays?: number;
 }

@@ -11,6 +11,7 @@ import {
   habitGroupRepository,
   type GroupInvitationSummary,
   type GroupMemberProfile,
+  type GroupNudgeCandidate,
   type GroupReviewWithAuthor,
   type GroupSharedHabit,
   type GroupSummary,
@@ -501,6 +502,14 @@ export class HabitGroupService {
       canManageMembers:
         myMembership?.role === "owner" || myMembership?.role === "admin",
     };
+  }
+
+  /** Used by the nudge scanner; intentionally returns only public group metadata. */
+  listNudgeCandidates(
+    limit: number,
+    offset: number
+  ): Promise<GroupNudgeCandidate[]> {
+    return this.groups.listActiveMemberCandidatesPage(limit, offset);
   }
 
   private async getMemberMetrics(
