@@ -309,6 +309,108 @@ export const habitReactions = sqliteTable(
   ]
 );
 
+export const HABIT_GROUP_ROLES = ["owner", "admin", "member"] as const;
+export type HabitGroupRole = (typeof HABIT_GROUP_ROLES)[number];
+
+export const HABIT_GROUP_MEMBER_STATUSES = ["active", "left"] as const;
+export type HabitGroupMemberStatus =
+  (typeof HABIT_GROUP_MEMBER_STATUSES)[number];
+
+/**
+ * A group is a shared accountability space for 3+ people. Unlike the
+ * owner-centric pairwise `habit_monitors`, every active member can read the
+ * same review board and see only the habits explicitly shared with the group.
+ */
+export const habitGroups = sqliteTable(
+  "habit_groups",
+  {
+    id: text("id")
+      .primaryKey()
+      .$defaultFn(() => ulid()),
+    ownerId: text("owner_id")
+      .notNull()
+      .references(() => users.id, { onDelete: "cascade" }),
+    name: text("name").notNull(),
+    description: text("description"),
+    createdAt: integer("created_at", { mode: "number" })
+      .notNull()
+      .$defaultFn(() => Date.now()),
+    updatedAt: integer("updated_at", { mode: "number" })
+      .notNull()
+      .$defaultFn(() => Date.now()),
+  },
+  (table) => [
+    index("habit_groups_owner_idx").on(table.ownerId),
+    check("habit_groups_name_check", sql`length(${table.name}) BETWEEN 1 AND 80`),
+  ]
+);
+
+export const habitGroupMembers = sqliteTable(
+  "habit_group_members",
+  {
+    groupId: text("group_id")
+      .notNull()
+      .references(() => habitGroups.id, { onDelete: "cascade" }),
+    userId: text("user_id")
+      .notNull()
+      .references(() => users.id, { onDelete: "cascade" }),
+    role: text("role", { enum: HABIT_GROUP_ROLES })
+      .notNull()
+      .default("member"),
+    status: text("status", { enum: HABIT_GROUP_MEMBER_STATUSES })
+      .notNull()
+      .default("active"),
+    joinedAt: integer("joined_at", { mode: "number" })
+      .notNull()
+      .$defaultFn(() => Date.now()),
+  },
+  (table) => [
+    primaryKey({
+      columns: [table.groupId, table.userId],
+      name: "habit_group_members_pk",
+    }),
+    index("habit_group_members_user_status_idx").on(table.userId, table.status),
+    index("habit_group_members_group_status_idx").on(
+      table.groupId,
+      table.status
+    ),
+    check(
+      "habit_group_members_role_check",
+      sql`${table.role} IN ('owner', 'admin', 'member')`
+    ),
+    check(
+      "habit_group_members_status_check",
+      sql`${table.status} IN ('active', 'left')`
+    ),
+  ]
+);
+
+/** Explicit, revocable habit-sharing boundary for a group (zero-leak by default). */
+export const habitGroupSharedHabits = sqliteTable(
+  "habit_group_shared_habits",
+  {
+    groupId: text("group_id")
+      .notNull()
+      .references(() => habitGroups.id, { onDelete: "cascade" }),
+    habitId: text("habit_id")
+      .notNull()
+      .references(() => habits.id, { onDelete: "cascade" }),
+    sharedBy: text("shared_by")
+      .notNull()
+      .references(() => users.id, { onDelete: "cascade" }),
+    createdAt: integer("created_at", { mode: "number" })
+      .notNull()
+      .$defaultFn(() => Date.now()),
+  },
+  (table) => [
+    primaryKey({
+      columns: [table.groupId, table.habitId],
+      name: "habit_group_shared_habits_pk",
+    }),
+    index("habit_group_shared_habits_habit_idx").on(table.habitId),
+  ]
+);
+
 export type HabitMonitorRecord = typeof habitMonitors.$inferSelect;
 export type NewHabitMonitorRecord = typeof habitMonitors.$inferInsert;
 export type HabitMonitorItemRecord = typeof habitMonitorItems.$inferSelect;
@@ -318,3 +420,7 @@ export type HabitWeeklySnapshotRecord =
   typeof habitWeeklySnapshots.$inferSelect;
 export type HabitCommentRecord = typeof habitComments.$inferSelect;
 export type HabitReactionRecord = typeof habitReactions.$inferSelect;
+export type HabitGroupRecord = typeof habitGroups.$inferSelect;
+export type HabitGroupMemberRecord = typeof habitGroupMembers.$inferSelect;
+export type HabitGroupSharedHabitRecord =
+  typeof habitGroupSharedHabits.$inferSelect;
