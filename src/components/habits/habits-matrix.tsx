@@ -1,6 +1,7 @@
 "use client";
 
-import { useState } from "react";
+import { useEffect, useState, type MouseEvent } from "react";
+import { createPortal } from "react-dom";
 import {
   Check,
   Clock,
@@ -30,6 +31,28 @@ import {
   type HabitRowSummary,
   type MonthCalendar,
 } from "@/server/domain/habit-analytics";
+import type { MissReason } from "@/server/domain/habit-metadata";
+
+const MISS_REASON_CHIPS: ReadonlyArray<{
+  reason: MissReason;
+  label: string;
+}> = [
+  { reason: "tired", label: "Tired" },
+  { reason: "work", label: "Work" },
+  { reason: "travel", label: "Travel" },
+  { reason: "forgot", label: "Forgot" },
+  { reason: "sick", label: "Sick" },
+  { reason: "low_motivation", label: "Low drive" },
+  { reason: "other", label: "Other" },
+];
+
+interface MissPromptState {
+  habitId: string;
+  dateKey: string;
+  x: number;
+  y: number;
+  above: boolean;
+}
 
 interface HabitsMatrixProps {
   calendar: MonthCalendar;
@@ -51,6 +74,12 @@ interface HabitsMatrixProps {
     note: string | null
   ) => void;
   onInspectHabit?: (habit: HabitRecord) => void;
+  missReasonPromptEnabled?: boolean;
+  onSetMissReason?: (input: {
+    habitId: string;
+    dateKey: string;
+    reason: MissReason;
+  }) => void;
 }
 
 const WEEKDAY_TINY = ["Su", "Mo", "Tu", "We", "Th", "Fr", "Sa"] as const;
@@ -233,8 +262,56 @@ export function HabitsMatrix({
   onCycleLog,
   onSaveCellDetail,
   onInspectHabit,
+  missReasonPromptEnabled = false,
+  onSetMissReason,
 }: HabitsMatrixProps) {
   const [openCellKey, setOpenCellKey] = useState<string | null>(null);
+  const [missPrompt, setMissPrompt] = useState<MissPromptState | null>(null);
+  const showMissPrompt = missReasonPromptEnabled && Boolean(onSetMissReason);
+
+  useEffect(() => {
+    if (!missPrompt) return;
+    const timer = window.setTimeout(() => setMissPrompt(null), 4_000);
+    return () => window.clearTimeout(timer);
+  }, [missPrompt]);
+
+  const handleCellClick = (
+    event: MouseEvent<HTMLButtonElement>,
+    habit: HabitRecord,
+    dateKey: string,
+    status: HabitLogStatus | null
+  ) => {
+    const nextStatus = nextCycleStatus(status);
+    if (showMissPrompt && nextStatus === "missed") {
+      const rect = event.currentTarget.getBoundingClientRect();
+      const halfWidth = 168;
+      const x = Math.min(
+        Math.max(rect.left + rect.width / 2, halfWidth + 8),
+        window.innerWidth - halfWidth - 8
+      );
+      const above = rect.bottom > window.innerHeight - 132;
+      setMissPrompt({
+        habitId: habit.id,
+        dateKey,
+        x,
+        y: above ? rect.top - 6 : rect.bottom + 6,
+        above,
+      });
+    }
+    // Fire the status change immediately; the chip row is purely additive.
+    onCycleLog?.(habit, dateKey, nextStatus);
+  };
+
+  const handleMissReason = (reason: MissReason) => {
+    const prompt = missPrompt;
+    if (!prompt) return;
+    onSetMissReason?.({
+      habitId: prompt.habitId,
+      dateKey: prompt.dateKey,
+      reason,
+    });
+    setMissPrompt(null);
+  };
 
   // Track which habits have at least one linked task in this month for the subtle icon
   const linkedHabitIds = new Set<string>();
@@ -244,7 +321,8 @@ export function HabitsMatrix({
   }
 
   return (
-    <section aria-label="Monthly habit matrix" className="space-y-2">
+    <>
+      <section aria-label="Monthly habit matrix" className="space-y-2">
       <div className="overflow-x-auto rounded-md border border-border bg-card">
         <table className="w-full border-separate border-spacing-0 text-left">
           <thead>
@@ -511,10 +589,11 @@ export function HabitsMatrix({
                                     setOpenCellKey(cellKey);
                                     return;
                                   }
-                                  onCycleLog?.(
+                                  handleCellClick(
+                                    event,
                                     habit,
                                     day.dateKey,
-                                    nextCycleStatus(status)
+                                    status
                                   );
                                 }}
                                 onContextMenu={(event) => {
@@ -721,6 +800,52 @@ export function HabitsMatrix({
             : "Click to cycle · Right-click or Shift+click for note"}
         </span>
       </div>
-    </section>
+      </section>
+
+      {showMissPrompt && missPrompt
+        ? createPortal(
+            <div
+              role="group"
+              aria-label="Why was this habit missed?"
+              className="fixed z-[80] w-[336px] max-w-[calc(100vw-16px)] -translate-x-1/2 rounded-md border border-border bg-popover p-2 shadow-lg"
+              style={{
+                left: missPrompt.x,
+                top: missPrompt.y,
+                transform: missPrompt.above
+                  ? "translate(-50%, -100%)"
+                  : "translateX(-50%)",
+              }}
+            >
+              <div className="mb-1.5 flex items-center justify-between gap-2 px-0.5">
+                <span className="text-[11px] font-medium text-muted-foreground">
+                  Why? (optional)
+                </span>
+                <button
+                  type="button"
+                  onClick={() => setMissPrompt(null)}
+                  aria-label="Skip miss reason"
+                  className="min-h-6 rounded px-1.5 text-[11px] text-muted-foreground hover:bg-accent hover:text-foreground"
+                >
+                  Skip
+                </button>
+              </div>
+              <div className="flex flex-wrap gap-1">
+                {MISS_REASON_CHIPS.map((chip) => (
+                  <button
+                    key={chip.reason}
+                    type="button"
+                    onClick={() => handleMissReason(chip.reason)}
+                    data-miss-reason={chip.reason}
+                    className="mira-row min-h-7 rounded border border-border bg-background px-2 text-[11px] text-foreground transition-colors hover:border-primary hover:bg-primary/10"
+                  >
+                    {chip.label}
+                  </button>
+                ))}
+              </div>
+            </div>,
+            document.body
+          )
+        : null}
+    </>
   );
 }

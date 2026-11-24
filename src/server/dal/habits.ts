@@ -24,11 +24,15 @@ import {
   users,
   type HabitCadenceType,
   type HabitCommentMode,
+  type HabitEnergyNeed,
   type HabitLogRecord,
   type HabitImportAliasRecord,
+  type HabitLogSource,
   type HabitLogStatus,
+  type HabitMissReason,
   type HabitMonthLockRecord,
   type HabitMonthLockStatus,
+  type HabitPlace,
   type HabitRecord,
   type HabitTrackerSettingsRecord,
   type TaskStatus,
@@ -44,6 +48,9 @@ export interface CreateHabitRowInput {
   weeklyTargetCount?: number | null;
   startDate: string;
   preferredTime?: string | null;
+  energyNeed?: HabitEnergyNeed;
+  place?: HabitPlace;
+  tagsJson?: string;
   linkedProjectId?: string | null;
   autoSyncDailyTask?: boolean;
   position: string;
@@ -67,6 +74,9 @@ export interface UpdateHabitRowInput {
   weeklyTargetCount?: number | null;
   startDate?: string;
   preferredTime?: string | null;
+  energyNeed?: HabitEnergyNeed;
+  place?: HabitPlace;
+  tagsJson?: string;
   linkedProjectId?: string | null;
   autoSyncDailyTask?: boolean;
   position?: string;
@@ -113,6 +123,8 @@ export interface UpsertHabitLogRowInput {
   dateKey: string;
   status: HabitLogStatus;
   note?: string | null;
+  missReason?: HabitMissReason | null;
+  source?: HabitLogSource;
   loggedAt: number;
   isBackfilledLate: boolean;
 }
@@ -236,6 +248,13 @@ export interface HabitRepository {
     userId: string,
     habitId: string,
     dateKey: string,
+    executor?: DbExecutor
+  ): Promise<HabitLogRecord | null>;
+  updateLogMissReason(
+    userId: string,
+    habitId: string,
+    dateKey: string,
+    missReason: HabitMissReason | null,
     executor?: DbExecutor
   ): Promise<HabitLogRecord | null>;
   upsertLog(
@@ -428,6 +447,9 @@ export class DrizzleHabitRepository implements HabitRepository {
         weeklyTargetCount: input.weeklyTargetCount ?? null,
         startDate: input.startDate,
         preferredTime: input.preferredTime ?? null,
+        energyNeed: input.energyNeed ?? "medium",
+        place: input.place ?? "anywhere",
+        tagsJson: input.tagsJson ?? "[]",
         linkedProjectId: input.linkedProjectId ?? null,
         autoSyncDailyTask: input.autoSyncDailyTask ?? false,
         position: input.position,
@@ -468,6 +490,9 @@ export class DrizzleHabitRepository implements HabitRepository {
             weeklyTargetCount: input.weeklyTargetCount ?? null,
             startDate: input.startDate,
             preferredTime: input.preferredTime ?? null,
+            energyNeed: input.energyNeed ?? "medium",
+            place: input.place ?? "anywhere",
+            tagsJson: input.tagsJson ?? "[]",
             linkedProjectId: input.linkedProjectId ?? null,
             autoSyncDailyTask: input.autoSyncDailyTask ?? false,
             position: input.position,
@@ -842,6 +867,29 @@ export class DrizzleHabitRepository implements HabitRepository {
     return row ?? null;
   }
 
+  async updateLogMissReason(
+    userId: string,
+    habitId: string,
+    dateKey: string,
+    missReason: HabitMissReason | null,
+    executor: DbExecutor = this.database
+  ): Promise<HabitLogRecord | null> {
+    const [updated] = await executor
+      .update(habitLogs)
+      .set({ missReason })
+      .where(
+        and(
+          eq(habitLogs.userId, userId),
+          eq(habitLogs.habitId, habitId),
+          eq(habitLogs.dateKey, dateKey),
+          eq(habitLogs.status, "missed")
+        )
+      )
+      .returning();
+
+    return updated ?? null;
+  }
+
   async upsertLog(
     input: UpsertHabitLogRowInput,
     executor: DbExecutor = this.database
@@ -854,6 +902,8 @@ export class DrizzleHabitRepository implements HabitRepository {
         dateKey: input.dateKey,
         status: input.status,
         note: input.note ?? null,
+        missReason: input.missReason ?? null,
+        source: input.source ?? "manual",
         loggedAt: input.loggedAt,
         isBackfilledLate: input.isBackfilledLate,
       })
@@ -862,6 +912,8 @@ export class DrizzleHabitRepository implements HabitRepository {
         set: {
           status: input.status,
           note: input.note ?? null,
+          missReason: input.missReason ?? null,
+          source: input.source ?? "manual",
           loggedAt: input.loggedAt,
           isBackfilledLate: input.isBackfilledLate,
         },
@@ -895,6 +947,8 @@ export class DrizzleHabitRepository implements HabitRepository {
             dateKey: input.dateKey,
             status: input.status,
             note: input.note ?? null,
+            missReason: input.missReason ?? null,
+            source: input.source ?? "manual",
             loggedAt: input.loggedAt,
             isBackfilledLate: input.isBackfilledLate,
           }))
@@ -904,6 +958,8 @@ export class DrizzleHabitRepository implements HabitRepository {
           set: {
             status: sql`excluded.status`,
             note: sql`excluded.note`,
+            missReason: sql`excluded.miss_reason`,
+            source: sql`excluded.source`,
             loggedAt: sql`excluded.logged_at`,
             isBackfilledLate: sql`excluded.is_backfilled_late`,
           },

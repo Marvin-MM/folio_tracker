@@ -25,6 +25,7 @@ import {
   promoteTaskToHabitAction,
   updateHabitAction,
 } from "@/actions/habits";
+import { isFeatureEnabled } from "@/config/features";
 import { deleteNoteAction, updateNoteAction } from "@/actions/notes";
 import { cancelReminderAction, snoozeReminderAction } from "@/actions/reminders";
 import { deleteTaskAction, updateTaskAction } from "@/actions/tasks";
@@ -76,6 +77,13 @@ import {
   parseScheduledDaysJson,
   type HabitRowSummary,
 } from "@/server/domain/habit-analytics";
+import {
+  ENERGY_NEEDS,
+  PLACES,
+  parseTagsJson,
+  type EnergyNeed,
+  type Place,
+} from "@/server/domain/habit-metadata";
 
 interface DetailSheetProps {
   timezone: string;
@@ -1094,6 +1102,14 @@ function HabitInspectorForm({
   );
   const [startDate, setStartDate] = useState(habit.startDate);
   const [preferredTime, setPreferredTime] = useState(habit.preferredTime ?? "");
+  const metadataEnabled = isFeatureEnabled("habitMetadata");
+  const [energyNeed, setEnergyNeed] = useState<EnergyNeed>(
+    habit.energyNeed ?? "medium"
+  );
+  const [place, setPlace] = useState<Place>(habit.place ?? "anywhere");
+  const [tagsDraft, setTagsDraft] = useState(
+    parseTagsJson(habit.tagsJson).join(", ")
+  );
   const [linkedProjectId, setLinkedProjectId] = useState(
     habit.linkedProjectId ?? "none"
   );
@@ -1130,6 +1146,16 @@ function HabitInspectorForm({
           cadenceType === "weekly_target" ? weeklyTargetCount : null,
         startDate,
         preferredTime: preferredTime.trim() || null,
+        ...(metadataEnabled
+          ? {
+              energyNeed,
+              place,
+              tags: tagsDraft
+                .split(",")
+                .map((tag) => tag.trim())
+                .filter(Boolean),
+            }
+          : {}),
         linkedProjectId: linkedProjectId === "none" ? null : linkedProjectId,
         autoSyncDailyTask,
       });
@@ -1417,6 +1443,83 @@ function HabitInspectorForm({
           </Select>
         </div>
       </div>
+
+      {metadataEnabled ? (
+        <div className="space-y-2 rounded-md border border-border bg-background p-2.5">
+          <p className="text-[11px] font-medium uppercase tracking-wider text-muted-foreground">
+            Low-energy planning
+          </p>
+          <div className="grid grid-cols-2 gap-2.5">
+            <div className="space-y-1.5">
+              <Label
+                htmlFor="inspector-habit-energy"
+                className="text-[11px] text-muted-foreground"
+              >
+                Energy need
+              </Label>
+              <Select
+                value={energyNeed}
+                onValueChange={(value) => setEnergyNeed(value as EnergyNeed)}
+              >
+                <SelectTrigger
+                  id="inspector-habit-energy"
+                  className="mira-row bg-background text-xs"
+                >
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  {ENERGY_NEEDS.map((value) => (
+                    <SelectItem key={value} value={value} className="text-xs">
+                      {value}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </div>
+            <div className="space-y-1.5">
+              <Label
+                htmlFor="inspector-habit-place"
+                className="text-[11px] text-muted-foreground"
+              >
+                Place
+              </Label>
+              <Select
+                value={place}
+                onValueChange={(value) => setPlace(value as Place)}
+              >
+                <SelectTrigger
+                  id="inspector-habit-place"
+                  className="mira-row bg-background text-xs"
+                >
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  {PLACES.map((value) => (
+                    <SelectItem key={value} value={value} className="text-xs">
+                      {value}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </div>
+          </div>
+          <div className="space-y-1.5">
+            <Label
+              htmlFor="inspector-habit-tags"
+              className="text-[11px] text-muted-foreground"
+            >
+              Tags (comma separated)
+            </Label>
+            <Input
+              id="inspector-habit-tags"
+              value={tagsDraft}
+              onChange={(e) => setTagsDraft(e.target.value)}
+              placeholder="core, morning"
+              className="mira-row bg-background text-xs"
+            />
+          </div>
+        </div>
+      ) : null}
 
       <div className="flex items-center justify-between rounded-md border border-border bg-background px-3 py-2">
         <div className="space-y-0.5 pr-3">

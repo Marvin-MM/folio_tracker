@@ -35,6 +35,26 @@ export const HABIT_MONTH_LOCK_STATUSES = [
 ] as const;
 export type HabitMonthLockStatus = (typeof HABIT_MONTH_LOCK_STATUSES)[number];
 
+export const HABIT_ENERGY_NEEDS = ["low", "medium", "high"] as const;
+export type HabitEnergyNeed = (typeof HABIT_ENERGY_NEEDS)[number];
+
+export const HABIT_PLACES = ["home", "commute", "work", "anywhere"] as const;
+export type HabitPlace = (typeof HABIT_PLACES)[number];
+
+export const HABIT_MISS_REASONS = [
+  "tired",
+  "work",
+  "travel",
+  "forgot",
+  "sick",
+  "low_motivation",
+  "other",
+] as const;
+export type HabitMissReason = (typeof HABIT_MISS_REASONS)[number];
+
+export const HABIT_LOG_SOURCES = ["manual", "rule", "button", "range"] as const;
+export type HabitLogSource = (typeof HABIT_LOG_SOURCES)[number];
+
 export const habitTrackerSettings = sqliteTable(
   "habit_tracker_settings",
   {
@@ -151,6 +171,11 @@ export const habits = sqliteTable(
     weeklyTargetCount: integer("weekly_target_count", { mode: "number" }),
     startDate: text("start_date").notNull(),
     preferredTime: text("preferred_time"),
+    energyNeed: text("energy_need", { enum: HABIT_ENERGY_NEEDS })
+      .notNull()
+      .default("medium"),
+    place: text("place", { enum: HABIT_PLACES }).notNull().default("anywhere"),
+    tagsJson: text("tags_json").notNull().default("[]"),
     linkedProjectId: text("linked_project_id").references(() => projects.id, {
       onDelete: "set null",
     }),
@@ -316,6 +341,10 @@ export const habitLogs = sqliteTable(
     dateKey: text("date_key").notNull(),
     status: text("status", { enum: HABIT_LOG_STATUSES }).notNull(),
     note: text("note"),
+    missReason: text("miss_reason", { enum: HABIT_MISS_REASONS }),
+    source: text("source", { enum: HABIT_LOG_SOURCES })
+      .notNull()
+      .default("manual"),
     loggedAt: integer("logged_at", { mode: "number" })
       .notNull()
       .$defaultFn(() => Date.now()),

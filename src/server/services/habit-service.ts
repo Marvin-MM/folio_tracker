@@ -1,4 +1,6 @@
 import { fromZonedTime } from "date-fns-tz";
+import { ulid } from "ulidx";
+import { isFeatureEnabled } from "@/config/features";
 import {
   generatePositionBetween,
   MAX_POSITION_KEY_LENGTH,
@@ -23,6 +25,10 @@ import {
   type LinkedHabitTaskSummary,
   type UpdateHabitSettingsRowInput,
 } from "@/server/dal/habits";
+import {
+  habitViewRepository,
+  type HabitViewRepository,
+} from "@/server/dal/habit-views";
 import {
   projectRepository,
   type ProjectRepository,
@@ -87,6 +93,32 @@ import {
   type MonthRoster,
 } from "@/server/domain/habit-evolution";
 import {
+  defaultHabitMetadata,
+  isEnergyNeed,
+  isLogSource,
+  isMissReason,
+  isPlace,
+  normalizeTags,
+  resolveMissReasonForLog,
+  serializeTags,
+  type EnergyNeed,
+  type LogSource,
+  type MissReason,
+  type Place,
+} from "@/server/domain/habit-metadata";
+import {
+  isBuiltInViewId,
+  mergeHabitViews,
+  normalizeSavedViewFilter,
+  rowToSavedView,
+  seedBuiltInViews,
+  type HabitSavedView,
+  type SavedViewFilter,
+  type ViewGroupBy,
+  type ViewKind,
+  type ViewSortBy,
+} from "@/server/domain/habit-views";
+import {
   defaultRateLimiter,
   type RateLimiter,
 } from "@/server/providers/redis/rate-limiter";
@@ -114,6 +146,9 @@ export interface CreateHabitInput {
   /** Optional YYYY-MM month being viewed when creating the habit so it enrolls into that month's roster. */
   targetYearMonth?: string;
   preferredTime?: string | null;
+  energyNeed?: EnergyNeed;
+  place?: Place;
+  tags?: string[];
   linkedProjectId?: string | null;
   autoSyncDailyTask?: boolean;
 }
@@ -127,6 +162,9 @@ export interface UpdateHabitInput {
   weeklyTargetCount?: number | null;
   startDate?: string;
   preferredTime?: string | null;
+  energyNeed?: EnergyNeed;
+  place?: Place;
+  tags?: string[];
   linkedProjectId?: string | null;
   autoSyncDailyTask?: boolean;
   isArchived?: boolean;
@@ -153,6 +191,24 @@ export interface LogHabitDayInput {
   dateKey: string;
   status: HabitLogStatus | null;
   note?: string | null;
+  missReason?: MissReason | null;
+  source?: LogSource;
+}
+
+export interface SavedViewInput {
+  name: string;
+  kind?: ViewKind;
+  filter?: SavedViewFilter;
+  groupBy?: ViewGroupBy;
+  sortBy?: ViewSortBy;
+}
+
+export interface SavedViewPatch {
+  name?: string;
+  hidden?: boolean;
+  filter?: SavedViewFilter;
+  groupBy?: ViewGroupBy;
+  sortBy?: ViewSortBy;
 }
 
 export interface BulkHistoryImportInput {
@@ -257,6 +313,8 @@ export interface HabitMonthWorkspace {
   monthLock: MonthLockState;
   habits: HabitRecord[];
   archivedHabits: HabitRecord[];
+  /** Phase B saved views; empty while `savedViews` is OFF. */
+  savedViews: HabitSavedView[];
   /** Complete library of user habits (active + archived) for per-month roster editing. */
   allHabits: HabitRecord[];
   /** True when `yearMonth` has explicit rows in `habit_month_rosters`. */
@@ -287,6 +345,7 @@ export interface TodayHabitsStripData {
 export interface HabitServiceDeps {
   database?: AppDatabase;
   habits?: HabitRepository;
+  views?: HabitViewRepository;
   tasks?: TaskRepository;
   projects?: ProjectRepository;
   membershipLookup?: ProjectMembershipLookup;
@@ -387,6 +446,7 @@ function getLocalEndOfDayUtcMs(dateKey: string, timezone: string): number {
 export class HabitService {
   private readonly database: AppDatabase;
   private readonly habits: HabitRepository;
+  private readonly views: HabitViewRepository;
   private readonly tasks: TaskRepository;
   private readonly projects: ProjectRepository;
   private readonly membershipLookup: ProjectMembershipLookup;
@@ -396,6 +456,7 @@ export class HabitService {
   constructor(deps: HabitServiceDeps = {}) {
     this.database = deps.database ?? db;
     this.habits = deps.habits ?? habitRepository;
+    this.views = deps.views ?? habitViewRepository;
     this.tasks = deps.tasks ?? taskRepository;
     this.projects = deps.projects ?? projectRepository;
     this.membershipLookup =
@@ -583,6 +644,43 @@ export class HabitService {
     }
   }
 
+  private resolveMetadataFields(
+    input: { energyNeed?: EnergyNeed; place?: Place; tags?: string[] },
+    fallbackTitle: string
+  ): { energyNeed: EnergyNeed; place: Place; tagsJson: string } {
+    const defaults = defaultHabitMetadata(fallbackTitle);
+    return {
+      energyNeed: isEnergyNeed(input.energyNeed)
+        ? input.energyNeed
+        : defaults.energyNeed,
+      place: isPlace(input.place) ? input.place : defaults.place,
+      tagsJson: serializeTags(normalizeTags(input.tags ?? [])),
+    };
+  }
+
+  private metadataPatch(
+    input: { energyNeed?: EnergyNeed; place?: Place; tags?: string[] },
+    fallbackTitle: string
+  ): { energyNeed: EnergyNeed; place: Place; tagsJson: string } | undefined {
+    if (!isFeatureEnabled("habitMetadata")) return undefined;
+    if (
+      input.energyNeed === undefined &&
+      input.place === undefined &&
+      input.tags === undefined
+    ) {
+      return undefined;
+    }
+    return this.resolveMetadataFields(input, fallbackTitle);
+  }
+
+  private async listSavedViews(userId: string): Promise<HabitSavedView[]> {
+    if (!isFeatureEnabled("savedViews")) return [];
+    const now = this.now();
+    await this.views.seedBuiltIns(userId, seedBuiltInViews(userId, now));
+    const rows = await this.views.list(userId);
+    return mergeHabitViews(userId, rows, now);
+  }
+
   private async validateLinkedProject(
     userId: string,
     projectId: string | null | undefined,
@@ -655,6 +753,7 @@ export class HabitService {
       hasAnyMonthRoster,
       previousRoster,
       monthLockRow,
+      savedViews,
     ] = await Promise.all([
       this.habits.getOrCreateSettings(userId),
       this.habits.listHabitsForUser(userId, { includeArchived: true }),
@@ -662,6 +761,9 @@ export class HabitService {
       this.habits.hasAnyMonthRosterForUser(userId),
       this.habits.findLatestMonthRosterBefore(userId, yearMonth),
       this.habits.getMonthLock(userId, yearMonth),
+      isFeatureEnabled("savedViews")
+        ? this.listSavedViews(userId)
+        : Promise.resolve([] as HabitSavedView[]),
     ]);
 
     const monthLock = evaluateMonthLockState({
@@ -758,6 +860,7 @@ export class HabitService {
       monthLock,
       habits: visibleHabits,
       archivedHabits,
+      savedViews,
       allHabits: allUserHabits,
       hasExplicitMonthRoster,
       previousRosterSource,
@@ -876,6 +979,9 @@ export class HabitService {
       input.preferredTime,
       "Preferred time"
     );
+    const metadata = isFeatureEnabled("habitMetadata")
+      ? this.resolveMetadataFields(input, title)
+      : null;
 
     const linkedProjectId = await this.validateLinkedProject(
       userId,
@@ -900,6 +1006,13 @@ export class HabitService {
             weeklyTargetCount: cadence.weeklyTargetCount,
             startDate,
             preferredTime,
+            ...(metadata
+              ? {
+                  energyNeed: metadata.energyNeed,
+                  place: metadata.place,
+                  tagsJson: metadata.tagsJson,
+                }
+              : {}),
             linkedProjectId,
             autoSyncDailyTask: input.autoSyncDailyTask ?? false,
             position,
@@ -1031,6 +1144,7 @@ export class HabitService {
           input.preferredTime !== undefined
             ? normalizeTimeOrNull(input.preferredTime, "Preferred time")
             : undefined;
+        const metadata = this.metadataPatch(input, existing.title);
 
         const updated = await this.habits.updateHabitForUser(
           userId,
@@ -1050,6 +1164,13 @@ export class HabitService {
               ? { startDate: input.startDate }
               : {}),
             ...(preferredTime !== undefined ? { preferredTime } : {}),
+            ...(metadata
+              ? {
+                  energyNeed: metadata.energyNeed,
+                  place: metadata.place,
+                  tagsJson: metadata.tagsJson,
+                }
+              : {}),
             ...(input.linkedProjectId !== undefined
               ? { linkedProjectId: input.linkedProjectId }
               : {}),
@@ -1699,6 +1820,10 @@ export class HabitService {
       cleanedNote = trimmed.length > 0 ? trimmed : null;
     }
 
+    const missReasonEnabled = isFeatureEnabled("missReasonPrompt");
+    const source =
+      missReasonEnabled && isLogSource(input.source) ? input.source : "manual";
+
     return withDbRetry(() =>
       this.database.transaction(async (tx) => {
         await this.assertMonthEditable(
@@ -1736,16 +1861,28 @@ export class HabitService {
           return { log: null, syncedTaskCount };
         }
 
-        let resolvedNote: string | null = cleanedNote ?? null;
-        if (cleanedNote === undefined) {
-          const existingLog = await this.habits.getLogForHabitDay(
-            userId,
-            habit.id,
-            input.dateKey,
-            tx
-          );
-          resolvedNote = existingLog?.note ?? null;
-        }
+        const preserveReason =
+          missReasonEnabled &&
+          input.status === "missed" &&
+          input.missReason === undefined;
+        const existingLog =
+          cleanedNote === undefined || preserveReason
+            ? await this.habits.getLogForHabitDay(
+                userId,
+                habit.id,
+                input.dateKey,
+                tx
+              )
+            : null;
+        const resolvedNote: string | null =
+          cleanedNote ?? existingLog?.note ?? null;
+        const resolvedMissReason: MissReason | null = missReasonEnabled
+          ? input.status === "missed"
+            ? input.missReason !== undefined
+              ? resolveMissReasonForLog(input.status, input.missReason)
+              : (existingLog?.missReason ?? null)
+            : null
+          : null;
 
         const isBackfilledLate = computeIsBackfilledLate(
           input.dateKey,
@@ -1760,6 +1897,8 @@ export class HabitService {
             dateKey: input.dateKey,
             status: input.status,
             note: resolvedNote,
+            missReason: resolvedMissReason,
+            source,
             loggedAt: nowMs,
             isBackfilledLate,
           },
@@ -1780,6 +1919,128 @@ export class HabitService {
         return { log: savedLog, syncedTaskCount };
       })
     );
+  }
+
+  async setHabitMissReason(
+    userId: string,
+    input: { habitId: string; dateKey: string; reason: MissReason | null }
+  ): Promise<HabitLogRecord> {
+    if (!isFeatureEnabled("missReasonPrompt")) {
+      throw new ValidationError("Miss-reason prompts are disabled.");
+    }
+    if (!isValidDateKey(input.dateKey)) {
+      throw new ValidationError("Date must be a valid YYYY-MM-DD date.");
+    }
+    if (input.reason !== null && !isMissReason(input.reason)) {
+      throw new ValidationError("Unknown miss reason.");
+    }
+
+    const updated = await this.habits.updateLogMissReason(
+      userId,
+      input.habitId,
+      input.dateKey,
+      input.reason
+    );
+    if (!updated) {
+      throw new NotFoundError("Missed log not found.");
+    }
+    return updated;
+  }
+
+  async listHabitSavedViews(userId: string): Promise<HabitSavedView[]> {
+    return this.listSavedViews(userId);
+  }
+
+  async createHabitSavedView(
+    userId: string,
+    input: SavedViewInput
+  ): Promise<HabitSavedView> {
+    if (!isFeatureEnabled("savedViews")) {
+      throw new ValidationError("Saved views are disabled.");
+    }
+    const name = input.name.trim().slice(0, 48);
+    if (!name) {
+      throw new ValidationError("View name is required.");
+    }
+
+    const existing = await this.views.list(userId);
+    if (existing.some((row) => row.name === name && !row.deletedAt)) {
+      throw new ConflictError("A view with that name already exists.");
+    }
+    if (existing.filter((row) => !row.builtIn && !row.deletedAt).length >= 30) {
+      throw new ValidationError("You can save at most 30 custom views.");
+    }
+
+    const now = this.now();
+    const created = await this.views.create({
+      id: ulid(),
+      userId,
+      name,
+      kind: input.kind ?? "today",
+      filterJson: JSON.stringify(
+        normalizeSavedViewFilter(input.filter ?? {})
+      ),
+      groupBy: input.groupBy ?? "none",
+      sortBy: input.sortBy ?? "order",
+      orderIndex: existing.length,
+    });
+    return rowToSavedView(created);
+  }
+
+  async updateHabitSavedView(
+    userId: string,
+    viewId: string,
+    patch: SavedViewPatch
+  ): Promise<HabitSavedView> {
+    if (!isFeatureEnabled("savedViews")) {
+      throw new ValidationError("Saved views are disabled.");
+    }
+    const rows = await this.views.list(userId);
+    const row = rows.find((candidate) => candidate.id === viewId);
+    if (!row) {
+      throw new NotFoundError("Saved view not found.");
+    }
+
+    const existing = rowToSavedView(row);
+    if (existing.builtIn || isBuiltInViewId(userId, viewId)) {
+      if (patch.hidden === undefined) {
+        throw new ValidationError("Built-in views can only be hidden or shown.");
+      }
+      const updated = await this.views.update(userId, viewId, {
+        hidden: patch.hidden,
+      });
+      if (!updated) throw new NotFoundError("Saved view not found.");
+      return rowToSavedView(updated);
+    }
+
+    const updated = await this.views.update(userId, viewId, {
+      ...(patch.name !== undefined
+        ? { name: patch.name.trim().slice(0, 48) || existing.name }
+        : {}),
+      ...(patch.hidden !== undefined ? { hidden: patch.hidden } : {}),
+      ...(patch.filter !== undefined
+        ? {
+            filterJson: JSON.stringify(
+              normalizeSavedViewFilter(patch.filter)
+            ),
+          }
+        : {}),
+      ...(patch.groupBy !== undefined ? { groupBy: patch.groupBy } : {}),
+      ...(patch.sortBy !== undefined ? { sortBy: patch.sortBy } : {}),
+    });
+    if (!updated) throw new NotFoundError("Saved view not found.");
+    return rowToSavedView(updated);
+  }
+
+  async deleteHabitSavedView(userId: string, viewId: string): Promise<void> {
+    if (!isFeatureEnabled("savedViews")) {
+      throw new ValidationError("Saved views are disabled.");
+    }
+    if (isBuiltInViewId(userId, viewId)) {
+      throw new ValidationError("Built-in views cannot be deleted.");
+    }
+    const deleted = await this.views.softDelete(userId, viewId);
+    if (!deleted) throw new NotFoundError("Saved view not found.");
   }
 
   /**

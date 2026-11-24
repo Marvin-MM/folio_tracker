@@ -18,7 +18,7 @@ describe("Drizzle migrations integrity", () => {
     const journalPath = path.resolve(process.cwd(), "drizzle/meta/_journal.json");
     const journal = JSON.parse(readFileSync(journalPath, "utf8")) as DrizzleJournal;
 
-    expect(journal.entries.length).toBeGreaterThanOrEqual(9);
+    expect(journal.entries.length).toBeGreaterThanOrEqual(10);
 
     for (let i = 1; i < journal.entries.length; i += 1) {
       const prev = journal.entries[i - 1]!;
@@ -70,7 +70,24 @@ describe("Drizzle migrations integrity", () => {
       expect(tableNames).toContain("habit_excuse_ranges");
       expect(tableNames).toContain("habit_day_entries");
       expect(tableNames).toContain("undo_snapshots");
-      expect(tableNames).toHaveLength(29);
+      expect(tableNames).toContain("habit_saved_views");
+      expect(tableNames).toHaveLength(30);
+
+      const habitColumnsRes = await client.execute(
+        "PRAGMA table_info('habits')",
+      );
+      const habitColumns = habitColumnsRes.rows.map((row) => String(row.name));
+      expect(habitColumns).toEqual(
+        expect.arrayContaining(["energy_need", "place", "tags_json"]),
+      );
+
+      const logColumnsRes = await client.execute(
+        "PRAGMA table_info('habit_logs')",
+      );
+      const logColumns = logColumnsRes.rows.map((row) => String(row.name));
+      expect(logColumns).toEqual(
+        expect.arrayContaining(["miss_reason", "source"]),
+      );
     } finally {
       client.close();
     }
