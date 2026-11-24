@@ -118,6 +118,8 @@ export interface ParsedBulkHabitRow {
   scheduledDays: number[];
   weeklyTargetCount: number | null;
   preferredTime: string | null;
+  /** Optional fifth CSV column; null means "default to today". */
+  startDate: string | null;
 }
 
 export const MAX_BULK_IMPORT_HABITS = 50;
@@ -799,7 +801,7 @@ export function computeHabitMonthAnalytics(params: {
   };
 }
 
-function splitCsvLine(line: string): string[] {
+export function splitCsvLine(line: string, separator = ","): string[] {
   const fields: string[] = [];
   let current = "";
   let inQuotes = false;
@@ -813,7 +815,7 @@ function splitCsvLine(line: string): string[] {
       } else {
         inQuotes = !inQuotes;
       }
-    } else if (ch === "," && !inQuotes) {
+    } else if (ch === separator && !inQuotes) {
       fields.push(current.trim());
       current = "";
     } else {
@@ -825,12 +827,14 @@ function splitCsvLine(line: string): string[] {
 }
 
 /**
- * Parses newline-separated habit titles or CSV lines (`title,category,cadence,preferredTime`)
- * into validated habit definitions (max 50 rows).
+ * Parses newline-separated habit titles or CSV lines
+ * (`title,category,cadence,preferredTime,startDate`) into validated habit
+ * definitions (max 50 rows). The fifth column is optional.
  */
 export function parseBulkHabitImport(rawText: string): {
   rows: ParsedBulkHabitRow[];
   error?: string;
+  warnings?: string[];
 } {
   const lines = rawText
     .split(/\r?\n/)
@@ -864,6 +868,7 @@ export function parseBulkHabitImport(rawText: string): {
 
   const seenTitles = new Set<string>();
   const rows: ParsedBulkHabitRow[] = [];
+  const warnings: string[] = [];
 
   for (const line of dataLines) {
     const parts = splitCsvLine(line);
@@ -902,6 +907,16 @@ export function parseBulkHabitImport(rawText: string): {
 
     const preferredTime = isValidTimeHHmm(rawTime) ? rawTime : null;
 
+    const rawStartDate = (parts[4] ?? "").trim();
+    let startDate: string | null = null;
+    if (rawStartDate) {
+      if (isValidDateKey(rawStartDate)) {
+        startDate = rawStartDate;
+      } else {
+        warnings.push(`"${title}": ignored invalid start date "${rawStartDate}".`);
+      }
+    }
+
     rows.push({
       title,
       category,
@@ -909,6 +924,7 @@ export function parseBulkHabitImport(rawText: string): {
       scheduledDays,
       weeklyTargetCount,
       preferredTime,
+      startDate,
     });
   }
 
@@ -916,5 +932,5 @@ export function parseBulkHabitImport(rawText: string): {
     return { rows: [], error: "No valid habit titles found." };
   }
 
-  return { rows };
+  return { rows, warnings: warnings.length > 0 ? warnings : undefined };
 }

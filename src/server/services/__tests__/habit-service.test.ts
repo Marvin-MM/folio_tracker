@@ -266,6 +266,8 @@ describe("HabitService ACID sync, tenant isolation, bulk import, and habit nudge
       syncLinkedTasksForHabitDay: async () => {
         throw new Error("Simulated linked-task sync crash");
       },
+      syncLinkedTasksForHabitLogs:
+        taskRepo.syncLinkedTasksForHabitLogs.bind(taskRepo),
     };
 
     const brokenHabitSvc = new HabitService({
@@ -311,6 +313,9 @@ describe("HabitService ACID sync, tenant isolation, bulk import, and habit nudge
       createHabit: habitRepo.createHabit.bind(habitRepo),
       createHabitsBatch: habitRepo.createHabitsBatch.bind(habitRepo),
       updateHabitForUser: habitRepo.updateHabitForUser.bind(habitRepo),
+      listAliasesForUser: habitRepo.listAliasesForUser.bind(habitRepo),
+      upsertAliasesBatch: habitRepo.upsertAliasesBatch.bind(habitRepo),
+      upsertLogsBatch: habitRepo.upsertLogsBatch.bind(habitRepo),
       deleteHabitForUser: habitRepo.deleteHabitForUser.bind(habitRepo),
       rebalanceHabitPositions:
         habitRepo.rebalanceHabitPositions.bind(habitRepo),

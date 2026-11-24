@@ -57,8 +57,25 @@ import {
   type HabitMonthAnalytics,
   type ScoringMode,
 } from "@/server/domain/habit-analytics";
+import {
+  MAX_HISTORY_LOG_ROWS,
+  type ParsedHistoryLog,
+} from "@/server/domain/habit-import";
+import {
+  normalizeImportTitle,
+  planHabitEvolution,
+  resolveCanonicalTitle,
+  monthStartKey,
+  type AliasOverride,
+  type HabitEvolutionPlan,
+  type MonthRoster,
+} from "@/server/domain/habit-evolution";
 
 const MAX_HABIT_NOTE_LENGTH = 280;
+
+function normalizeHabitTitle(title: string): string {
+  return title.trim().replace(/\s+/g, " ").toLowerCase();
+}
 
 export interface CreateHabitInput {
   title: string;
@@ -106,6 +123,29 @@ export interface LogHabitDayInput {
   dateKey: string;
   status: HabitLogStatus | null;
   note?: string | null;
+}
+
+export interface BulkHistoryImportInput {
+  rows: ParsedHistoryLog[];
+  createMissing: boolean;
+  /** One entry per spreadsheet month; drives add/remove/rename detection. */
+  monthRosters: MonthRoster[];
+  /** User-confirmed alias mappings that override automatic grouping. */
+  aliasOverrides: AliasOverride[];
+  /** Archive habits that stop appearing in the final month. */
+  archiveRemoved: boolean;
+}
+
+export interface BulkHistoryImportResult {
+  importedCount: number;
+  createdHabits: HabitRecord[];
+  archivedHabits: HabitRecord[];
+  matchedTitleCount: number;
+  skippedTitleCount: number;
+  aliasCount: number;
+  syncedTaskCount: number;
+  evolution: HabitEvolutionPlan;
+  warnings: string[];
 }
 
 export interface PromoteTaskToHabitInput {
@@ -280,14 +320,31 @@ export class HabitService {
     userId: string,
     tx: DbExecutor
   ): Promise<string> {
-    const lastPos = await this.habits.getLastHabitPosition(userId, tx);
-    let position = generatePositionBetween(lastPos, null);
-    if (position.length > MAX_POSITION_KEY_LENGTH) {
-      await this.habits.rebalanceHabitPositions(userId, tx);
-      const refreshed = await this.habits.getLastHabitPosition(userId, tx);
-      position = generatePositionBetween(refreshed, null);
+    const [position] = await this.allocateHabitPositions(userId, tx, 1);
+    return position!;
+  }
+
+  private async allocateHabitPositions(
+    userId: string,
+    tx: DbExecutor,
+    count: number
+  ): Promise<string[]> {
+    if (count <= 0) return [];
+    let cursor = await this.habits.getLastHabitPosition(userId, tx);
+    const positions: string[] = [];
+
+    for (let i = 0; i < count; i++) {
+      let next = generatePositionBetween(cursor, null);
+      if (next.length > MAX_POSITION_KEY_LENGTH) {
+        await this.habits.rebalanceHabitPositions(userId, tx);
+        cursor = await this.habits.getLastHabitPosition(userId, tx);
+        next = generatePositionBetween(cursor, null);
+      }
+      positions.push(next);
+      cursor = next;
     }
-    return position;
+
+    return positions;
   }
 
   async getMonthWorkspace(
@@ -1009,22 +1066,11 @@ export class HabitService {
 
     return withDbRetry(() =>
       this.database.transaction(async (tx) => {
-        let cursorPos = await this.habits.getLastHabitPosition(userId, tx);
-        const positions: string[] = [];
-
-        for (let i = 0; i < parsed.rows.length; i++) {
-          const next = generatePositionBetween(cursorPos, null);
-          if (next.length > MAX_POSITION_KEY_LENGTH) {
-            await this.habits.rebalanceHabitPositions(userId, tx);
-            cursorPos = await this.habits.getLastHabitPosition(userId, tx);
-            const reset = generatePositionBetween(cursorPos, null);
-            positions.push(reset);
-            cursorPos = reset;
-          } else {
-            positions.push(next);
-            cursorPos = next;
-          }
-        }
+        const positions = await this.allocateHabitPositions(
+          userId,
+          tx,
+          parsed.rows.length
+        );
 
         return this.habits.createHabitsBatch(
           parsed.rows.map((row, idx) => ({
@@ -1034,7 +1080,7 @@ export class HabitService {
             cadenceType: row.cadenceType,
             scheduledDaysJson: JSON.stringify(row.scheduledDays),
             weeklyTargetCount: row.weeklyTargetCount,
-            startDate: todayDateKey,
+            startDate: row.startDate ?? todayDateKey,
             preferredTime: row.preferredTime,
             linkedProjectId: null,
             autoSyncDailyTask: false,
@@ -1045,6 +1091,315 @@ export class HabitService {
       })
     );
   }
+
+  /**
+   * Imports a completion-history grid in one transaction. Source titles are
+   * resolved through detected renames and merges so one habit keeps its
+   * history, start dates come from the first month a habit appears, and habits
+   * that disappear in later months are archived.
+   */
+  async bulkImportHistory(
+    userId: string,
+    timezone: string,
+    input: BulkHistoryImportInput
+  ): Promise<BulkHistoryImportResult> {
+    if (input.rows.length === 0) {
+      throw new ValidationError("Provide at least one completion mark.");
+    }
+    if (input.rows.length > MAX_HISTORY_LOG_ROWS) {
+      throw new ValidationError(
+        `History import supports up to ${MAX_HISTORY_LOG_ROWS.toLocaleString()} marks at once.`
+      );
+    }
+
+    const nowMs = this.now();
+    const todayDateKey = getLocalDateKey(nowMs, timezone);
+    const warnings: string[] = [];
+    const rows: ParsedHistoryLog[] = [];
+
+    for (const row of input.rows) {
+      if (!isValidDateKey(row.dateKey)) {
+        warnings.push(`Ignored invalid date "${row.dateKey}".`);
+        continue;
+      }
+      if (isFutureDateKey(row.dateKey, todayDateKey)) {
+        warnings.push(`Ignored future date "${row.dateKey}".`);
+        continue;
+      }
+      rows.push(row);
+    }
+
+    if (rows.length === 0) {
+      throw new ValidationError(
+        "No importable marks remain after checking dates."
+      );
+    }
+
+    const evolution = planHabitEvolution(
+      input.monthRosters,
+      input.aliasOverrides
+    );
+    warnings.push(...evolution.warnings);
+
+    const resolvedRows = rows.map((row) => ({
+      ...row,
+      canonicalTitle: resolveCanonicalTitle(
+        row.title,
+        evolution,
+        input.aliasOverrides
+      ),
+    }));
+
+    interface CanonicalGroup {
+      title: string;
+      firstDate: string;
+      lastDate: string;
+      startDate: string;
+      lastMonth: string | null;
+    }
+    const groupByKey = new Map<string, CanonicalGroup>();
+    for (const row of resolvedRows) {
+      const key = normalizeImportTitle(row.canonicalTitle);
+      const existing = groupByKey.get(key);
+      if (!existing) {
+        groupByKey.set(key, {
+          title: row.canonicalTitle,
+          firstDate: row.dateKey,
+          lastDate: row.dateKey,
+          startDate: row.dateKey,
+          lastMonth: null,
+        });
+        continue;
+      }
+      if (row.dateKey < existing.firstDate) {
+        existing.firstDate = row.dateKey;
+        existing.startDate = row.dateKey;
+      }
+      if (row.dateKey > existing.lastDate) existing.lastDate = row.dateKey;
+    }
+
+    for (const group of evolution.groups) {
+      const entry = groupByKey.get(normalizeImportTitle(group.canonicalTitle));
+      if (!entry) continue;
+      entry.lastMonth = group.lastMonth || null;
+      if (group.firstMonth) {
+        const monthStart = monthStartKey(group.firstMonth);
+        if (monthStart < entry.startDate) entry.startDate = monthStart;
+      }
+    }
+
+    const allHabits = await this.habits.listHabitsForUser(userId, {
+      includeArchived: true,
+    });
+    const existingAliases = await this.habits.listAliasesForUser(userId);
+    const habitByKey = new Map<string, HabitRecord>();
+    for (const habit of allHabits) {
+      habitByKey.set(normalizeImportTitle(habit.title), habit);
+    }
+    for (const alias of existingAliases) {
+      if (habitByKey.has(alias.normalizedTitle)) continue;
+      const habit = allHabits.find((candidate) => candidate.id === alias.habitId);
+      if (habit) habitByKey.set(alias.normalizedTitle, habit);
+    }
+
+    const canonicalKeys = Array.from(groupByKey.keys());
+    const missingKeys = canonicalKeys.filter((key) => !habitByKey.has(key));
+    const matchedTitleCount = canonicalKeys.length - missingKeys.length;
+
+    return withDbRetry(() =>
+      this.database.transaction(async (tx) => {
+        let createdHabits: HabitRecord[] = [];
+        const effectiveKeys = input.createMissing ? canonicalKeys : matchedKeys(canonicalKeys, habitByKey);
+
+        if (input.createMissing && missingKeys.length > 0) {
+          const positions = await this.allocateHabitPositions(
+            userId,
+            tx,
+            missingKeys.length
+          );
+          createdHabits = await this.habits.createHabitsBatch(
+            missingKeys.map((key, index) => ({
+              userId,
+              title: groupByKey.get(key)!.title.slice(0, 120),
+              category: null,
+              cadenceType: "daily",
+              scheduledDaysJson: "[]",
+              weeklyTargetCount: null,
+              startDate: groupByKey.get(key)!.startDate,
+              preferredTime: null,
+              linkedProjectId: null,
+              autoSyncDailyTask: false,
+              position: positions[index]!,
+            })),
+            tx
+          );
+          for (const habit of createdHabits) {
+            habitByKey.set(normalizeImportTitle(habit.title), habit);
+          }
+        }
+
+        // Archive habits that disappear after their last source month.
+        const archivedHabits: HabitRecord[] = [];
+        if (input.archiveRemoved && evolution.lastMonth) {
+          for (const key of effectiveKeys) {
+            const habit = habitByKey.get(key);
+            const group = groupByKey.get(key);
+            if (!habit || !group?.lastMonth) continue;
+
+            if (group.lastMonth < evolution.lastMonth && !habit.isArchived) {
+              const updated = await this.habits.updateHabitForUser(
+                userId,
+                habit.id,
+                { isArchived: true },
+                tx
+              );
+              if (updated) archivedHabits.push(updated);
+            } else if (group.lastMonth === evolution.lastMonth && habit.isArchived) {
+              // A removed habit came back — restore it instead of double-creating.
+              await this.habits.updateHabitForUser(
+                userId,
+                habit.id,
+                { isArchived: false },
+                tx
+              );
+            }
+          }
+        }
+
+        const importRows = resolvedRows.filter((row) =>
+          effectiveKeys.includes(normalizeImportTitle(row.canonicalTitle))
+        );
+
+        if (importRows.length === 0) {
+          return {
+            importedCount: 0,
+            createdHabits,
+            archivedHabits,
+            matchedTitleCount,
+            skippedTitleCount: canonicalKeys.length - effectiveKeys.length,
+            aliasCount: 0,
+            syncedTaskCount: 0,
+            evolution,
+            warnings,
+          };
+        }
+
+        let minDate = importRows[0]!.dateKey;
+        let maxDate = importRows[0]!.dateKey;
+        for (const row of importRows) {
+          if (row.dateKey < minDate) minDate = row.dateKey;
+          if (row.dateKey > maxDate) maxDate = row.dateKey;
+        }
+
+        const existingLogs = await this.habits.listLogsForRange(
+          userId,
+          minDate,
+          maxDate,
+          tx
+        );
+        const noteByKey = new Map(
+          existingLogs.map((log) => [`${log.habitId}|${log.dateKey}`, log.note])
+        );
+
+        const logInputs = importRows.map((row) => {
+          const habit = habitByKey.get(normalizeImportTitle(row.canonicalTitle))!;
+          return {
+            habitId: habit.id,
+            userId,
+            dateKey: row.dateKey,
+            status: row.status,
+            note: noteByKey.get(`${habit.id}|${row.dateKey}`) ?? null,
+            loggedAt: nowMs,
+            isBackfilledLate: computeIsBackfilledLate(
+              row.dateKey,
+              nowMs,
+              timezone
+            ),
+          };
+        });
+
+        const saved = await this.habits.upsertLogsBatch(logInputs, tx);
+        const syncedTaskCount = await this.tasks.syncLinkedTasksForHabitLogs(
+          {
+            userId,
+            nowMs,
+            entries: logInputs.map((log) => ({
+              habitId: log.habitId,
+              dateKey: log.dateKey,
+              completed: log.status === "done",
+            })),
+          },
+          tx
+        );
+
+        // Persist source-title -> habit aliases so later imports keep identity.
+        const aliasMeta = new Map<string, { label: string; first: string; last: string }>();
+        for (const row of importRows) {
+          const key = normalizeImportTitle(row.title);
+          const meta = aliasMeta.get(key);
+          if (!meta) {
+            aliasMeta.set(key, {
+              label: row.title,
+              first: row.dateKey,
+              last: row.dateKey,
+            });
+          } else {
+            if (row.dateKey < meta.first) meta.first = row.dateKey;
+            if (row.dateKey > meta.last) meta.last = row.dateKey;
+          }
+        }
+        const habitTitleKeys = new Set(
+          allHabits.map((habit) => normalizeImportTitle(habit.title))
+        );
+        const aliasInputs = Array.from(aliasMeta.entries())
+          .filter(([key]) => {
+            const canonicalKey = normalizeImportTitle(
+              resolveCanonicalTitle(
+                aliasMeta.get(key)!.label,
+                evolution,
+                input.aliasOverrides
+              )
+            );
+            return key !== canonicalKey && !habitTitleKeys.has(key);
+          })
+          .map(([key, meta]) => {
+            const canonicalTitle = resolveCanonicalTitle(
+              meta.label,
+              evolution,
+              input.aliasOverrides
+            );
+            return {
+              userId,
+              habitId: habitByKey.get(normalizeImportTitle(canonicalTitle))!.id,
+              sourceTitle: meta.label,
+              normalizedTitle: key,
+              firstSeenDateKey: meta.first,
+              lastSeenDateKey: meta.last,
+            };
+          });
+        const savedAliases = await this.habits.upsertAliasesBatch(aliasInputs, tx);
+
+        return {
+          importedCount: saved.length,
+          createdHabits,
+          archivedHabits,
+          matchedTitleCount,
+          skippedTitleCount: canonicalKeys.length - effectiveKeys.length,
+          aliasCount: savedAliases.length,
+          syncedTaskCount,
+          evolution,
+          warnings,
+        };
+      })
+    );
+  }
+}
+
+function matchedKeys(
+  keys: string[],
+  habitByKey: Map<string, HabitRecord>
+): string[] {
+  return keys.filter((key) => habitByKey.has(key));
 }
 
 export const habitService = new HabitService();

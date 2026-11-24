@@ -15,6 +15,10 @@ import {
 import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
 import {
+  readWorkbook,
+  worksheetToHabitCsv,
+} from "@/lib/spreadsheet-import";
+import {
   MAX_BULK_IMPORT_HABITS,
   parseBulkHabitImport,
 } from "@/server/domain/habit-analytics";
@@ -24,10 +28,11 @@ interface BulkImportHabitsDialogProps {
   onOpenChange: (open: boolean) => void;
 }
 
-const SAMPLE_CSV = `Morning walk,Health,daily,07:00
-Strength training,Fitness,4x,17:30
-Daily Git commit,Craft,weekdays,18:00
-Read 20 pages,Learning,daily,21:30`;
+const SAMPLE_CSV = `title,category,cadence,preferredTime,startDate
+Morning walk,Health,daily,07:00,2026-01-01
+Strength training,Fitness,4x,17:30,2026-01-01
+Daily Git commit,Craft,weekdays,18:00,2026-02-01
+Read 20 pages,Learning,daily,21:30,`;
 
 export function BulkImportHabitsDialog({
   open,
@@ -55,8 +60,17 @@ export function BulkImportHabitsDialog({
     const file = event.target.files?.[0];
     if (!file) return;
     try {
-      const content = await file.text();
-      setRawText(content);
+      if (/\.xlsx$/i.test(file.name)) {
+        const sheets = await readWorkbook(file);
+        if (sheets.length === 0) {
+          toast.error("That workbook has no sheets.");
+          return;
+        }
+        setRawText(worksheetToHabitCsv(sheets[0]!));
+        toast.success(`Read "${sheets[0]!.sheet}" from ${file.name}.`);
+      } else {
+        setRawText(await file.text());
+      }
     } catch {
       toast.error("Could not read selected file.");
     } finally {
@@ -87,7 +101,7 @@ export function BulkImportHabitsDialog({
 
   return (
     <Dialog open={open} onOpenChange={handleOpenChange}>
-      <DialogContent className="border-border bg-card sm:max-w-[500px]">
+      <DialogContent className="max-h-[92vh] overflow-y-auto border-border bg-card sm:max-w-[720px]">
         <DialogHeader>
           <DialogTitle className="text-sm font-semibold">
             Bulk import habits
@@ -95,9 +109,10 @@ export function BulkImportHabitsDialog({
           <DialogDescription className="text-xs text-muted-foreground">
             Paste one habit per line or CSV columns{" "}
             <code className="mono-tabular rounded bg-muted px-1 py-0.5 text-[11px] text-foreground">
-              title,category,cadence,preferredTime
+              title,category,cadence,preferredTime,startDate
             </code>{" "}
-            (up to {MAX_BULK_IMPORT_HABITS} rows).
+            (startDate optional; up to {MAX_BULK_IMPORT_HABITS} rows). You can
+            also upload an .xlsx sheet.
           </DialogDescription>
         </DialogHeader>
 
@@ -107,7 +122,7 @@ export function BulkImportHabitsDialog({
               <input
                 ref={fileInputRef}
                 type="file"
-                accept=".csv,.txt,text/csv,text/plain"
+                accept=".csv,.txt,.xlsx,text/csv,text/plain"
                 onChange={handleFileChange}
                 className="hidden"
               />
@@ -119,7 +134,7 @@ export function BulkImportHabitsDialog({
                 className="mira-row gap-1.5 px-2.5 text-xs"
               >
                 <Upload className="size-3" />
-                Upload .csv
+                Upload file
               </Button>
               <Button
                 type="button"
@@ -164,9 +179,42 @@ export function BulkImportHabitsDialog({
               <code className="font-mono">weekdays</code>,{" "}
               <code className="font-mono">weekends</code>, or{" "}
               <code className="font-mono">3x</code>–
-              <code className="font-mono">7x</code>.
+              <code className="font-mono">7x</code>. Start date uses{" "}
+              <code className="font-mono">YYYY-MM-DD</code>; blank means today.
             </p>
           </div>
+
+          {preview && !preview.error && preview.rows.length > 0 ? (
+            <div className="max-h-48 overflow-y-auto rounded-md border border-border bg-muted/30 p-2">
+              <table className="w-full text-left text-[11px]">
+                <thead className="text-muted-foreground">
+                  <tr>
+                    <th className="pb-1">Title</th>
+                    <th className="pb-1">Category</th>
+                    <th className="pb-1">Cadence</th>
+                    <th className="pb-1">Start</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {preview.rows.map((row) => (
+                    <tr key={row.title} className="border-t border-border/60">
+                      <td className="py-1 pr-2 font-medium">{row.title}</td>
+                      <td className="py-1 pr-2">{row.category ?? "—"}</td>
+                      <td className="py-1 pr-2">{row.cadenceType}</td>
+                      <td className="py-1 font-mono">
+                        {row.startDate ?? "today"}
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+              {preview.warnings?.length ? (
+                <p className="mt-2 text-[11px] text-overdue">
+                  {preview.warnings.join(" ")}
+                </p>
+              ) : null}
+            </div>
+          ) : null}
 
           <div className="flex justify-end gap-2 pt-1">
             <Button

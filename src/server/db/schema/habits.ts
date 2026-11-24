@@ -158,6 +158,42 @@ export const habits = sqliteTable(
   ]
 );
 
+/**
+ * Maps a source spreadsheet title to the canonical FOLIO habit it belongs to.
+ * One habit can have many aliases (renames and merges), but a source title
+ * resolves to exactly one habit per user.
+ */
+export const habitImportAliases = sqliteTable(
+  "habit_import_aliases",
+  {
+    id: text("id")
+      .primaryKey()
+      .$defaultFn(() => ulid()),
+    userId: text("user_id")
+      .notNull()
+      .references(() => users.id, { onDelete: "cascade" }),
+    habitId: text("habit_id")
+      .notNull()
+      .references(() => habits.id, { onDelete: "cascade" }),
+    sourceTitle: text("source_title").notNull(),
+    normalizedTitle: text("normalized_title").notNull(),
+    firstSeenDateKey: text("first_seen_date_key").notNull(),
+    lastSeenDateKey: text("last_seen_date_key").notNull(),
+    createdAt: integer("created_at", { mode: "number" })
+      .notNull()
+      .$defaultFn(() => Date.now()),
+  },
+  (table) => [
+    uniqueIndex("habit_import_alias_user_title_uq").on(
+      table.userId,
+      table.normalizedTitle
+    ),
+    index("habit_import_alias_user_habit_idx").on(table.userId, table.habitId),
+  ]
+);
+
+export type HabitImportAliasRecord = typeof habitImportAliases.$inferSelect;
+
 export const habitLogs = sqliteTable(
   "habit_logs",
   {

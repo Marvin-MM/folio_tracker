@@ -7,6 +7,7 @@ import {
   ArchiveRestore,
   ChevronLeft,
   ChevronRight,
+  FileSpreadsheet,
   Plus,
   Repeat2,
   Settings2,
@@ -16,6 +17,7 @@ import {
 import { toast } from "sonner";
 import { archiveHabitAction, logHabitDayAction } from "@/actions/habits";
 import { BulkImportHabitsDialog } from "@/components/habits/bulk-import-habits-dialog";
+import { BulkImportHistoryDialog } from "@/components/habits/bulk-import-history-dialog";
 import { CreateHabitDialog } from "@/components/habits/create-habit-dialog";
 import { HabitSettingsSheet } from "@/components/habits/habit-settings-sheet";
 import { HabitsAnalyticsCharts } from "@/components/habits/habits-analytics-charts";
@@ -113,6 +115,7 @@ export function HabitsWorkspaceView({
 
   const [createOpen, setCreateOpen] = useState(false);
   const [bulkOpen, setBulkOpen] = useState(false);
+  const [historyOpen, setHistoryOpen] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [showArchived, setShowArchived] = useState(false);
   const [optimisticDirty, setOptimisticDirty] = useState(false);
@@ -268,6 +271,10 @@ export function HabitsWorkspaceView({
         projects={projects}
       />
       <BulkImportHabitsDialog open={bulkOpen} onOpenChange={setBulkOpen} />
+      <BulkImportHistoryDialog
+        open={historyOpen}
+        onOpenChange={setHistoryOpen}
+      />
       <HabitSettingsSheet
         open={settingsOpen}
         onOpenChange={setSettingsOpen}
@@ -367,6 +374,16 @@ export function HabitsWorkspaceView({
           >
             <Upload className="size-3.5" />
             Bulk Import
+          </Button>
+          <Button
+            type="button"
+            variant="outline"
+            size="sm"
+            onClick={() => setHistoryOpen(true)}
+            className="mira-row gap-1.5 border-border bg-card px-2.5 text-xs"
+          >
+            <FileSpreadsheet className="size-3.5" />
+            Import History
           </Button>
           <Button
             type="button"
@@ -518,6 +535,16 @@ export function HabitsWorkspaceView({
             >
               <Upload className="size-3.5" />
               Bulk import CSV
+            </Button>
+            <Button
+              type="button"
+              variant="outline"
+              size="sm"
+              onClick={() => setHistoryOpen(true)}
+              className="mira-row gap-1.5 px-3 text-xs"
+            >
+              <FileSpreadsheet className="size-3.5" />
+              Import completion history
             </Button>
           </div>
         </div>

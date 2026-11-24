@@ -29,6 +29,13 @@
       "when": 1795424262005,
       "tag": "0003_habits_phase_b",
       "breakpoints": true
+    },
+    {
+      "idx": 4,
+      "version": "6",
+      "when": 1795550000000,
+      "tag": "0004_habit_import_aliases",
+      "breakpoints": true
     }
   ]
 }

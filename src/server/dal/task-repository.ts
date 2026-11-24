@@ -137,6 +137,19 @@ export interface TaskRepository {
     },
     executor?: DbExecutor
   ): Promise<number>;
+  /** Batch counterpart used by history imports. */
+  syncLinkedTasksForHabitLogs(
+    params: {
+      userId: string;
+      entries: Array<{
+        habitId: string;
+        dateKey: string;
+        completed: boolean;
+      }>;
+      nowMs: number;
+    },
+    executor?: DbExecutor
+  ): Promise<number>;
   listInboxWithReminders(userId: string): Promise<TaskListQueryResult>;
   listTodayWithReminders(
     userId: string,
@@ -395,6 +408,60 @@ export class DrizzleTaskRepository implements TaskRepository {
       .returning({ id: tasks.id });
 
     return updated.length;
+  }
+
+  async syncLinkedTasksForHabitLogs(
+    params: {
+      userId: string;
+      entries: Array<{
+        habitId: string;
+        dateKey: string;
+        completed: boolean;
+      }>;
+      nowMs: number;
+    },
+    executor: DbExecutor = this.database
+  ): Promise<number> {
+    if (params.entries.length === 0) return 0;
+
+    let updatedCount = 0;
+    const chunkSize = 200;
+
+    for (let i = 0; i < params.entries.length; i += chunkSize) {
+      const chunk = params.entries.slice(i, i + chunkSize);
+      for (const completed of [true, false]) {
+        const matchers = chunk
+          .filter((entry) => entry.completed === completed)
+          .map((entry) =>
+            and(
+              eq(tasks.habitId, entry.habitId),
+              eq(tasks.habitDateKey, entry.dateKey)
+            )
+          );
+        if (matchers.length === 0) continue;
+
+        const updated = await executor
+          .update(tasks)
+          .set({
+            status: completed ? "done" : "todo",
+            completedAt: completed ? params.nowMs : null,
+            updatedAt: params.nowMs,
+          })
+          .where(
+            and(
+              eq(tasks.userId, params.userId),
+              isNotNull(tasks.habitId),
+              isNotNull(tasks.habitDateKey),
+              ne(tasks.status, "archived"),
+              or(...matchers)
+            )
+          )
+          .returning({ id: tasks.id });
+        updatedCount += updated.length;
+      }
+    }
+
+    return updatedCount;
   }
 
   private async hydrateTasks(
