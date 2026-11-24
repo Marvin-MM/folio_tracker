@@ -47,11 +47,21 @@ function getDeepLink(notif: NotificationRecord): string {
   if (
     notif.entityType === "habit_group" ||
     notif.type === "habit.group_invited" ||
-    notif.type === "habit.group_joined" ||
-    notif.type === "habit.group_review_posted"
+    notif.type === "habit.group_joined"
   ) {
     return entityId
       ? `/app/habits/groups/${encodeURIComponent(entityId)}`
+      : "/app/habits/groups";
+  }
+  if (
+    notif.entityType === "habit_group_review" ||
+    notif.type === "habit.group_review_posted"
+  ) {
+    // Review notifications use the deterministic `${groupId}:${cycleKey}` id;
+    // the deep link targets the group board that contains the review.
+    const groupId = entityId?.split(":")[0];
+    return groupId
+      ? `/app/habits/groups/${encodeURIComponent(groupId)}`
       : "/app/habits/groups";
   }
   if (

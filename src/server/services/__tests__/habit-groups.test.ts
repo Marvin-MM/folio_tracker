@@ -39,6 +39,7 @@ describe("Habit groups — invite consent, sharing and review isolation", () => 
   let bobHabitId: string;
 
   const NOW = Date.parse("2026-11-24T12:00:00.000Z");
+  const CYCLE_KEY = "week-2026-11-23";
   const BOB_EMAIL = "bob-group@folio.test";
   const CLARA_EMAIL = "clara-group@folio.test";
   const DAN_EMAIL = "dan-group@folio.test";
@@ -230,8 +231,8 @@ describe("Habit groups — invite consent, sharing and review isolation", () => 
     expect(members.map((member) => member.userId)).not.toContain(eveId);
   });
 
-  it("filters metrics by habitId and fetches logs once per habit owner", async () => {
-    const listLogsSpy = vi.spyOn(habitRepo, "listLogsForRange");
+  it("filters metrics by habitId, fetches logs once per owner and clamps mid-week", async () => {
+    const currentSpy = vi.spyOn(habitRepo, "listLogsForRange");
     try {
       const workspace = await service.getWorkspace(claraId, groupId);
       const aliceMetric = workspace.metrics.find(
@@ -241,20 +242,42 @@ describe("Habit groups — invite consent, sharing and review isolation", () => 
         (metric) => metric.ownerId === bobId
       );
 
-      // Alice's private habit is done every day; the shared habit is missed
-      // every day. Only the shared habit may be reflected in the metric.
+      expect(workspace.cycleKey).toBe(CYCLE_KEY);
+      expect(workspace.periodEndDate).toBe("2026-11-29");
+      // Alice's private habit is done every day; the shared habit is missed.
+      // Only the shared habit may be reflected, and only Mon/Tue have happened.
       expect(aliceMetric?.doneCount).toBe(0);
-      expect(aliceMetric?.scheduledCount).toBe(7);
+      expect(aliceMetric?.scheduledCount).toBe(2);
       expect(aliceMetric?.completionPct).toBe(0);
-      expect(bobMetric?.doneCount).toBe(7);
+      expect(bobMetric?.doneCount).toBe(2);
       expect(bobMetric?.completionPct).toBe(100);
 
-      expect(listLogsSpy).toHaveBeenCalledTimes(2);
+      expect(currentSpy).toHaveBeenCalledTimes(2);
       expect(
-        listLogsSpy.mock.calls.map(([userId]) => userId).sort()
+        currentSpy.mock.calls.map(([userId]) => userId).sort()
       ).toEqual([aliceId, bobId].sort());
     } finally {
-      listLogsSpy.mockRestore();
+      currentSpy.mockRestore();
+    }
+
+    const fullWeekSpy = vi.spyOn(habitRepo, "listLogsForRange");
+    try {
+      const fullWeek = await service.getWorkspace(
+        claraId,
+        groupId,
+        "week-2026-11-16"
+      );
+      const aliceMetric = fullWeek.metrics.find(
+        (metric) => metric.ownerId === aliceId
+      );
+      const bobMetric = fullWeek.metrics.find(
+        (metric) => metric.ownerId === bobId
+      );
+      expect(aliceMetric?.scheduledCount).toBe(7);
+      expect(bobMetric?.doneCount).toBe(5);
+      expect(fullWeekSpy).toHaveBeenCalledTimes(2);
+    } finally {
+      fullWeekSpy.mockRestore();
     }
   });
 
@@ -271,6 +294,99 @@ describe("Habit groups — invite consent, sharing and review isolation", () => 
     await expect(
       service.getWorkspace(danId, groupId)
     ).rejects.toBeInstanceOf(NotFoundError);
+  });
+
+  it("keeps reviews member-only, immutable on edits and first-post only", async () => {
+    const before = await notifications.listRecentForUser(bobId, 100);
+    const created = await service.upsertReview(claraId, {
+      groupId,
+      cycleKey: CYCLE_KEY,
+      wentWell: "Walked every day",
+      challenges: "Late meetings",
+      nextFocus: "Protect mornings",
+    });
+    expect(created.cycleKey).toBe(CYCLE_KEY);
+    expect(created.periodEndDate).toBe("2026-11-29");
+
+    const board = await groupRepo.listReviews(groupId, CYCLE_KEY, claraId);
+    expect(board.map((review) => review.authorId)).toEqual([claraId]);
+    await expect(
+      groupRepo.listReviews(groupId, CYCLE_KEY, danId)
+    ).rejects.toBeInstanceOf(ForbiddenError);
+
+    const entityId = `${groupId}:${CYCLE_KEY}`;
+    const afterFirst = await notifications.listRecentForUser(bobId, 100);
+    const posted = afterFirst.filter(
+      (notification) =>
+        notification.type === "habit.group_review_posted" &&
+        notification.entityId === entityId
+    );
+    expect(posted).toHaveLength(
+      afterFirst.length - before.length
+    );
+    expect(posted).toHaveLength(1);
+
+    const updated = await service.upsertReview(claraId, {
+      groupId,
+      cycleKey: CYCLE_KEY,
+      wentWell: "Updated review",
+      challenges: "Still meetings",
+      nextFocus: "Earlier bedtime",
+    });
+    expect(updated.id).toBe(created.id);
+    expect(updated.wentWell).toBe("Updated review");
+    expect(updated.metricsJson).toBe(created.metricsJson);
+
+    const boardAfterEdit = await groupRepo.listReviews(groupId, CYCLE_KEY, claraId);
+    expect(boardAfterEdit.filter((review) => review.authorId === claraId)).toHaveLength(1);
+
+    const afterSecond = await notifications.listRecentForUser(bobId, 100);
+    expect(
+      afterSecond.filter(
+        (notification) =>
+          notification.type === "habit.group_review_posted" &&
+          notification.entityId === entityId
+      )
+    ).toHaveLength(1);
+
+    await service.upsertReview(bobId, {
+      groupId,
+      cycleKey: CYCLE_KEY,
+      wentWell: "Finished the book",
+      challenges: "Travel",
+      nextFocus: "Ten pages a day",
+    });
+    const fullBoard = await groupRepo.listReviews(groupId, CYCLE_KEY, claraId);
+    expect(fullBoard.map((review) => review.authorId).sort()).toEqual(
+      [bobId, claraId].sort()
+    );
+  });
+
+  it("rejects invalid and future review cycles", async () => {
+    const input = {
+      groupId,
+      wentWell: "Well",
+      challenges: "Hard",
+      nextFocus: "Next",
+    };
+    await expect(
+      service.upsertReview(claraId, {
+        ...input,
+        cycleKey: "week-2026-11-24",
+      })
+    ).rejects.toBeInstanceOf(ValidationError);
+    await expect(
+      service.upsertReview(claraId, {
+        ...input,
+        cycleKey: "week-2026-11-31",
+      })
+    ).rejects.toBeInstanceOf(ValidationError);
+    await expect(
+      service.upsertReview(claraId, {
+        ...input,
+        cycleKey: "week-2026-11-30",
+      })
+    ).rejects.toBeInstanceOf(ValidationError);
   });
 
   it("protects owners and admins from removal", async () => {

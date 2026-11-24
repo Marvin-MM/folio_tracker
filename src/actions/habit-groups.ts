@@ -45,6 +45,16 @@ const habitSchema = groupIdSchema.extend({
   habitId: z.string().min(1),
 });
 
+const reviewSchema = groupIdSchema.extend({
+  cycleKey: z
+    .string()
+    .regex(/^week-\d{4}-\d{2}-\d{2}$/)
+    .optional(),
+  wentWell: z.string().trim().min(1).max(1200),
+  challenges: z.string().trim().min(1).max(1200),
+  nextFocus: z.string().trim().min(1).max(1200),
+});
+
 function revalidateGroupPaths(groupId?: string) {
   revalidatePath("/app", "layout");
   revalidatePath("/app/habits");
@@ -231,6 +241,23 @@ export async function unshareGroupHabitAction(
     );
     revalidateGroupPaths(parsed.data.groupId);
     return actionOk({ habitId: parsed.data.habitId });
+  } catch (error) {
+    return mapErrorToActionResult(error);
+  }
+}
+
+export async function saveGroupReviewAction(
+  input: z.input<typeof reviewSchema>
+): Promise<ActionResult<{ reviewId: string }>> {
+  const parsed = reviewSchema.safeParse(input);
+  if (!parsed.success) {
+    return validationError(parsed.error, "Invalid review.");
+  }
+  try {
+    const { user } = await requireSession();
+    const review = await habitGroupService.upsertReview(user.id, parsed.data);
+    revalidateGroupPaths(parsed.data.groupId);
+    return actionOk({ reviewId: review.id });
   } catch (error) {
     return mapErrorToActionResult(error);
   }
