@@ -4,7 +4,7 @@
 
 Designed around a tactile **Warm Paper (Light)** and **Carbon Ink (Dark)** aesthetic (`shadcn/ui` Mira), Folio keeps personal Inbox tasks, unlinked notes, and habits strictly private by default while allowing deliberate, auditable collaboration inside the app.
 
-> Looking for the complete visual systems blueprint (ER schemas, request/auth isolation, outbox reconciliation, reminder state machine, Task ↔ Habit ACID sync, dynamic comment-window policy, and Vercel scale invariants)? Read **[docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)**.
+> Looking for the complete visual systems blueprint (ER schemas, request/auth isolation, outbox reconciliation, reminder state machine, Task ↔ Habit ACID sync, dynamic comment-window policy, and Vercel scale invariants)? Read **[docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)**. For the product review behind the monthly report, challenge-engine, and daily-use recommendations, see **[docs/PRODUCT-REVIEW.md](docs/PRODUCT-REVIEW.md)**.
 
 ---
 
@@ -157,6 +157,30 @@ pnpm db:studio    # Launch Drizzle Studio
 ```
 
 `pnpm test` executes completely offline against isolated temporary SQLite databases and verifies schema FK/XOR/partial-unique constraints, ACID rollbacks, cross-tenant IDOR protection, env-driven `ADMIN_EMAILS` promotion/demotion/audit-logging/self-suspension guardrails, revoked-access delivery blocking, concurrent double-accept/double-delivery races, outbox recovery, `404`/`410` push pruning, sliding-window HTTP `429` rate limiting, real-calendar habit analytics, bidirectional Task ↔ Habit sync, dynamic global/per-monitor comment windows, zero-leak selective-scope projections, anti-enumeration dual monitor invites, fractional rebalancing, and safe account offboarding.
+
+---
+
+## Contributor Push & PR Workflow
+
+Folio uses **one focused branch and one PR per feature**. Never push directly to `main`.
+
+1. **Start current:** `git switch main && git pull --ff-only && corepack pnpm install`.
+2. **Branch per feature:** `git switch -c feat/<short-name>` (or `fix/`, `docs/`). Keep unrelated work out of the branch so review and rollback stay easy.
+3. **Commit small and meaningful:** use conventional prefixes such as `feat(habits):`, `fix(reminders):`, `docs:`. Include generated Drizzle migrations/snapshots with the schema change that produced them, and never commit `.env.local` or local SQLite files.
+4. **Verify before pushing:**
+   ```bash
+   corepack pnpm typecheck
+   corepack pnpm lint
+   corepack pnpm test
+   corepack pnpm build
+   ```
+5. **Rebase, don't merge:** `git fetch origin && git rebase origin/<base-branch>`. If this is a stacked PR, base it on the previous feature branch and keep each PR's diff limited to its own feature.
+6. **Push your own branch:** `git push -u origin <branch>`. After a rebase, use `git push --force-with-lease origin <branch>` only on your own branch—never on `main` or a collaborator's branch.
+7. **Open the PR:** `gh pr create --base <base-branch> --head <branch> --title "..." --body "..."`. Explain *what*, *why*, *how it was tested*, and any migration/deployment notes. Add screenshots for UI changes.
+8. **After review:** address feedback with new commits, re-run checks, then `git fetch origin && git rebase origin/<base-branch>` and `--force-with-lease` again. When a stacked base PR merges, retarget with `gh pr edit --base main`, rebase onto the new `origin/main`, and re-run checks.
+9. **Merge cleanly:** prefer squash or rebase merge with a linear history; delete the merged branch afterward.
+
+Import (#1) and the monthly-progress fix (#6) have merged. Group collaboration (#2), group weekly reviews (#3), partner streak nudges (#4), and the Phase A/B/C habit work (#7–#10) remain in review; docs for those features belong in their PRs. A docs PR targeting `main` must not describe them as shipped.
 
 ---
 
