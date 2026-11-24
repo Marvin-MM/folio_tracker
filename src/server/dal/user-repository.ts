@@ -1,12 +1,14 @@
 import { eq } from "drizzle-orm";
 import { db, type AppDatabase, type DbExecutor } from "@/server/db";
-import { accounts, users } from "@/server/db/schema";
+import { accounts, users, type UserRole } from "@/server/db/schema";
 
 export interface UserPreferencesRecord {
   id: string;
   name: string;
   email: string;
   emailVerified: boolean;
+  role: UserRole;
+  isSuspended: boolean;
   timezone: string;
   emailRemindersEnabled: boolean;
 }
@@ -44,6 +46,8 @@ export class DrizzleUserRepository implements UserRepository {
         name: users.name,
         email: users.email,
         emailVerified: users.emailVerified,
+        role: users.role,
+        isSuspended: users.isSuspended,
         timezone: users.timezone,
         emailRemindersEnabled: users.emailRemindersEnabled,
       })
@@ -82,6 +86,8 @@ export class DrizzleUserRepository implements UserRepository {
         name: users.name,
         email: users.email,
         emailVerified: users.emailVerified,
+        role: users.role,
+        isSuspended: users.isSuspended,
         timezone: users.timezone,
         emailRemindersEnabled: users.emailRemindersEnabled,
       });

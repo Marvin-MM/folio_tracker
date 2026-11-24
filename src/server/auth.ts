@@ -4,6 +4,7 @@ import { nextCookies } from "better-auth/next-js";
 import { and, eq } from "drizzle-orm";
 import { ulid } from "ulidx";
 import { APP_NAME } from "@/lib/constants";
+import { isAdminEmail } from "./admin-policy";
 import {
   assertCanLinkAccount,
   isEmailPasswordAuthEnabled,
@@ -84,6 +85,18 @@ export const auth = betterAuth({
         defaultValue: true,
         input: true,
       },
+      role: {
+        type: "string",
+        required: false,
+        defaultValue: "user",
+        input: false,
+      },
+      isSuspended: {
+        type: "boolean",
+        required: false,
+        defaultValue: false,
+        input: false,
+      },
     },
   },
   emailAndPassword: {
@@ -152,6 +165,34 @@ export const auth = betterAuth({
     },
   },
   databaseHooks: {
+    user: {
+      create: {
+        before: async (user) => {
+          const shouldPromote =
+            Boolean(user.emailVerified) && isAdminEmail(user.email);
+          return {
+            data: {
+              ...user,
+              role: shouldPromote ? "admin" : "user",
+              isSuspended: false,
+            },
+          };
+        },
+      },
+      update: {
+        before: async (user) => {
+          if (user.emailVerified === true && typeof user.email === "string") {
+            return {
+              data: {
+                ...user,
+                role: isAdminEmail(user.email) ? "admin" : "user",
+              },
+            };
+          }
+          return { data: user };
+        },
+      },
+    },
     account: {
       create: {
         before: async (account) => {

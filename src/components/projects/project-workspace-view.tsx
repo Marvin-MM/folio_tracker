@@ -18,13 +18,18 @@ import {
   CheckSquare,
   Eye,
   FileText,
+  FolderKanban,
+  Mail,
   Pin,
   Plus,
   Search,
   Settings2,
   Share2,
+  ShieldCheck,
   Trash2,
   UserCircle2,
+  UserMinus,
+  UserPlus,
   X,
 } from "lucide-react";
 import { toast } from "sonner";
@@ -60,6 +65,11 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { Textarea } from "@/components/ui/textarea";
+import {
+  ActivityTimeline,
+  type ActivityTimelineItem,
+  type TimelineTone,
+} from "@/components/workspace/activity-timeline";
 import { ViewHeader } from "@/components/workspace/view-header";
 import { useInvalidateWorkspace } from "@/hooks/use-workspace-queries";
 import { parseQuickCapture } from "@/lib/natural-language-capture";
@@ -106,6 +116,14 @@ function formatShort(ms: number | null, timezone: string): string {
   }
 }
 
+function normalizeProjectAction(rawAction: string): string {
+  const trimmed = rawAction.trim();
+  if (trimmed.includes(".")) return trimmed;
+  const firstUnderscore = trimmed.indexOf("_");
+  if (firstUnderscore === -1) return trimmed;
+  return `${trimmed.slice(0, firstUnderscore)}.${trimmed.slice(firstUnderscore + 1)}`;
+}
+
 function describeActivity(item: ProjectActivityWithActor): string {
   const actor = item.actorName ?? "Someone";
   let meta: Record<string, unknown> = {};
@@ -115,8 +133,9 @@ function describeActivity(item: ProjectActivityWithActor): string {
     meta = {};
   }
   const title = typeof meta.title === "string" ? ` "${meta.title}"` : "";
+  const normalizedAction = normalizeProjectAction(item.activity.action);
 
-  switch (item.activity.action) {
+  switch (normalizedAction) {
     case "project.created":
       return `${actor} created this project`;
     case "project.updated":
@@ -187,6 +206,7 @@ export function ProjectWorkspaceView({
 
   const [noteInput, setNoteInput] = useState("");
   const [noteSearch, setNoteSearch] = useState("");
+  const [activityFilter, setActivityFilter] = useState<string>("all");
 
   const [shareOpen, setShareOpen] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
@@ -297,6 +317,138 @@ export function ProjectWorkspaceView({
         .includes(q)
     );
   }, [optimisticNotes, noteSearch]);
+
+  const projectTimelineItems = useMemo<ActivityTimelineItem[]>(() => {
+    const taskById = new Map(workspace.tasks.map((t) => [t.task.id, t]));
+    const noteById = new Map(workspace.notes.map((n) => [n.note.id, n]));
+
+    return activities.map((entry) => {
+      const action = normalizeProjectAction(entry.activity.action);
+      let category: "tasks" | "notes" | "members" | "project" = "project";
+      let tone: TimelineTone = "neutral";
+      let badgeLabel = "Project";
+      let icon = <FolderKanban className="size-3" />;
+
+      if (action.startsWith("task.")) {
+        category = "tasks";
+        badgeLabel = "Task";
+        if (action === "task.completed") {
+          tone = "done";
+          icon = <Check className="size-3" />;
+        } else if (action === "task.deleted") {
+          tone = "overdue";
+          icon = <Trash2 className="size-3" />;
+        } else if (action === "task.assigned") {
+          tone = "collab";
+          icon = <UserCircle2 className="size-3" />;
+        } else {
+          tone = "neutral";
+          icon = <CheckSquare className="size-3" />;
+        }
+      } else if (action.startsWith("note.")) {
+        category = "notes";
+        badgeLabel = "Note";
+        tone = action === "note.deleted" ? "overdue" : "neutral";
+        icon =
+          action === "note.deleted" ? (
+            <Trash2 className="size-3" />
+          ) : (
+            <FileText className="size-3" />
+          );
+      } else if (action.startsWith("member.") || action.startsWith("invite.")) {
+        category = "members";
+        badgeLabel = action.startsWith("invite.") ? "Invite" : "Member";
+        if (action === "member.joined") {
+          tone = "done";
+          icon = <UserPlus className="size-3" />;
+        } else if (action === "member.removed" || action === "invite.revoked") {
+          tone = "overdue";
+          icon = <UserMinus className="size-3" />;
+        } else if (action === "member.role_updated") {
+          tone = "collab";
+          icon = <ShieldCheck className="size-3" />;
+        } else {
+          tone = "collab";
+          icon = <Mail className="size-3" />;
+        }
+      } else {
+        tone = "collab";
+        icon = <FolderKanban className="size-3" />;
+      }
+
+      const linkedTask =
+        entry.activity.entityType === "task"
+          ? taskById.get(entry.activity.entityId)
+          : undefined;
+      const linkedNote =
+        entry.activity.entityType === "note"
+          ? noteById.get(entry.activity.entityId)
+          : undefined;
+
+      return {
+        id: entry.activity.id,
+        category,
+        tone,
+        icon,
+        title: describeActivity(entry),
+        actorName: entry.actorName ?? "Member",
+        badgeLabel,
+        createdAtMs: entry.activity.createdAt,
+        ...(linkedTask
+          ? {
+              actionLabel: "Inspect task",
+              onAction: () =>
+                openDetail({
+                  kind: "task",
+                  data: linkedTask,
+                  readOnly: !canMutate,
+                  projectMembers: members,
+                }),
+            }
+          : linkedNote
+            ? {
+                actionLabel: "Inspect note",
+                onAction: () =>
+                  openDetail({
+                    kind: "note",
+                    data: linkedNote,
+                    readOnly: !canMutate,
+                  }),
+              }
+            : {}),
+      };
+    });
+  }, [activities, canMutate, members, openDetail, workspace.notes, workspace.tasks]);
+
+  const filteredTimelineItems = useMemo(() => {
+    if (activityFilter === "all") return projectTimelineItems;
+    return projectTimelineItems.filter(
+      (item) => item.category === activityFilter
+    );
+  }, [activityFilter, projectTimelineItems]);
+
+  const timelineFilters = useMemo(
+    () => [
+      { value: "all", label: "All", count: projectTimelineItems.length },
+      {
+        value: "tasks",
+        label: "Tasks",
+        count: projectTimelineItems.filter((i) => i.category === "tasks").length,
+      },
+      {
+        value: "notes",
+        label: "Notes",
+        count: projectTimelineItems.filter((i) => i.category === "notes").length,
+      },
+      {
+        value: "members",
+        label: "Members",
+        count: projectTimelineItems.filter((i) => i.category === "members")
+          .length,
+      },
+    ],
+    [projectTimelineItems]
+  );
 
   const handleCreateTask = (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
@@ -990,39 +1142,19 @@ export function ProjectWorkspaceView({
           </div>
         ) : null}
 
-        {/* TAB 3: ACTIVITY FEED */}
+        {/* TAB 3: CHRONOLOGICAL ACTIVITY TIMELINE */}
         {activeTab === "activity" ? (
-          activities.length === 0 ? (
-            <div className="rounded-md border border-border bg-card px-5 py-8 text-center">
-              <Activity className="mx-auto size-5 text-muted-foreground" />
-              <p className="mt-2.5 text-xs font-medium text-foreground">
-                No project activity recorded yet
-              </p>
-            </div>
-          ) : (
-            <div className="divide-y divide-border overflow-hidden rounded-md border border-border bg-card">
-              {activities.map((entry) => (
-                <div
-                  key={entry.activity.id}
-                  className="mira-row flex items-center justify-between gap-3 px-3 py-2 text-xs"
-                >
-                  <div className="flex min-w-0 items-center gap-2.5">
-                    <Avatar className="size-5 shrink-0 border border-border">
-                      <AvatarFallback className="bg-muted text-[9px]">
-                        {initials(entry.actorName)}
-                      </AvatarFallback>
-                    </Avatar>
-                    <p className="truncate text-foreground">
-                      {describeActivity(entry)}
-                    </p>
-                  </div>
-                  <span className="mono-tabular shrink-0 text-[10px] text-muted-foreground">
-                    {formatShort(entry.activity.createdAt, timezone)}
-                  </span>
-                </div>
-              ))}
-            </div>
-          )
+          <ActivityTimeline
+            items={filteredTimelineItems}
+            timezone={timezone}
+            referenceUtcMs={referenceUtcMs}
+            filters={timelineFilters}
+            activeFilter={activityFilter}
+            onFilterChange={setActivityFilter}
+            emptyTitle="No project activity recorded yet"
+            emptyDescription="Tasks, notes, invites, and membership changes appear here in chronological order."
+            ariaLabel="Project activity timeline"
+          />
         ) : null}
       </div>
 

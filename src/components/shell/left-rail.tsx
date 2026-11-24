@@ -16,6 +16,7 @@ import {
   Plus,
   Repeat2,
   Settings,
+  Shield,
   Users,
 } from "lucide-react";
 import { BrandMark } from "@/components/brand-mark";
@@ -57,6 +58,7 @@ export interface ShellUser {
   email: string;
   timezone: string;
   emailRemindersEnabled: boolean;
+  isAdmin?: boolean;
 }
 
 interface LeftRailProps {
@@ -461,6 +463,68 @@ export function LeftRail({
                 {sharedProjects.map((p) => renderProjectLink(p, true))}
               </div>
             </div>
+          ) : null}
+
+          {/* Admin Portal Link (Strictly hidden from non-admins) */}
+          {user.isAdmin ? (
+            <>
+              <Separator className="my-3 bg-sidebar-border" />
+              <div className="space-y-0.5">
+                {!collapsed ? (
+                  <p className="px-2 py-0.5 text-[11px] font-medium uppercase tracking-wider text-muted-foreground">
+                    Platform
+                  </p>
+                ) : null}
+                {(() => {
+                  const isAdminActive =
+                    pathname === "/app/admin" ||
+                    pathname.startsWith("/app/admin/");
+                  const adminLink = (
+                    <Link
+                      href="/app/admin"
+                      onClick={onNavigate}
+                      onMouseEnter={() => prefetch.prefetchAdminOverview()}
+                      onFocus={() => prefetch.prefetchAdminOverview()}
+                      aria-label={collapsed ? "Admin Portal" : undefined}
+                      aria-current={isAdminActive ? "page" : undefined}
+                      className={cn(
+                        "mira-row flex items-center rounded-md px-2 text-xs transition-colors",
+                        collapsed ? "justify-center px-0" : "justify-between gap-2",
+                        isAdminActive
+                          ? "bg-sidebar-accent font-medium text-sidebar-accent-foreground"
+                          : "text-muted-foreground hover:bg-sidebar-accent/70 hover:text-sidebar-foreground"
+                      )}
+                    >
+                      <span className="flex min-w-0 items-center gap-2">
+                        <Shield className="size-3.5 shrink-0 text-collab" />
+                        {collapsed ? (
+                          <span className="sr-only">Admin Portal</span>
+                        ) : (
+                          <span className="truncate">Admin</span>
+                        )}
+                      </span>
+                      {!collapsed ? (
+                        <span className="mono-tabular rounded border border-collab/35 bg-collab/10 px-1 py-0.5 text-[9px] font-medium uppercase text-collab">
+                          Ops
+                        </span>
+                      ) : null}
+                    </Link>
+                  );
+
+                  if (collapsed) {
+                    return (
+                      <Tooltip>
+                        <TooltipTrigger asChild>{adminLink}</TooltipTrigger>
+                        <TooltipContent side="right" className="text-xs">
+                          Admin Portal
+                        </TooltipContent>
+                      </Tooltip>
+                    );
+                  }
+                  return adminLink;
+                })()}
+              </div>
+            </>
           ) : null}
         </nav>
 

@@ -1,4 +1,5 @@
 import { relations } from "drizzle-orm";
+import { adminAuditLogs } from "./admin";
 import { accounts, sessions, users } from "./auth";
 import { habitLogs, habits, habitTrackerSettings } from "./habits";
 import {
@@ -63,6 +64,14 @@ export const usersRelations = relations(users, ({ one, many }) => ({
   }),
   habitReactionsAuthored: many(habitReactions, {
     relationName: "habitReactionAuthor",
+  }),
+  adminAuditLogs: many(adminAuditLogs),
+}));
+
+export const adminAuditLogsRelations = relations(adminAuditLogs, ({ one }) => ({
+  actor: one(users, {
+    fields: [adminAuditLogs.actorUserId],
+    references: [users.id],
   }),
 }));
 

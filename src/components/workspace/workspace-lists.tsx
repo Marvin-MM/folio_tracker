@@ -727,7 +727,60 @@ export function ReminderListView({
   const farHorizon = optimisticItems.filter(
     (i) => i.reminder.status === "pending_far"
   );
-  const sent = optimisticItems.filter((i) => i.reminder.status === "sent");
+  const sent = optimisticItems
+    .filter((i) => i.reminder.status === "sent")
+    .sort(
+      (a, b) =>
+        (b.reminder.sentAt ?? b.reminder.remindAt) -
+        (a.reminder.sentAt ?? a.reminder.remindAt)
+    );
+
+  const sentGroups = (() => {
+    const todayKey = (() => {
+      try {
+        return formatInTimeZone(nowMs, timezone, "yyyy-MM-dd");
+      } catch {
+        return formatInTimeZone(nowMs, "UTC", "yyyy-MM-dd");
+      }
+    })();
+    const yesterdayKey = (() => {
+      try {
+        return formatInTimeZone(nowMs - 86_400_000, timezone, "yyyy-MM-dd");
+      } catch {
+        return formatInTimeZone(nowMs - 86_400_000, "UTC", "yyyy-MM-dd");
+      }
+    })();
+
+    const map = new Map<
+      string,
+      { dayKey: string; label: string; items: EnrichedReminderItem[] }
+    >();
+    for (const item of sent) {
+      const firedMs = item.reminder.sentAt ?? item.reminder.remindAt;
+      let dayKey: string;
+      let formattedDate: string;
+      try {
+        dayKey = formatInTimeZone(firedMs, timezone, "yyyy-MM-dd");
+        formattedDate = formatInTimeZone(firedMs, timezone, "EEE, MMM d, yyyy");
+      } catch {
+        dayKey = formatInTimeZone(firedMs, "UTC", "yyyy-MM-dd");
+        formattedDate = formatInTimeZone(firedMs, "UTC", "EEE, MMM d, yyyy");
+      }
+      const label =
+        dayKey === todayKey
+          ? "Today"
+          : dayKey === yesterdayKey
+            ? "Yesterday"
+            : formattedDate;
+      const existing = map.get(dayKey);
+      if (existing) {
+        existing.items.push(item);
+      } else {
+        map.set(dayKey, { dayKey, label, items: [item] });
+      }
+    }
+    return Array.from(map.values());
+  })();
 
   const sections = [
     { key: "scheduled", label: "Scheduled (≤ 14 days)", items: scheduled },
@@ -748,6 +801,114 @@ export function ReminderListView({
             </span>
           </div>
 
+          {section.key === "sent" ? (
+            <div className="space-y-3 rounded-md border border-border bg-card p-3">
+              {sentGroups.map((group) => (
+                <div key={group.dayKey} className="space-y-1.5">
+                  <div className="flex items-center gap-2 px-1">
+                    <span className="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">
+                      {group.label}
+                    </span>
+                    <span
+                      aria-hidden="true"
+                      className="h-px flex-1 bg-border/70"
+                    />
+                    <span className="mono-tabular text-[10px] text-muted-foreground">
+                      {group.items.length}
+                    </span>
+                  </div>
+                  <ol
+                    aria-label={`Recently triggered reminders for ${group.label}`}
+                    className="relative"
+                  >
+                    {group.items.map((item, idx) => {
+                      const { reminder } = item;
+                      const isLast = idx === group.items.length - 1;
+                      const isSelected =
+                        activeItem?.kind === "reminder" &&
+                        activeItem.data.reminder.id === reminder.id;
+
+                      return (
+                        <li
+                          key={reminder.id}
+                          className={cn(
+                            "relative flex items-start gap-2.5 pl-1",
+                            !isLast && "pb-2.5"
+                          )}
+                        >
+                          {!isLast ? (
+                            <span
+                              aria-hidden="true"
+                              className="absolute top-6 bottom-0 left-[13px] w-px bg-border"
+                            />
+                          ) : null}
+                          <span
+                            aria-hidden="true"
+                            className="relative z-10 mt-1 flex size-5 shrink-0 items-center justify-center rounded-full border border-done/45 bg-done/10 text-done"
+                          >
+                            <Bell className="size-2.5" />
+                          </span>
+                          <div
+                            className={cn(
+                              "flex min-w-0 flex-1 flex-wrap items-center justify-between gap-2 rounded-md border border-border/70 bg-background/60 px-2.5 py-1.5 text-xs transition-colors hover:bg-accent/60",
+                              isSelected && "bg-accent"
+                            )}
+                          >
+                            <button
+                              type="button"
+                              onClick={() =>
+                                openDetail({ kind: "reminder", data: item })
+                              }
+                              className="flex min-h-9 min-w-0 flex-1 items-center gap-2 text-left md:min-h-6"
+                            >
+                              <span className="truncate font-medium text-foreground">
+                                {item.entityTitle}
+                              </span>
+                              <Badge
+                                variant="secondary"
+                                className="h-4 px-1.5 text-[10px] font-normal capitalize"
+                              >
+                                {reminder.taskId ? "task" : "note"}
+                              </Badge>
+                            </button>
+                            <div className="flex shrink-0 items-center gap-1.5">
+                              <span className="mono-tabular text-[10px] text-muted-foreground">
+                                Fired{" "}
+                                {formatShortTimestamp(
+                                  reminder.sentAt ?? reminder.remindAt,
+                                  timezone
+                                )}
+                              </span>
+                              <Button
+                                type="button"
+                                variant="outline"
+                                size="xs"
+                                disabled={isPending}
+                                onClick={() => handleSnooze(item, "15m")}
+                                className="mono-tabular h-6 px-1.5 text-[10px]"
+                              >
+                                +15m
+                              </Button>
+                              <Button
+                                type="button"
+                                variant="outline"
+                                size="xs"
+                                disabled={isPending}
+                                onClick={() => handleSnooze(item, "1h")}
+                                className="mono-tabular h-6 px-1.5 text-[10px]"
+                              >
+                                +1h
+                              </Button>
+                            </div>
+                          </div>
+                        </li>
+                      );
+                    })}
+                  </ol>
+                </div>
+              ))}
+            </div>
+          ) : (
           <div className="divide-y divide-border overflow-hidden rounded-md border border-border bg-card">
             {section.items.map((item) => {
               const { reminder } = item;
@@ -834,6 +995,7 @@ export function ReminderListView({
               );
             })}
           </div>
+          )}
         </section>
       ))}
     </div>

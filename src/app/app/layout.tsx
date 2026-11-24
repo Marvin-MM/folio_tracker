@@ -3,8 +3,8 @@ import { redirect } from "next/navigation";
 import { WorkspaceQueryProvider } from "@/components/providers/query-provider";
 import { WorkspaceShell } from "@/components/shell/workspace-shell";
 import { getServerTimestampMs } from "@/lib/query/clock";
-import { requireSession } from "@/server/dal/auth-guard";
-import { UnauthorizedError } from "@/server/dal/errors";
+import { requireSession, resolveLiveAdminStatus } from "@/server/dal/auth-guard";
+import { ForbiddenError, UnauthorizedError } from "@/server/dal/errors";
 import { notificationRepository } from "@/server/dal/notification-repository";
 import { userRepository } from "@/server/dal/user-repository";
 import { workspaceRepository } from "@/server/dal/workspace-repository";
@@ -29,13 +29,21 @@ export default async function AppShellLayout({
     const authContext = await requireSession();
     user = authContext.user;
   } catch (error) {
-    if (error instanceof UnauthorizedError) {
+    if (error instanceof UnauthorizedError || error instanceof ForbiddenError) {
       redirect("/login");
     }
     throw error;
   }
 
-  const profile = await userRepository.getById(user.id);
+  const [profile, adminStatus] = await Promise.all([
+    userRepository.getById(user.id),
+    resolveLiveAdminStatus(user.id),
+  ]);
+
+  if (profile?.isSuspended || adminStatus.isSuspended) {
+    redirect("/login");
+  }
+
   const timezone = profile?.timezone || user.timezone || "UTC";
   const resolvedName = profile?.name || user.name;
   const resolvedEmailReminders =
@@ -55,6 +63,7 @@ export default async function AppShellLayout({
           email: user.email,
           timezone,
           emailRemindersEnabled: resolvedEmailReminders,
+          isAdmin: adminStatus.isAdmin,
         }}
         summary={summary}
         initialNotifications={initialNotifications}

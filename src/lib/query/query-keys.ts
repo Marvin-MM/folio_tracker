@@ -12,6 +12,7 @@ export type WorkspaceInvalidationDomain =
   | "circle"
   | "notifications"
   | "sidebar"
+  | "admin"
   | "all";
 
 /**
@@ -59,6 +60,9 @@ export const workspaceQueryKeys = {
       yearMonth ?? "current",
       cycleKey ?? "current",
     ] as const,
+  adminRoot: (userId: string) => ["workspace", userId, "admin"] as const,
+  adminOverview: (userId: string, filterKey: string) =>
+    ["workspace", userId, "admin", "overview", filterKey] as const,
 };
 
 /**
@@ -161,6 +165,14 @@ export async function invalidateWorkspaceDomains(
         })
       );
     }
+  }
+
+  if (uniqueDomains.has("admin")) {
+    invalidations.push(
+      queryClient.invalidateQueries({
+        queryKey: workspaceQueryKeys.adminRoot(userId),
+      })
+    );
   }
 
   await Promise.all(invalidations);

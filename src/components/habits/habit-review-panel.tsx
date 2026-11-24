@@ -293,10 +293,10 @@ export function HabitReviewPanel({
         </div>
       </div>
 
-      {/* Comments & Replies Thread */}
-      <div className="divide-y divide-border">
+      {/* Comments & Replies Chronological Timeline */}
+      <div className="p-4">
         {rootComments.length === 0 ? (
-          <div className="px-4 py-7 text-center text-xs text-muted-foreground">
+          <div className="px-4 py-5 text-center text-xs text-muted-foreground">
             {isOwner
               ? "No review notes posted for this cycle yet."
               : windowState?.isOpen
@@ -304,13 +304,40 @@ export function HabitReviewPanel({
                 : "No feedback posted in this cycle yet."}
           </div>
         ) : (
-          rootComments.map((comment) => {
-            const replies = repliesByParent.get(comment.id) ?? [];
-            const canDelete =
-              comment.authorId === currentUserId || isOwner;
+          <ol aria-label="Cycle review timeline" className="relative space-y-0">
+            {rootComments.map((comment, idx) => {
+              const isLast = idx === rootComments.length - 1;
+              const replies = repliesByParent.get(comment.id) ?? [];
+              const canDelete =
+                comment.authorId === currentUserId || isOwner;
+              const isAuthorOwner = comment.authorId === ownerId;
 
-            return (
-              <div key={comment.id} className="space-y-2.5 px-4 py-3">
+              return (
+                <li
+                  key={comment.id}
+                  className={cn(
+                    "relative flex items-start gap-3 pl-0.5",
+                    !isLast && "pb-4"
+                  )}
+                >
+                  {!isLast ? (
+                    <span
+                      aria-hidden="true"
+                      className="absolute top-6 bottom-0 left-[13px] w-px bg-border"
+                    />
+                  ) : null}
+                  <span
+                    aria-hidden="true"
+                    className={cn(
+                      "relative z-10 mt-0.5 flex size-6 shrink-0 items-center justify-center rounded-full border",
+                      isAuthorOwner
+                        ? "border-border bg-card text-foreground"
+                        : "border-collab/45 bg-collab/10 text-collab"
+                    )}
+                  >
+                    <MessageSquare className="size-3" />
+                  </span>
+                  <div className="min-w-0 flex-1 space-y-2.5 rounded-md border border-border/70 bg-background/60 p-3">
                 <div className="flex items-start justify-between gap-2">
                   <div className="min-w-0 space-y-1">
                     <div className="flex flex-wrap items-center gap-1.5 text-xs">
@@ -476,9 +503,11 @@ export function HabitReviewPanel({
                     </div>
                   </div>
                 ) : null}
-              </div>
-            );
-          })
+                  </div>
+                </li>
+              );
+            })}
+          </ol>
         )}
       </div>
 

@@ -23,12 +23,14 @@ import type {
   TodayHabitsStripData,
 } from "@/server/services/habit-service";
 import type { ProjectWorkspaceData } from "@/server/services/project-service";
+import type { AdminOverviewPayload } from "@/server/services/admin-service";
 
 export interface WorkspaceBootstrapPayload {
   summary: SidebarSummary;
   notifications: NotificationRecord[];
   timezone: string;
   userName?: string;
+  isAdmin?: boolean;
 }
 
 export interface TasksViewPayload {
@@ -245,6 +247,45 @@ export function useInvalidateWorkspace() {
  * Intent-driven prefetch helper for LeftRail, HabitsSubnav, and month arrows
  * so hovering/focusing a link warms the TanStack Query cache before click.
  */
+export function useAdminOverviewQuery(
+  userId: string,
+  params: {
+    query?: string;
+    roleFilter?: string;
+    statusFilter?: string;
+    timelineCategory?: string;
+    page?: number;
+  },
+  initialData?: AdminOverviewPayload,
+  initialDataUpdatedAt?: number
+) {
+  const search = new URLSearchParams();
+  if (params.query) search.set("q", params.query);
+  if (params.roleFilter && params.roleFilter !== "all") {
+    search.set("role", params.roleFilter);
+  }
+  if (params.statusFilter && params.statusFilter !== "all") {
+    search.set("status", params.statusFilter);
+  }
+  if (params.timelineCategory && params.timelineCategory !== "all") {
+    search.set("timelineCategory", params.timelineCategory);
+  }
+  if (params.page && params.page > 1) {
+    search.set("page", String(params.page));
+  }
+  const filterKey = search.toString() || "default";
+  const endpoint = search.toString()
+    ? `/api/admin/overview?${search.toString()}`
+    : "/api/admin/overview";
+
+  return useQuery({
+    queryKey: workspaceQueryKeys.adminOverview(userId, filterKey),
+    queryFn: ({ signal }) =>
+      fetchWorkspaceJson<AdminOverviewPayload>(endpoint, signal),
+    ...(initialData ? { initialData, initialDataUpdatedAt } : {}),
+  });
+}
+
 export function usePrefetchWorkspaceView(userId: string) {
   const queryClient = useQueryClient();
 
@@ -348,6 +389,14 @@ export function usePrefetchWorkspaceView(userId: string) {
     [queryClient, userId]
   );
 
+  const prefetchAdminOverview = useCallback(() => {
+    void queryClient.prefetchQuery({
+      queryKey: workspaceQueryKeys.adminOverview(userId, "default"),
+      queryFn: ({ signal }) =>
+        fetchWorkspaceJson<AdminOverviewPayload>("/api/admin/overview", signal),
+    });
+  }, [queryClient, userId]);
+
   return {
     prefetchTasks,
     prefetchNotes,
@@ -356,5 +405,6 @@ export function usePrefetchWorkspaceView(userId: string) {
     prefetchHabitsMonth,
     prefetchHabitsCircle,
     prefetchFriendHabits,
+    prefetchAdminOverview,
   };
 }

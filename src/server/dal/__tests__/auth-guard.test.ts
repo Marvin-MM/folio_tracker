@@ -27,6 +27,8 @@ function createMockSession(userId = "01JTESTUSER000000000000001"): BetterAuthSes
       email: "test@example.com",
       emailVerified: true,
       image: null,
+      role: "user",
+      isSuspended: false,
       timezone: "UTC",
       emailRemindersEnabled: true,
       createdAt: now,

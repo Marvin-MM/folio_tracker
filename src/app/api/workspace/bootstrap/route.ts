@@ -1,3 +1,5 @@
+import { resolveLiveAdminStatus } from "@/server/dal/auth-guard";
+import { ForbiddenError } from "@/server/dal/errors";
 import { notificationRepository } from "@/server/dal/notification-repository";
 import { userRepository } from "@/server/dal/user-repository";
 import { workspaceRepository } from "@/server/dal/workspace-repository";
@@ -7,7 +9,15 @@ export const dynamic = "force-dynamic";
 
 export async function GET() {
   return withWorkspaceAuth(async ({ user }) => {
-    const profile = await userRepository.getById(user.id);
+    const [profile, adminStatus] = await Promise.all([
+      userRepository.getById(user.id),
+      resolveLiveAdminStatus(user.id),
+    ]);
+
+    if (profile?.isSuspended || adminStatus.isSuspended) {
+      throw new ForbiddenError("This account has been suspended.");
+    }
+
     const timezone = profile?.timezone || user.timezone || "UTC";
     const userName = profile?.name || user.name;
     const [summary, notifications] = await Promise.all([
@@ -20,6 +30,7 @@ export async function GET() {
       notifications,
       timezone,
       userName,
+      isAdmin: adminStatus.isAdmin,
     });
   });
 }

@@ -203,24 +203,52 @@ export function NotificationBell({
 
         <Separator />
 
-        <div className="max-h-80 divide-y divide-border overflow-y-auto">
+        <div className="max-h-80 overflow-y-auto">
           {optimisticItems.length === 0 ? (
             <div className="px-4 py-7 text-center text-xs text-muted-foreground">
               No notifications yet. Triggered reminders will appear here.
             </div>
           ) : (
-            optimisticItems.map((item) => {
-              const { reminderId } = parseEntityAndReminderId(item.entityId);
-              const deepLink = getDeepLink(item);
+            <ol
+              aria-label="Recent notifications timeline"
+              className="relative p-2"
+            >
+              {optimisticItems.map((item, idx) => {
+                const isLast = idx === optimisticItems.length - 1;
+                const { reminderId } = parseEntityAndReminderId(item.entityId);
+                const deepLink = getDeepLink(item);
 
-              return (
-                <div
-                  key={item.id}
-                  className={cn(
-                    "space-y-1.5 px-3 py-2.5 text-xs transition-colors",
-                    !item.isRead && "bg-accent/40"
-                  )}
-                >
+                return (
+                  <li
+                    key={item.id}
+                    className={cn(
+                      "relative flex items-start gap-2.5 pl-1",
+                      !isLast && "pb-2"
+                    )}
+                  >
+                    {!isLast ? (
+                      <span
+                        aria-hidden="true"
+                        className="absolute top-4 bottom-0 left-[9px] w-px bg-border"
+                      />
+                    ) : null}
+                    <span
+                      aria-hidden="true"
+                      className={cn(
+                        "relative z-10 mt-2 size-2.5 shrink-0 rounded-full border",
+                        !item.isRead
+                          ? "border-reminder bg-reminder"
+                          : "border-border bg-card"
+                      )}
+                    />
+                    <div
+                      className={cn(
+                        "min-w-0 flex-1 space-y-1.5 rounded-md border px-2.5 py-2 text-xs transition-colors",
+                        !item.isRead
+                          ? "border-reminder/30 bg-accent/50"
+                          : "border-border/70 bg-background/50"
+                      )}
+                    >
                   <div className="flex items-start justify-between gap-2">
                     <div className="min-w-0">
                       <p className="truncate font-medium text-foreground">
@@ -303,9 +331,11 @@ export function NotificationBell({
                       </Link>
                     </div>
                   </div>
-                </div>
-              );
-            })
+                    </div>
+                  </li>
+                );
+              })}
+            </ol>
           )}
         </div>
 

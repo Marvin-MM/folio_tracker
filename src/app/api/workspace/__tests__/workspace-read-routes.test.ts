@@ -9,6 +9,7 @@ import {
 
 vi.mock("@/server/dal/auth-guard", () => ({
   requireSession: vi.fn(),
+  resolveLiveAdminStatus: vi.fn(),
 }));
 
 vi.mock("@/server/dal/user-repository", () => ({
@@ -30,7 +31,10 @@ vi.mock("@/server/dal/notification-repository", () => ({
 }));
 
 import { GET as getBootstrap } from "@/app/api/workspace/bootstrap/route";
-import { requireSession } from "@/server/dal/auth-guard";
+import {
+  requireSession,
+  resolveLiveAdminStatus,
+} from "@/server/dal/auth-guard";
 import { notificationRepository } from "@/server/dal/notification-repository";
 import { userRepository } from "@/server/dal/user-repository";
 import { workspaceRepository } from "@/server/dal/workspace-repository";
@@ -122,8 +126,15 @@ describe("withWorkspaceAuth (GET /api/workspace/* security boundary)", () => {
       name: "Fresh DB Name",
       email: "ada@example.com",
       emailVerified: true,
+      role: "admin",
+      isSuspended: false,
       timezone: "Africa/Kampala",
       emailRemindersEnabled: true,
+    });
+    vi.mocked(resolveLiveAdminStatus).mockResolvedValueOnce({
+      isAdmin: true,
+      isSuspended: false,
+      email: "ada@example.com",
     });
     vi.mocked(workspaceRepository.getSidebarSummary).mockResolvedValueOnce({
       inboxCount: 1,
@@ -145,8 +156,10 @@ describe("withWorkspaceAuth (GET /api/workspace/* security boundary)", () => {
     const json = (await res.json()) as {
       userName: string;
       timezone: string;
+      isAdmin: boolean;
     };
     expect(json.userName).toBe("Fresh DB Name");
     expect(json.timezone).toBe("Africa/Kampala");
+    expect(json.isAdmin).toBe(true);
   });
 });

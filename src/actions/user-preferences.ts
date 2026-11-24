@@ -42,6 +42,8 @@ export async function syncUserTimezoneAction(
         name: user.name,
         email: user.email,
         emailVerified: user.emailVerified,
+        role: user.role === "admin" ? "admin" : "user",
+        isSuspended: Boolean(user.isSuspended),
         timezone: user.timezone ?? "UTC",
         emailRemindersEnabled: user.emailRemindersEnabled ?? true,
       });

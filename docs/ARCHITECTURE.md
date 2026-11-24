@@ -1,6 +1,6 @@
 # Folio — System Architecture
 
-> Visual-first architectural blueprint for **Folio**: a personal-first productivity workspace unifying **Tasks**, **Markdown Notes**, **Durable Timed Reminders**, **Shared Projects (RBAC)**, **Real-Calendar Habit Tracking with Bidirectional Task Sync**, and an **Accountability Circle** with dynamic per-monitor review windows.
+> Visual-first architectural blueprint for **Folio**: a personal-first productivity workspace unifying **Tasks**, **Markdown Notes**, **Durable Timed Reminders**, **Shared Projects (RBAC)**, **Real-Calendar Habit Tracking with Bidirectional Task Sync**, an **Accountability Circle** with dynamic per-monitor review windows, **Unified Chronological Activity Timelines**, and an **Env-Synced Operations Admin Portal**.
 
 ---
 
@@ -22,20 +22,20 @@ flowchart TB
   end
 
   subgraph App["Next.js App Router (force-dynamic)"]
-    RSC["RSC Pages & Layouts (/, /login, /offline, /app/*, /app/habits*, /invite/*)"]
+    RSC["RSC Pages & Layouts (/, /login, /offline, /app/*, /app/admin, /app/habits*, /invite/*)"]
     ACT["Server Actions (src/actions/*) — Zod -> Auth -> Service -> Targeted Query Invalidation"]
-    API["Route Handlers (/api/workspace/* x8, /api/auth, /api/inngest, /api/health, /api/reminders, /api/notifications)"]
+    API["Route Handlers (/api/workspace/* x8, /api/admin/overview, /api/auth, /api/inngest, /api/health, /api/reminders, /api/notifications)"]
   end
 
   subgraph Core["SOLID Domain Core (src/server/)"]
     DOM["Pure Domain Engines (src/server/domain/) — Habit Analytics & Comment-Window Policy"]
-    SVC["11 Domain Services — Task, Note, Reminder, Project, Invite, Habit, Monitor, Comment, Account, Notification, Preferences"]
-    DAL["Scoped DAL & Direct-Turso Guards (requireSession, assertProjectRole, canUserReadEntity, HabitMonitorReadDal, withDbRetry)"]
+    SVC["12 Domain Services — Task, Note, Reminder, Project, Invite, Habit, Monitor, Comment, Account, Notification, Preferences, Admin"]
+    DAL["Scoped DAL & Direct-Turso Guards (requireSession, requireAdmin, assertProjectRole, canUserReadEntity, HabitMonitorReadDal, withDbRetry)"]
     PRV["Provider Ports (EventBus, NotificationChannel x3, RateLimiter x4, UnreadCounterCache, AuthEmailDispatcher)"]
   end
 
   subgraph Infra["Persistence & External Services"]
-    DB[("Turso / libSQL (SQLite WAL) — 22 Tables, ULID PKs, Cascading FKs, CHECK & Partial Unique Indexes")]
+    DB[("Turso / libSQL (SQLite WAL) — 23 Tables, ULID PKs, Cascading FKs, CHECK & Partial Unique Indexes")]
     RDS[("Redis 3-Tier (Upstash -> ioredis -> Memory) — RateLimiter & UnreadCounter ONLY")]
     ING["Inngest v4 Durable Engine — 13 Functions, Plan-Safe Concurrency (default 5, crons 1) & LIMIT 200 Crons"]
     EXT["External Delivery & Identity (Resend, VAPID Web Push, Google OAuth)"]
@@ -70,7 +70,7 @@ flowchart TB
 
 ## 2. SOLID Clean Layering & Dependency Direction
 
-Dependencies point strictly inward toward `src/server/db/` and `src/server/domain/`. Pure domain calculations (`habit-analytics.ts`, `comment-window-policy.ts`) have zero DB or network imports, while every service accepts repositories and providers via constructor injection (DIP) so all 21 Vitest suites (87 tests) execute offline against ephemeral SQLite databases.
+Dependencies point strictly inward toward `src/server/db/` and `src/server/domain/`. Pure domain calculations (`habit-analytics.ts`, `comment-window-policy.ts`) have zero DB or network imports, while every service accepts repositories and providers via constructor injection (DIP) so all 23 Vitest suites (93 tests) execute offline against ephemeral SQLite databases.
 
 ```mermaid
 flowchart LR
@@ -86,16 +86,16 @@ flowchart LR
 
   subgraph Domain["Pure Domain & Service Orchestration"]
     PURE["src/server/domain/ (habit-analytics, comment-window-policy — Zero I/O)"]
-    SVCS["src/server/services/ (11 ACID Services — Zero Network I/O inside tx)"]
+    SVCS["src/server/services/ (12 ACID Services + Env Admin Role Sync — Zero Network I/O inside tx)"]
   end
 
   subgraph DataAndPorts["Data Access & Provider Ports"]
-    DALS["src/server/dal/ (Scoped Repos, Auth Guards, Zero-Leak HabitMonitorReadDal)"]
+    DALS["src/server/dal/ (Scoped Repos, Auth/Admin Guards, Zero-Leak HabitMonitorReadDal)"]
     PORTS["src/server/providers/ (EventBus, NotificationChannel, RateLimiter, UnreadCounterCache, AuthEmail)"]
   end
 
   subgraph Foundations["Schema & Concrete Adapters"]
-    SCHEMA["src/server/db/ (22 Drizzle Tables, Relations, WAL Client, withDbRetry)"]
+    SCHEMA["src/server/db/ (23 Drizzle Tables, Relations, WAL Client, withDbRetry)"]
     ADAPT["External Adapters (Inngest v4, Resend, web-push, Upstash / ioredis / InMemory)"]
   end
 
@@ -123,11 +123,11 @@ flowchart LR
 
 ---
 
-## 3. Unified Entity-Relationship Model (22 Tables)
+## 3. Unified Entity-Relationship Model (23 Tables)
 
 All primary keys are sortable ULIDs (`ulidx`), all timestamps are UTC Unix epoch milliseconds (`integer`) paired with explicit IANA timezone strings and calendar date keys (`YYYY-MM-DD`), and referential integrity is enforced by SQLite/Turso (`PRAGMA foreign_keys = ON`, `CHECK` constraints, partial unique indexes, and cascading deletes).
 
-### 3A. Auth, Projects, Tasks, Notes & Reminders (13 Tables)
+### 3A. Auth, Admin Audits, Projects, Tasks, Notes & Reminders (14 Tables)
 
 ```mermaid
 erDiagram
@@ -135,8 +135,19 @@ erDiagram
     text id PK "ULID"
     text email UK
     boolean email_verified
+    text role "user | admin (ADMIN_EMAILS synced)"
+    boolean is_suspended "blocks sessions & access"
     text timezone "IANA default UTC"
     boolean email_reminders_enabled
+  }
+  admin_audit_logs {
+    text id PK "ULID"
+    text actor_user_id FK "nullable SET NULL -> users"
+    text action "admin.roles_synced..user_suspended"
+    text target_type "system | user | reminder | session"
+    text target_id "nullable"
+    text metadata_json
+    integer created_at
   }
   sessions {
     text id PK
@@ -254,6 +265,7 @@ erDiagram
   notes ||--o{ reminders : "note_id CASCADE"
   users ||--o{ push_subscriptions : "registers"
   users ||--o{ notifications : "receives"
+  users ||--o{ admin_audit_logs : "records"
 ```
 
 ### 3B. Habits Ledger & Accountability Circle (9 Tables)
@@ -440,6 +452,7 @@ sequenceDiagram
 
 **Authentication & Tenant Security Controls:**
 - **Environment-Gated Providers (Google-Only in Production):** Better Auth runs **Google OAuth exclusively in production** (`NODE_ENV === "production"`, hiding email/password UI, redirecting `/register`, `/forgot-password`, `/reset-password`, and `/verify-email` to `/login`, disabling `emailAndPassword`, and returning `403 AUTH_METHOD_DISABLED` on credential API endpoints) while keeping **both Email/Password and Google OAuth** active in local development. Better Auth enforces `requireEmailVerification: true`, `revokeSessionsOnPasswordReset: true`, `HttpOnly` / `SameSite=Lax` / `Secure` (prod) cookies, and open-redirect sanitization (`sanitizeCallbackUrl`).
+- **Env-Driven Admin Role Sync & Zero-Discovery Portal (`/app/admin`):** `ADMIN_EMAILS` (comma-separated allowlist, fail-closed when unset/empty) is reconciled automatically across 3 layers: Next.js Node boot (`src/instrumentation.ts`), Better Auth `databaseHooks.user.create/update` (paired with `input: false` on `role` and `isSuspended` to block mass-assignment), and live runtime enforcement (`requireAdmin()` / `resolveLiveAdminStatus()`). Matching **verified** users are promoted to `role = "admin"` and any admin removed from `ADMIN_EMAILS` is immediately demoted back to `role = "user"` without re-login. Non-admins never see the sidebar link, receive HTTP `404` with `"Not Found"` metadata on `/app/admin`, and receive HTTP `403` (`private, no-store`) on `/api/admin/overview` and admin Server Actions. Suspended users (`isSuspended = true`) have all sessions revoked and are blocked in `requireSession()`. Every operational admin action appends an immutable record to `admin_audit_logs` while enforcing a privacy boundary (aggregated KPIs, 14-day Recharts trends, live subsystem probes, and user metadata only — never exposing private task/note/habit bodies).
 - **Account Takeover Prevention:** `databaseHooks.account.create.before` ([auth-policy.ts](../src/server/auth-policy.ts)) rejects OAuth auto-linking into any pre-existing unverified credential account (`emailVerified === false`).
 - **Zero-Leak Selective Scope:** `DrizzleHabitMonitorReadDal` resolves `habit_monitors` + `habit_monitor_items` in Turso first and filters habits, logs, analytics, snapshots, and `target_habit_id` comments to `allowedHabitIds` before returning a payload—unshared habits never cross the DAL boundary.
 
@@ -620,7 +633,8 @@ flowchart TB
 
 Folio enforces a strict client-state split so navigating across Inbox, Today, Upcoming, Notes, Reminders, Projects, Habits, and Circle feels instantaneous (`0` redundant refetches inside the 60s stale window) without leaking tenant data across sessions:
 
-- **Server State (TanStack React Query v5 — `src/hooks/use-workspace-queries.ts`):** Every workspace view hydrates on initial SSR (`initialData` + `initialDataUpdatedAt`) and reads through 8 thin authenticated `GET /api/workspace/*` routes (`bootstrap`, `tasks`, `notes`, `reminders`, `projects/[projectId]`, `habits`, `habits/circle`, `habits/circle/[ownerId]`), all guarded by `requireSession()` + `Cache-Control: private, no-store`. Keys are strictly user-scoped (`["workspace", userId, ...]`), hover/focus prefetching warms destination routes from `LeftRail` and `HabitsSubnav`, and mutations call targeted domain invalidation (`invalidateWorkspaceDomains()`) instead of shotgun `revalidatePath("/app", "layout")`. Switching Habits scoring modes (`Elapsed-to-Date` ↔ `Full Month`) recomputes purely on the client at `0ms` with `0` network calls.
+- **Server State (TanStack React Query v5 — `src/hooks/use-workspace-queries.ts`):** Every workspace view hydrates on initial SSR (`initialData` + `initialDataUpdatedAt`) and reads through authenticated `GET /api/workspace/*` routes (`bootstrap`, `tasks`, `notes`, `reminders`, `projects/[projectId]`, `habits`, `habits/circle`, `habits/circle/[ownerId]`) plus admin-only `GET /api/admin/overview`, all guarded by `requireSession()` / `requireAdmin()` + `Cache-Control: private, no-store`. Keys are strictly user-scoped (`["workspace", userId, ...]`), hover/focus prefetching warms destination routes from `LeftRail` and `HabitsSubnav`, and mutations call targeted domain invalidation (`invalidateWorkspaceDomains()`) instead of shotgun `revalidatePath("/app", "layout")`. Switching Habits scoring modes (`Elapsed-to-Date` ↔ `Full Month`) recomputes purely on the client at `0ms` with `0` network calls.
+- **Unified Chronological Activity Timelines (`src/components/workspace/activity-timeline.tsx`):** A shared Warm Paper / Carbon Ink vertical day-grouped timeline component (`Today` / `Yesterday` / date headers, semantic tone nodes, actor initials, tabular/relative timestamps, category filter pills, and optional deep-link `Inspect` buttons) powers Project Detail (`Activity` tab with click-to-open `440px` Detail Sheet), the Admin Portal (`Activity Timeline` tab aggregating audits, signups, project milestones, and reminder deliveries), Reminders (`Recently triggered` newest-first day-grouped timeline), Accountability Circle (`Cycle Review` threaded spine), and the Notification Bell popover rail.
 - **Client UI State (Zustand v5 — `src/stores/workspace-ui-store.ts`):** Persists **only** harmless, non-PII layout preferences (`railCollapsed`, `habitsScoringMode`, `habitsShowArchived`) under `folio-ui-prefs` with `skipHydration: true` + post-mount rehydration. Ephemeral session state (`activeDetail`, `projectActiveTabs`, `quickCaptureOpen`, `mobileMenuOpen`, `isOnline`) stays in memory and resets on sign-out.
 - **SEO, Procedural 3D Editorial Landing & Installed-PWA Isolation:** Public `/` serves a full-viewport Warm Paper / Carbon Ink editorial landing page backed by a zero-dependency procedural 3D dot-matrix `<canvas>` engine (`src/components/landing/dot-matrix-3d-engine.ts`, lazy-loaded via `next/dynamic` with `IntersectionObserver` + `visibilitychange` + `prefers-reduced-motion` guards and an elliptical copy quiet zone), a flush anchored bottom editorial sheet whose 3 interactive pillars morph the 3D sculpture (`Stacked Ledger Sheets`, `Curved 31-Day Matrix`, `Accountability Orbit`), a GPU-composited 3D perspective workspace stage (`PerspectiveStageCard`), `WebApplication` JSON-LD, dynamic `opengraph-image` / `twitter-image`, `robots.ts`, `sitemap.ts`, and canonical URL resolution (`NEXT_PUBLIC_SITE_URL ?? BETTER_AUTH_URL ?? "https://folio.renult.xyz"`). Private `/app/*` and `/invite/*` routes emit `noindex, nofollow, nocache`. When launched as an installed PWA (`display-mode: standalone` or iOS `navigator.standalone`), `manifest.ts` launches at `/app/inbox` (redirecting signed-out users directly to `/login`), CSS hides `[data-folio-landing="true"]`, `StandaloneRootGuard` immediately redirects `/` → `/login`, and `PwaLaunchSplash` displays a calm once-per-session launch curtain paired with 12 Light/Dark iOS startup images (`public/splash/`).
 
@@ -645,7 +659,7 @@ flowchart TB
   subgraph Offboard["Safe Account Offboarding"]
     DelAcc["AccountService.deleteAccount(userId)"] --> Sole{"Sole owner of shared project with members?"}
     Sole -->|Yes| Block["400 ValidationError (transfer or delete shared project first)"]
-    Sole -->|No| Sweep["ACID tx: collect scheduled reminders -> DELETE user (cascades all 22 tables) -> reset UnreadCounterCache -> emit cancellations"]
+    Sole -->|No| Sweep["ACID tx: collect scheduled reminders -> DELETE user (cascades all 23 tables) -> reset UnreadCounterCache -> emit cancellations"]
   end
 ```
 

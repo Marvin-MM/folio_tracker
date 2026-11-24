@@ -1,15 +1,18 @@
 import { and, eq } from "drizzle-orm";
 import { headers } from "next/headers";
+import { isAdminEmail } from "@/server/admin-policy";
 import { auth, type BetterAuthSession } from "@/server/auth";
 import { db, type AppDatabase, type DbExecutor } from "@/server/db";
 import {
   notes,
   projectMembers,
   tasks,
+  users,
   type ProjectMemberRecord,
   type ProjectRole,
   type ReminderTarget,
 } from "@/server/db/schema";
+import { ensureAdminRolesSyncedForCurrentEnv } from "@/server/services/admin-role-sync";
 import { ForbiddenError, UnauthorizedError } from "./errors";
 
 export interface AuthenticatedContext {
@@ -95,7 +98,101 @@ export async function requireSession(
     throw new UnauthorizedError();
   }
 
+  if (result.user.isSuspended) {
+    throw new ForbiddenError("This account has been suspended.");
+  }
+
   return result;
+}
+
+/**
+ * Evaluates live platform admin status directly against Turso AND `ADMIN_EMAILS`.
+ * Auto-promotes/demotes the caller's DB row if `ADMIN_EMAILS` changed without restart.
+ */
+export async function resolveLiveAdminStatus(
+  userId: string,
+  database: AppDatabase = db,
+  rawAdminEnv: string | undefined = process.env.ADMIN_EMAILS
+): Promise<{
+  isAdmin: boolean;
+  isSuspended: boolean;
+  email: string | null;
+}> {
+  if (!userId) {
+    return { isAdmin: false, isSuspended: false, email: null };
+  }
+
+  if (database === db) {
+    await ensureAdminRolesSyncedForCurrentEnv(database).catch(() => null);
+  }
+
+  const [row] = await database
+    .select({
+      id: users.id,
+      email: users.email,
+      emailVerified: users.emailVerified,
+      role: users.role,
+      isSuspended: users.isSuspended,
+    })
+    .from(users)
+    .where(eq(users.id, userId))
+    .limit(1);
+
+  if (!row) {
+    return { isAdmin: false, isSuspended: false, email: null };
+  }
+
+  if (row.isSuspended) {
+    return { isAdmin: false, isSuspended: true, email: row.email };
+  }
+
+  const allowedByEnv = row.emailVerified && isAdminEmail(row.email, rawAdminEnv);
+
+  if (allowedByEnv && row.role !== "admin") {
+    await database
+      .update(users)
+      .set({ role: "admin", updatedAt: new Date() })
+      .where(eq(users.id, row.id));
+  } else if (!allowedByEnv && row.role === "admin") {
+    await database
+      .update(users)
+      .set({ role: "user", updatedAt: new Date() })
+      .where(eq(users.id, row.id));
+  }
+
+  return {
+    isAdmin: allowedByEnv,
+    isSuspended: row.isSuspended,
+    email: row.email,
+  };
+}
+
+/**
+ * Defense-in-depth platform admin guard backed directly by Turso + live `ADMIN_EMAILS`.
+ * Throws `UnauthorizedError` when unauthenticated and `ForbiddenError` for non-admins
+ * or suspended accounts. Never trusts client state or stale session cookies.
+ */
+export async function requireAdmin(
+  resolver: SessionResolver = defaultSessionResolver,
+  database: AppDatabase = db,
+  rawAdminEnv: string | undefined = process.env.ADMIN_EMAILS
+): Promise<AuthenticatedContext> {
+  const authContext = await requireSession(resolver);
+  const status = await resolveLiveAdminStatus(
+    authContext.user.id,
+    database,
+    rawAdminEnv
+  );
+
+  if (status.isSuspended) {
+    throw new ForbiddenError("This account has been suspended.");
+  }
+
+  if (!status.isAdmin) {
+    throw new ForbiddenError("Administrator access required.");
+  }
+
+  return authContext;
 }
 
 /**

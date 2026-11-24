@@ -40,6 +40,8 @@ export default async function SettingsPage() {
     name: user.name,
     email: user.email,
     emailVerified: user.emailVerified,
+    role: "user" as const,
+    isSuspended: false,
     timezone: user.timezone || "UTC",
     emailRemindersEnabled: user.emailRemindersEnabled ?? true,
   };

@@ -71,6 +71,7 @@ export function WorkspaceShell({
       notifications: initialNotifications,
       timezone: user.timezone,
       userName: user.name,
+      isAdmin: user.isAdmin,
     },
     initialFetchedAtMs
   );
@@ -79,6 +80,7 @@ export function WorkspaceShell({
   const liveNotifications = bootstrapQuery.data.notifications;
   const liveTimezone = bootstrapQuery.data.timezone || user.timezone;
   const liveUserName = bootstrapQuery.data.userName || user.name;
+  const liveIsAdmin = bootstrapQuery.data.isAdmin ?? user.isAdmin ?? false;
 
   const openQuickCapture = useCallback(() => {
     setQuickCaptureMounted(true);
@@ -191,7 +193,12 @@ export function WorkspaceShell({
                 Workspace smart views, projects, and account controls.
               </SheetDescription>
               <LeftRail
-                user={{ ...user, name: liveUserName, timezone: liveTimezone }}
+                user={{
+                  ...user,
+                  name: liveUserName,
+                  timezone: liveTimezone,
+                  isAdmin: liveIsAdmin,
+                }}
                 summary={liveSummary}
                 onNavigate={() => setMobileMenuOpen(false)}
               />
@@ -207,7 +214,12 @@ export function WorkspaceShell({
             )}
           >
             <LeftRail
-              user={{ ...user, name: liveUserName, timezone: liveTimezone }}
+              user={{
+                ...user,
+                name: liveUserName,
+                timezone: liveTimezone,
+                isAdmin: liveIsAdmin,
+              }}
               summary={liveSummary}
               collapsed={railCollapsed}
               onToggleCollapse={toggleRailCollapsed}
