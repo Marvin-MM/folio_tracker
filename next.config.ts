@@ -9,7 +9,9 @@ const cspDirectives = [
   "img-src 'self' data: blob: https://lh3.googleusercontent.com https://*.googleusercontent.com",
   "font-src 'self' data:",
   "connect-src 'self' https://accounts.google.com https://oauth2.googleapis.com https://fcm.googleapis.com https://*.push.services.mozilla.com https://web.push.apple.com https://*.notify.windows.com",
-  "worker-src 'self'",
+  // read-excel-file/browser parses .xlsx in a blob worker; allow it so the
+  // existing "Import completion history" dialog can read uploaded workbooks.
+  "worker-src 'self' blob:",
   "manifest-src 'self'",
   "frame-src 'self' https://accounts.google.com",
   "form-action 'self' https://accounts.google.com",
