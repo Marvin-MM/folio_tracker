@@ -18,7 +18,7 @@ Designed around a tactile **Warm Paper (Light)** and **Carbon Ink (Dark)** aesth
 - **Accountability Circle & Dynamic Review Windows:** Invite accountability monitors via Quick-Pick collaborators or anti-enumeration email/token links (`/invite/habit/[token]`), share all or strictly selected habits (zero-leak DAL projection), enforce global or per-monitor commenting cadences (`weekly_window`, `interval_days`, or `anytime`) evaluated in the owner's IANA timezone, exchange threaded cycle reviews and monochrome reactions (`ack`, `solid`, `push`), and send automated hourly review-open digests.
 - **Shared Projects & RBAC:** Direct-Turso `owner` / `editor` / `viewer` authorization (viewers remain read-only on shared items while still attaching private personal reminders), chronological activity feed, and SHA-256 single-use 7-day email invitations (`/invite/[token]`).
 - **Instant Cached Navigation & State Management:** Hybrid TanStack React Query v5 (user-scoped server cache + hover/focus prefetching across 8 authenticated `/api/workspace/*` read routes + Next.js 16 `staleTimes`) and Zustand v5 (strictly non-PII UI layout preferences), with 0ms client-side Habits scoring toggles, lazy-loaded `⌘K` Quick Capture & Recharts chunks, and full cache/session wipe on sign-out.
-- **SEO & Installable PWA Experience:** Editorial Mira landing page at `/` with interactive 3-tab preview, `WebApplication` JSON-LD, dynamic Open Graph/Twitter cards, `robots.txt`/`sitemap.xml`, `noindex` guards on private routes, 12 Light/Dark iOS launch splash images + standalone launch curtain, dedicated `/offline` fallback (never caching private data), and automatic standalone PWA bypass straight to `/login` or `/app/inbox`.
+- **SEO, Procedural 3D Editorial Landing & Installable PWA Experience:** Full-viewport Warm Paper / Carbon Ink editorial landing page at `/` featuring a zero-dependency procedural 3D dot-matrix `<canvas>` hero morphing across 3 Folio sculptures (`Stacked Ledger Sheets`, `Curved 31-Day Matrix`, `Accountability Orbit`), an anchored bottom pillar sheet, a 3D perspective interactive workspace stage, `WebApplication` JSON-LD, dynamic Open Graph/Twitter cards, `robots.txt`/`sitemap.xml`, `noindex` guards on private routes, 12 Light/Dark iOS launch splash images + standalone launch curtain, dedicated `/offline` fallback (never caching private data), and automatic standalone PWA bypass straight to `/login` or `/app/inbox`.
 - **Production Hardening:** Sliding-window rate limiting (`429` + `Retry-After`), delivery-time zero-leak authorization re-checks, shared-device push & client-cache cleanup on sign-out, safe account offboarding, global error boundary, strict CSP/security headers, and `/api/health`.
 
 ---
@@ -148,7 +148,7 @@ pnpm build        # Create optimized production build
 pnpm start        # Serve production build
 pnpm typecheck    # Run TypeScript strict typecheck (tsc --noEmit)
 pnpm lint         # Run ESLint
-pnpm test         # Run all 20 Vitest suites (84 tests, ephemeral SQLite DBs)
+pnpm test         # Run all 21 Vitest suites (87 tests, ephemeral SQLite DBs)
 pnpm db:generate  # Generate Drizzle SQL migrations after schema changes
 pnpm db:migrate   # Apply Drizzle migrations to TURSO_DATABASE_URL
 pnpm db:studio    # Launch Drizzle Studio
