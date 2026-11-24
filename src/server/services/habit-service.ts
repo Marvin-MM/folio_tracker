@@ -1,6 +1,21 @@
 import { fromZonedTime } from "date-fns-tz";
 import { ulid } from "ulidx";
 import { isFeatureEnabled } from "@/config/features";
+import { REVIEW_PROMPTS, type ReviewPrompt } from "@/data/reviewPrompts";
+import {
+  computeRollupVersion,
+  createRollupPartitionKey,
+  type RollupValueEvent,
+  getMonthRangeForDate,
+  getWeekRangeForDate,
+  selectGoalTotal,
+  selectHabitRate,
+  selectHoursForRange,
+  selectLoanBalance,
+  selectRunsThisWeek,
+  selectSpending,
+} from "@/domain/rollups";
+import { getJournalPromptForDate } from "@/domain/journal-prompts";
 import {
   generatePositionBetween,
   MAX_POSITION_KEY_LENGTH,
@@ -42,6 +57,7 @@ import { db, withDbRetry, type AppDatabase, type DbExecutor } from "@/server/db"
 import type {
   HabitCadenceType,
   HabitCommentMode,
+  HabitDayEntryRecord,
   HabitLogRecord,
   HabitLogStatus,
   HabitRecord,
@@ -118,6 +134,15 @@ import {
   type ViewKind,
   type ViewSortBy,
 } from "@/server/domain/habit-views";
+import type { EffectiveHabitStatus } from "@/server/domain/effectiveStatus";
+import {
+  applyEffectiveStatusesToLogs,
+  buildDayChecklist,
+  computeDayHighlights,
+  getAdjacentDateKeys,
+  resolveRunHabitIds,
+  type DayHighlights,
+} from "@/server/domain/phase-c-day";
 import {
   defaultRateLimiter,
   type RateLimiter,
@@ -363,6 +388,55 @@ export interface TodayHabitStripItem {
 export interface TodayHabitsStripData {
   todayDateKey: string;
   items: TodayHabitStripItem[];
+}
+
+export interface SaveDayEntryInput {
+  dateKey: string;
+  energy?: number | null;
+  sleepHours?: number | null;
+  note?: string | null;
+  journalPromptId?: string | null;
+  journalText?: string | null;
+}
+
+export interface DayChecklistViewItem {
+  habit: HabitRecord;
+  scheduled: boolean;
+  status: EffectiveHabitStatus;
+  log: HabitLogRecord | null;
+}
+
+export interface DayRollupsView {
+  goalTotal: number | null;
+  hoursThisWeek: number | null;
+  hoursThisMonth: number | null;
+  runsThisWeek: { done: number; target: number | null } | null;
+  daySpending: number | null;
+  monthSpending: number | null;
+  loanBalance: number | null;
+  habitRate: { day: number | null; month: number | null };
+  /** Adapters not present in the current schema; never persisted as fake zeros. */
+  unavailableAdapters: string[];
+}
+
+export interface DayWorkspace {
+  dateKey: string;
+  todayDateKey: string;
+  monthLabel: string;
+  weekdayLabel: string;
+  checklist: DayChecklistViewItem[];
+  dayEntry: HabitDayEntryRecord | null;
+  journalPrompt: ReviewPrompt | null;
+  highlights: DayHighlights | null;
+  rollups: DayRollupsView;
+  spendingModuleAvailable: boolean;
+  previousDateKey: string;
+  nextDateKey: string | null;
+  flags: {
+    energySleepInput: boolean;
+    rollups: boolean;
+    missReasons: boolean;
+  };
 }
 
 export interface HabitServiceDeps {
@@ -989,6 +1063,326 @@ export class HabitService {
     });
 
     return { todayDateKey, items };
+  }
+
+  /**
+   * Phase C day workspace. Reads only: a `habit_day_entries` row is created by
+   * `saveDayEntry` only after the user actually edits a field.
+   */
+  async getDayWorkspace(
+    userId: string,
+    timezone: string,
+    dateKey: string
+  ): Promise<DayWorkspace> {
+    if (!isValidDateKey(dateKey)) {
+      throw new ValidationError("Date must be a valid YYYY-MM-DD date.");
+    }
+    const todayDateKey = getLocalDateKey(this.now(), timezone);
+    if (isFutureDateKey(dateKey, todayDateKey)) {
+      throw new ValidationError("Future days cannot be opened.");
+    }
+
+    const monthRange = getMonthRangeForDate(dateKey);
+    const [monthWorkspace, dayEntry, excuseRanges, monthLogs] =
+      await Promise.all([
+        this.getMonthWorkspace(userId, timezone, {
+          yearMonth: dateKey.slice(0, 7),
+        }),
+        this.habits.getDayEntry(userId, dateKey),
+        this.habits.listExcuseRangesForRange(
+          userId,
+          monthRange.start,
+          monthRange.end
+        ),
+        this.habits.listLogsForRange(
+          userId,
+          monthRange.start,
+          monthRange.end
+        ),
+      ]);
+
+    const calendar = monthWorkspace.analytics.calendar;
+    const weekStartsOn: 0 | 1 = monthWorkspace.settings.weekStartsOn === 0 ? 0 : 1;
+    const effectiveLogs = applyEffectiveStatusesToLogs({
+      habits: monthWorkspace.habits,
+      dateKeys: calendar.days.map((day) => day.dateKey),
+      logs: monthLogs,
+      excuseRanges: excuseRanges.map((range) => ({
+        startDate: range.startDate,
+        endDate: range.endDate,
+        habitIds: JSON.parse(range.habitIdsJson) as string[],
+        deletedAt: range.deletedAt,
+      })),
+    });
+
+    const effectiveAnalytics = computeHabitMonthAnalytics({
+      yearMonth: calendar.yearMonth,
+      todayDateKey: monthWorkspace.todayDateKey,
+      weekStartsOn,
+      scoringMode: monthWorkspace.scoringMode,
+      habits: monthWorkspace.habits.map(toAnalyticsHabit),
+      logs: effectiveLogs,
+    });
+
+    const rawLogsForDate = Object.values(monthWorkspace.logsByKey).filter(
+      (log) => log.dateKey === dateKey
+    );
+    const checklist = buildDayChecklist({
+      habits: monthWorkspace.habits,
+      dateKey,
+      logs: rawLogsForDate,
+      excuseRanges: excuseRanges.map((range) => ({
+        startDate: range.startDate,
+        endDate: range.endDate,
+        habitIds: JSON.parse(range.habitIdsJson) as string[],
+        deletedAt: range.deletedAt,
+      })),
+    }).map((item) => ({
+      ...item,
+      habit: item.habit as HabitRecord,
+      log: item.log as HabitLogRecord | null,
+    }));
+
+    const rollupVersion = computeRollupVersion([
+      ...effectiveLogs.map((log) => ({ loggedAt: log.loggedAt })),
+      ...(dayEntry ? [{ updatedAt: dayEntry.updatedAt }] : []),
+    ]);
+    const weekRange = getWeekRangeForDate(dateKey, weekStartsOn);
+    const dayRange = { start: dateKey, end: dateKey };
+    const noNumericValues: RollupValueEvent[] = [];
+    const noMoneyValues: RollupValueEvent[] = [];
+
+    // Adapters for numeric log values and the money module do not exist in the
+    // current schema. Selectors are exercised with empty partitions; results
+    // stay null instead of being persisted or displayed as misleading zeros.
+    const unavailableAdapters = [
+      "numeric log values",
+      "money module",
+    ];
+    const runHabitIds = resolveRunHabitIds(monthWorkspace.habits);
+    const runTargets = monthWorkspace.habits
+      .filter((habit) => runHabitIds.includes(habit.id))
+      .map((habit) => habit.weeklyTargetCount)
+      .filter((target): target is number => typeof target === "number");
+    const runsThisWeek =
+      runHabitIds.length === 0
+        ? null
+        : selectRunsThisWeek({
+            partitionKey: createRollupPartitionKey(
+              userId,
+              "runs-week",
+              weekRange
+            ),
+            version: rollupVersion,
+            logs: effectiveLogs,
+            runHabitIds,
+            range: weekRange,
+            target: runTargets.length > 0 ? runTargets.reduce((a, b) => a + b, 0) : null,
+          });
+    const habitRateDay = selectHabitRate({
+      partitionKey: createRollupPartitionKey(userId, "rate-day", dayRange),
+      version: rollupVersion,
+      logs: effectiveLogs,
+      range: dayRange,
+    });
+    const habitRateMonth = selectHabitRate({
+      partitionKey: createRollupPartitionKey(userId, "rate-month", monthRange),
+      version: rollupVersion,
+      logs: effectiveLogs,
+      range: monthRange,
+    });
+
+    const rollupsEnabled = isFeatureEnabled("rollups");
+    const rollups: DayRollupsView = {
+      goalTotal: rollupsEnabled
+        ? selectGoalTotal({
+            partitionKey: createRollupPartitionKey(userId, "goal", dayRange),
+            version: rollupVersion,
+            startingValue: null,
+            values: noNumericValues,
+          })
+        : null,
+      hoursThisWeek: rollupsEnabled
+        ? selectHoursForRange({
+            partitionKey: createRollupPartitionKey(userId, "hours-week", weekRange),
+            version: rollupVersion,
+            values: noNumericValues,
+            range: weekRange,
+          }) || null
+        : null,
+      hoursThisMonth: rollupsEnabled
+        ? selectHoursForRange({
+            partitionKey: createRollupPartitionKey(userId, "hours-month", monthRange),
+            version: rollupVersion,
+            values: noNumericValues,
+            range: monthRange,
+          }) || null
+        : null,
+      runsThisWeek: rollupsEnabled ? runsThisWeek : null,
+      daySpending: rollupsEnabled
+        ? selectSpending({
+            partitionKey: createRollupPartitionKey(userId, "spend-day", dayRange),
+            version: rollupVersion,
+            values: noMoneyValues,
+            range: dayRange,
+          }) || null
+        : null,
+      monthSpending: rollupsEnabled
+        ? selectSpending({
+            partitionKey: createRollupPartitionKey(userId, "spend-month", monthRange),
+            version: rollupVersion,
+            values: noMoneyValues,
+            range: monthRange,
+          }) || null
+        : null,
+      loanBalance: rollupsEnabled
+        ? selectLoanBalance({
+            partitionKey: createRollupPartitionKey(userId, "loan", monthRange),
+            version: rollupVersion,
+            values: noMoneyValues,
+          }) || null
+        : null,
+      habitRate: rollupsEnabled
+        ? { day: habitRateDay, month: habitRateMonth }
+        : { day: null, month: null },
+      unavailableAdapters: rollupsEnabled ? unavailableAdapters : [],
+    };
+
+    const highlights = rollupsEnabled
+      ? computeDayHighlights({
+          checklist,
+          monthAverage: habitRateMonth,
+          streakByHabitId: effectiveAnalytics.byHabitId,
+        })
+      : null;
+
+    const savedPrompt = dayEntry?.journalPromptId
+      ? REVIEW_PROMPTS.find((prompt) => prompt.id === dayEntry.journalPromptId) ?? null
+      : null;
+    const { previousDateKey, nextDateKey } = getAdjacentDateKeys(
+      dateKey,
+      todayDateKey
+    );
+
+    return {
+      dateKey,
+      todayDateKey,
+      monthLabel: calendar.monthLabel,
+      weekdayLabel:
+        calendar.days.find((day) => day.dateKey === dateKey)?.weekdayShort ?? "—",
+      checklist,
+      dayEntry,
+      journalPrompt: savedPrompt ?? getJournalPromptForDate(dateKey, REVIEW_PROMPTS),
+      highlights,
+      rollups,
+      spendingModuleAvailable: false,
+      previousDateKey,
+      nextDateKey,
+      flags: {
+        energySleepInput: isFeatureEnabled("energySleepInput"),
+        rollups: rollupsEnabled,
+        missReasons:
+          isFeatureEnabled("missReasonPrompt") || isFeatureEnabled("dayPage"),
+      },
+    };
+  }
+
+  /** Phase C — lazy, idempotent day-row upsert. Omits untouched columns. */
+  async saveDayEntry(
+    userId: string,
+    timezone: string,
+    input: SaveDayEntryInput
+  ): Promise<HabitDayEntryRecord> {
+    if (!isValidDateKey(input.dateKey)) {
+      throw new ValidationError("Date must be a valid YYYY-MM-DD date.");
+    }
+    const todayDateKey = getLocalDateKey(this.now(), timezone);
+    if (isFutureDateKey(input.dateKey, todayDateKey)) {
+      throw new ValidationError("Cannot edit a future day.");
+    }
+
+    const patch: Omit<SaveDayEntryInput, "dateKey"> = {};
+    const assign = <K extends keyof Omit<SaveDayEntryInput, "dateKey">>(
+      key: K,
+      value: SaveDayEntryInput[K]
+    ) => {
+      if (value !== undefined) patch[key] = value;
+    };
+
+    assign(
+      "note",
+      input.note === undefined
+        ? undefined
+        : input.note === null
+          ? null
+          : input.note.trim() || null
+    );
+    assign(
+      "journalText",
+      input.journalText === undefined
+        ? undefined
+        : input.journalText === null
+          ? null
+          : input.journalText.trim() || null
+    );
+    assign("journalPromptId", input.journalPromptId);
+
+    if (input.energy !== undefined) {
+      if (!isFeatureEnabled("energySleepInput")) {
+        throw new ValidationError("Energy and sleep inputs are disabled.");
+      }
+      if (
+        input.energy !== null &&
+        (!Number.isInteger(input.energy) || input.energy < 1 || input.energy > 10)
+      ) {
+        throw new ValidationError("Energy must be a whole number from 1 to 10.");
+      }
+      assign("energy", input.energy);
+    }
+    if (input.sleepHours !== undefined) {
+      if (!isFeatureEnabled("energySleepInput")) {
+        throw new ValidationError("Energy and sleep inputs are disabled.");
+      }
+      if (
+        input.sleepHours !== null &&
+        (!Number.isFinite(input.sleepHours) ||
+          input.sleepHours < 0 ||
+          input.sleepHours > 24)
+      ) {
+        throw new ValidationError("Sleep hours must be between 0 and 24.");
+      }
+      assign("sleepHours", input.sleepHours);
+    }
+    if (patch.note !== undefined && patch.note !== null && patch.note.length > 2_000) {
+      throw new ValidationError("Day note must be 2,000 characters or fewer.");
+    }
+    if (
+      patch.journalText !== undefined &&
+      patch.journalText !== null &&
+      patch.journalText.length > 4_000
+    ) {
+      throw new ValidationError("Journal text must be 4,000 characters or fewer.");
+    }
+    if (
+      patch.journalPromptId !== undefined &&
+      patch.journalPromptId !== null &&
+      patch.journalPromptId.length > 64
+    ) {
+      throw new ValidationError("Journal prompt id is too long.");
+    }
+
+    if (Object.keys(patch).length === 0) {
+      throw new ValidationError("Nothing to save for this day.");
+    }
+
+    return withDbRetry(() =>
+      this.habits.upsertDayEntry({
+        userId,
+        dateKey: input.dateKey,
+        ...patch,
+        updatedAt: this.now(),
+      })
+    );
   }
 
   async createHabit(
@@ -1985,8 +2379,11 @@ export class HabitService {
     userId: string,
     input: { habitId: string; dateKey: string; reason: MissReason | null }
   ): Promise<HabitLogRecord> {
-    if (!isFeatureEnabled("missReasonPrompt")) {
-      throw new ValidationError("Miss-reason prompts are disabled.");
+    if (
+      !isFeatureEnabled("missReasonPrompt") &&
+      !isFeatureEnabled("dayPage")
+    ) {
+      throw new ValidationError("Miss reasons are disabled.");
     }
     if (!isValidDateKey(input.dateKey)) {
       throw new ValidationError("Date must be a valid YYYY-MM-DD date.");

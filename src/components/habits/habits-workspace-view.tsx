@@ -191,6 +191,7 @@ export function HabitsWorkspaceView({
   const [modeTouched, setModeTouched] = useState(false);
   const savedViewsEnabled = isFeatureEnabled("savedViews");
   const missReasonEnabled = isFeatureEnabled("missReasonPrompt");
+  const dayPageEnabled = isFeatureEnabled("dayPage");
   // Saved views and the selected view are derived from server props. Optimistic
   // overrides live only for the duration of a transition, so no effect ever
   // synchronizes props into state (which React lint correctly flags as unsafe).
@@ -1098,6 +1099,11 @@ export function HabitsWorkspaceView({
               onSaveCellDetail={handleSaveCellDetail}
               missReasonPromptEnabled={missReasonEnabled}
               onSetMissReason={handleSetMissReason}
+              onOpenDay={
+                dayPageEnabled
+                  ? (dateKey) => router.push(`/app/day/${dateKey}`)
+                  : undefined
+              }
               onInspectHabit={(habit) =>
                 openDetail({
                   kind: "habit",

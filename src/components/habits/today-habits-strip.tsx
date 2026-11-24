@@ -178,6 +178,14 @@ export function TodayHabitsStrip({
               Low-energy day
             </button>
           ) : null}
+          {isFeatureEnabled("dayPage") ? (
+            <Link
+              href={`/app/day/${todayDateKey}`}
+              className="inline-flex min-h-9 items-center px-1 text-[11px] font-medium text-muted-foreground underline-offset-2 hover:text-foreground hover:underline md:min-h-6"
+            >
+              Day →
+            </Link>
+          ) : null}
           <Link
             href="/app/habits"
             className="inline-flex min-h-9 items-center px-1 text-[11px] font-medium text-muted-foreground underline-offset-2 hover:text-foreground hover:underline md:min-h-6"

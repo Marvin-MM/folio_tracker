@@ -2,6 +2,7 @@
 
 import { formatInTimeZone } from "date-fns-tz";
 import { TodayHabitsStrip } from "@/components/habits/today-habits-strip";
+import { isFeatureEnabled } from "@/config/features";
 import { ProjectWorkspaceView } from "@/components/projects/project-workspace-view";
 import { ViewHeader } from "@/components/workspace/view-header";
 import {
@@ -100,6 +101,11 @@ export function TodayWorkspaceClient({
         title="Today"
         subtitle="Overdue, due today, and tasks with reminders today"
         meta={`${formattedToday} · ${data.items.length}`}
+        metaHref={
+          isFeatureEnabled("dayPage") && data.habitsStrip
+            ? `/app/day/${data.habitsStrip.todayDateKey}`
+            : undefined
+        }
       />
       <div className="mx-auto w-full max-w-3xl p-4 md:p-6">
         {data.habitsStrip ? (
