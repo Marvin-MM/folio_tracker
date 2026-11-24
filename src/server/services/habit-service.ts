@@ -53,11 +53,13 @@ import {
   isValidYearMonth,
   parseBulkHabitImport,
   parseScheduledDaysJson,
+  shiftYearMonth,
   type AnalyticsHabitInput,
   type HabitMonthAnalytics,
   type ScoringMode,
 } from "@/server/domain/habit-analytics";
 import {
+  deriveMonthRostersFromLogs,
   MAX_HISTORY_LOG_ROWS,
   type ParsedHistoryLog,
 } from "@/server/domain/habit-import";
@@ -65,7 +67,6 @@ import {
   normalizeImportTitle,
   planHabitEvolution,
   resolveCanonicalTitle,
-  monthStartKey,
   type AliasOverride,
   type HabitEvolutionPlan,
   type MonthRoster,
@@ -73,9 +74,11 @@ import {
 
 const MAX_HABIT_NOTE_LENGTH = 280;
 
-function normalizeHabitTitle(title: string): string {
-  return title.trim().replace(/\s+/g, " ").toLowerCase();
-}
+const MERGE_STATUS_PRIORITY: Record<HabitLogStatus, number> = {
+  done: 3,
+  skipped: 2,
+  missed: 1,
+};
 
 export interface CreateHabitInput {
   title: string;
@@ -85,6 +88,8 @@ export interface CreateHabitInput {
   scheduledDays?: number[];
   weeklyTargetCount?: number | null;
   startDate?: string;
+  /** Optional YYYY-MM month being viewed when creating the habit so it enrolls into that month's roster. */
+  targetYearMonth?: string;
   preferredTime?: string | null;
   linkedProjectId?: string | null;
   autoSyncDailyTask?: boolean;
@@ -158,10 +163,22 @@ export interface PromoteTaskToHabitInput {
   autoSyncDailyTask?: boolean;
 }
 
+export interface PreviousMonthRosterSource {
+  yearMonth: string;
+  monthLabel: string;
+  habitIds: string[];
+}
+
 export interface HabitMonthWorkspace {
   settings: HabitTrackerSettingsRecord;
   habits: HabitRecord[];
   archivedHabits: HabitRecord[];
+  /** Complete library of user habits (active + archived) for per-month roster editing. */
+  allHabits: HabitRecord[];
+  /** True when `yearMonth` has explicit rows in `habit_month_rosters`. */
+  hasExplicitMonthRoster: boolean;
+  /** Latest earlier month whose habits can be carried over into `yearMonth` in 1 click. */
+  previousRosterSource: PreviousMonthRosterSource | null;
   logsByKey: Record<string, HabitLogRecord>;
   linkedTaskByKey: Record<string, LinkedHabitTaskSummary>;
   analytics: HabitMonthAnalytics;
@@ -354,19 +371,31 @@ export class HabitService {
   ): Promise<HabitMonthWorkspace> {
     const nowMs = this.now();
     const todayDateKey = getLocalDateKey(nowMs, timezone);
-    const yearMonth =
+    const currentMonth = todayDateKey.slice(0, 7);
+    const requestedMonth =
       options.yearMonth && isValidYearMonth(options.yearMonth)
         ? options.yearMonth
-        : todayDateKey.slice(0, 7);
+        : currentMonth;
+    // Future months cannot be tracked until they begin — clamp strictly to <= currentMonth
+    const yearMonth =
+      requestedMonth > currentMonth ? currentMonth : requestedMonth;
     const scoringMode: ScoringMode =
       options.scoringMode === "full_month" ? "full_month" : "elapsed";
 
-    const [settings, allUserHabits] = await Promise.all([
+    const [
+      settings,
+      allUserHabits,
+      explicitMonthHabitIds,
+      hasAnyMonthRoster,
+      previousRoster,
+    ] = await Promise.all([
       this.habits.getOrCreateSettings(userId),
       this.habits.listHabitsForUser(userId, { includeArchived: true }),
+      this.habits.listMonthRosterHabitIds(userId, yearMonth),
+      this.habits.hasAnyMonthRosterForUser(userId),
+      this.habits.findLatestMonthRosterBefore(userId, yearMonth),
     ]);
 
-    const activeHabits = allUserHabits.filter((h) => !h.isArchived);
     const archivedHabits = allUserHabits.filter((h) => h.isArchived);
     const weekStartsOn: 0 | 1 = settings.weekStartsOn === 0 ? 0 : 1;
     const calendar = buildMonthCalendar(yearMonth, weekStartsOn);
@@ -375,7 +404,7 @@ export class HabitService {
     const defaultLookback = addDaysToDateKey(calendar.monthStartKey, -120);
     const maxLookback = addDaysToDateKey(calendar.monthStartKey, -365);
     let earliestStart = defaultLookback;
-    for (const h of activeHabits) {
+    for (const h of allUserHabits) {
       if (h.startDate < earliestStart) {
         earliestStart = h.startDate < maxLookback ? maxLookback : h.startDate;
       }
@@ -392,24 +421,56 @@ export class HabitService {
       ),
     ]);
 
-    const analytics = computeHabitMonthAnalytics({
-      yearMonth,
-      todayDateKey,
-      weekStartsOn,
-      scoringMode,
-      habits: activeHabits.map(toAnalyticsHabit),
-      logs: allLogs,
-    });
-
     const logsByKey: Record<string, HabitLogRecord> = {};
+    const habitIdsWithLogsInMonth = new Set<string>();
     for (const log of allLogs) {
       if (
         log.dateKey >= calendar.monthStartKey &&
         log.dateKey <= calendar.monthEndKey
       ) {
         logsByKey[`${log.habitId}::${log.dateKey}`] = log;
+        habitIdsWithLogsInMonth.add(log.habitId);
       }
     }
+
+    // Per-month habit visibility:
+    // 1. If this month has an explicit roster, honor it strictly so removing a habit
+    //    from this month hides it from this month's grid & KPIs (even if earlier marks
+    //    exist in this month) without altering other months or deleting historical logs.
+    // 2. If the user uses monthly rosters in other months but hasn't set up this month yet
+    //    (e.g., new month just began), show only habits logged this month so the carry-over
+    //    prompt lets them import or edit from the previous month cleanly.
+    // 3. Otherwise (legacy/fresh user with no monthly rosters yet), render active habits
+    //    plus archived habits that have logs in this month.
+    const explicitSet = new Set(explicitMonthHabitIds);
+    const hasExplicitMonthRoster = explicitSet.size > 0;
+    const visibleHabits = hasExplicitMonthRoster
+      ? allUserHabits.filter((h) => explicitSet.has(h.id))
+      : hasAnyMonthRoster
+        ? allUserHabits.filter((h) => habitIdsWithLogsInMonth.has(h.id))
+        : allUserHabits.filter(
+            (h) => !h.isArchived || habitIdsWithLogsInMonth.has(h.id)
+          );
+
+    const previousRosterSource: PreviousMonthRosterSource | null = previousRoster
+      ? {
+          yearMonth: previousRoster.yearMonth,
+          monthLabel: buildMonthCalendar(
+            previousRoster.yearMonth,
+            weekStartsOn
+          ).monthLabel,
+          habitIds: previousRoster.habitIds,
+        }
+      : null;
+
+    const analytics = computeHabitMonthAnalytics({
+      yearMonth,
+      todayDateKey,
+      weekStartsOn,
+      scoringMode,
+      habits: visibleHabits.map(toAnalyticsHabit),
+      logs: allLogs,
+    });
 
     const linkedTaskByKey: Record<string, LinkedHabitTaskSummary> = {};
     for (const lt of linkedTasks) {
@@ -418,8 +479,11 @@ export class HabitService {
 
     return {
       settings,
-      habits: activeHabits,
+      habits: visibleHabits,
       archivedHabits,
+      allHabits: allUserHabits,
+      hasExplicitMonthRoster,
+      previousRosterSource,
       logsByKey,
       linkedTaskByKey,
       analytics,
@@ -435,13 +499,22 @@ export class HabitService {
   ): Promise<TodayHabitsStripData> {
     const nowMs = this.now();
     const todayDateKey = getLocalDateKey(nowMs, timezone);
+    const currentMonth = todayDateKey.slice(0, 7);
     const lookbackStart = addDaysToDateKey(todayDateKey, -120);
 
-    const [settings, activeHabits, recentLogs] = await Promise.all([
-      this.habits.getOrCreateSettings(userId),
-      this.habits.listHabitsForUser(userId, { includeArchived: false }),
-      this.habits.listLogsForRange(userId, lookbackStart, todayDateKey),
-    ]);
+    const [settings, activeHabits, currentMonthRosterIds, recentLogs] =
+      await Promise.all([
+        this.habits.getOrCreateSettings(userId),
+        this.habits.listHabitsForUser(userId, { includeArchived: false }),
+        this.habits.listMonthRosterHabitIds(userId, currentMonth),
+        this.habits.listLogsForRange(userId, lookbackStart, todayDateKey),
+      ]);
+
+    const currentMonthRosterSet = new Set(currentMonthRosterIds);
+    const scopedActiveHabits =
+      currentMonthRosterSet.size > 0
+        ? activeHabits.filter((h) => currentMonthRosterSet.has(h.id))
+        : activeHabits;
 
     const weekStartsOn: 0 | 1 = settings.weekStartsOn === 0 ? 0 : 1;
     const logsByHabit = new Map<string, Map<string, HabitLogStatus>>();
@@ -459,7 +532,7 @@ export class HabitService {
       }
     }
 
-    const items: TodayHabitStripItem[] = activeHabits.map((habit) => {
+    const items: TodayHabitStripItem[] = scopedActiveHabits.map((habit) => {
       const analyticsHabit = toAnalyticsHabit(habit);
       const map = logsByHabit.get(habit.id) ?? new Map<string, HabitLogStatus>();
       const streak = computeHabitStreaks(
@@ -494,9 +567,27 @@ export class HabitService {
     }
 
     const todayDateKey = getLocalDateKey(this.now(), timezone);
+    const currentMonth = todayDateKey.slice(0, 7);
     const startDate = input.startDate?.trim() || todayDateKey;
     if (!isValidDateKey(startDate)) {
       throw new ValidationError("Start date must be a valid YYYY-MM-DD date.");
+    }
+    if (startDate.slice(0, 7) > currentMonth) {
+      throw new ValidationError(
+        "Future months cannot be tracked until they begin."
+      );
+    }
+
+    const targetYearMonth = input.targetYearMonth?.trim() || null;
+    if (targetYearMonth) {
+      if (!isValidYearMonth(targetYearMonth)) {
+        throw new ValidationError("Month must be in YYYY-MM format.");
+      }
+      if (targetYearMonth > currentMonth) {
+        throw new ValidationError(
+          "Future months cannot be tracked until they begin."
+        );
+      }
     }
 
     const cadence = normalizeCadence({
@@ -535,6 +626,39 @@ export class HabitService {
           },
           tx
         );
+
+        // If the user uses monthly rosters (or explicitly targeted a month),
+        // enroll this new habit into the target month's roster cleanly. When
+        // bootstrapping a legacy user's very first month roster, preserve all
+        // existing active habits in that month so none disappear unexpectedly.
+        const enrollMonth =
+          targetYearMonth ??
+          (startDate.slice(0, 7) <= currentMonth
+            ? startDate.slice(0, 7)
+            : currentMonth);
+        const hadAnyRoster = await this.habits.hasAnyMonthRosterForUser(
+          userId,
+          tx
+        );
+        if (hadAnyRoster || targetYearMonth) {
+          const habitIdsToEnroll = hadAnyRoster
+            ? [created.id]
+            : (
+                await this.habits.listHabitsForUser(
+                  userId,
+                  { includeArchived: false },
+                  tx
+                )
+              ).map((h) => h.id);
+          await this.habits.upsertMonthRosterEntries(
+            habitIdsToEnroll.map((habitId) => ({
+              userId,
+              habitId,
+              yearMonth: enrollMonth,
+            })),
+            tx
+          );
+        }
 
         // Optionally seed today's linked task in the same ACID transaction when auto-sync is enabled
         if (
@@ -588,6 +712,16 @@ export class HabitService {
     }
     if (input.startDate !== undefined && !isValidDateKey(input.startDate)) {
       throw new ValidationError("Start date must be a valid YYYY-MM-DD date.");
+    }
+    if (input.startDate !== undefined) {
+      const currentMonth = getLocalDateKey(this.now(), "UTC").slice(0, 7);
+      // Allow current month (up to next month edge for UTC+14) while strictly rejecting far future months
+      const nextMonthEdge = shiftYearMonth(currentMonth, 1);
+      if (input.startDate.slice(0, 7) > nextMonthEdge) {
+        throw new ValidationError(
+          "Future months cannot be tracked until they begin."
+        );
+      }
     }
 
     if (input.linkedProjectId !== undefined) {
@@ -663,6 +797,257 @@ export class HabitService {
     isArchived = true
   ): Promise<HabitRecord> {
     return this.updateHabit(userId, habitId, { isArchived });
+  }
+
+  /**
+   * Saves the exact curated list of habits to track for `yearMonth` (`YYYY-MM`).
+   * Rejects future months not yet reached and leaves all other months intact.
+   */
+  async saveMonthRoster(
+    userId: string,
+    timezone: string,
+    input: { yearMonth: string; habitIds: string[] }
+  ): Promise<{ yearMonth: string; habitIds: string[] }> {
+    if (!isValidYearMonth(input.yearMonth)) {
+      throw new ValidationError("Month must be in YYYY-MM format.");
+    }
+    const todayDateKey = getLocalDateKey(this.now(), timezone);
+    const currentMonth = todayDateKey.slice(0, 7);
+    if (input.yearMonth > currentMonth) {
+      throw new ValidationError(
+        "Future months cannot be tracked until they begin."
+      );
+    }
+
+    const calendar = buildMonthCalendar(input.yearMonth, 1);
+
+    return withDbRetry(() =>
+      this.database.transaction(async (tx) => {
+        const ownedHabits = await this.habits.listHabitsForUser(
+          userId,
+          { includeArchived: true },
+          tx
+        );
+        const ownedById = new Map(ownedHabits.map((h) => [h.id, h]));
+
+        const validHabitIds = Array.from(
+          new Set(input.habitIds.filter((id) => ownedById.has(id)))
+        );
+
+        await this.habits.replaceMonthRoster(
+          userId,
+          input.yearMonth,
+          validHabitIds,
+          tx
+        );
+
+        for (const habitId of validHabitIds) {
+          const habit = ownedById.get(habitId)!;
+          const patch: { isArchived?: boolean; startDate?: string } = {};
+          if (input.yearMonth === currentMonth && habit.isArchived) {
+            patch.isArchived = false;
+          }
+          if (habit.startDate > calendar.monthEndKey) {
+            patch.startDate = calendar.monthStartKey;
+          }
+          if (
+            patch.isArchived !== undefined ||
+            patch.startDate !== undefined
+          ) {
+            await this.habits.updateHabitForUser(userId, habit.id, patch, tx);
+          }
+        }
+
+        return { yearMonth: input.yearMonth, habitIds: validHabitIds };
+      })
+    );
+  }
+
+  /**
+   * Carries over the habit list from the previous month (or a specified earlier
+   * source month) into `targetYearMonth` so the user starts the new month with
+   * their previous list and can edit/add/remove items freely.
+   */
+  async carryOverPreviousMonthRoster(
+    userId: string,
+    timezone: string,
+    input: { targetYearMonth: string; sourceYearMonth?: string }
+  ): Promise<{
+    targetYearMonth: string;
+    sourceYearMonth: string;
+    habitIds: string[];
+  }> {
+    if (!isValidYearMonth(input.targetYearMonth)) {
+      throw new ValidationError("Target month must be in YYYY-MM format.");
+    }
+    const todayDateKey = getLocalDateKey(this.now(), timezone);
+    const currentMonth = todayDateKey.slice(0, 7);
+    if (input.targetYearMonth > currentMonth) {
+      throw new ValidationError(
+        "Future months cannot be tracked until they begin."
+      );
+    }
+    if (
+      input.sourceYearMonth &&
+      (!isValidYearMonth(input.sourceYearMonth) ||
+        input.sourceYearMonth >= input.targetYearMonth)
+    ) {
+      throw new ValidationError(
+        "Source month must be an earlier YYYY-MM month."
+      );
+    }
+
+    const calendar = buildMonthCalendar(input.targetYearMonth, 1);
+
+    return withDbRetry(() =>
+      this.database.transaction(async (tx) => {
+        const ownedHabits = await this.habits.listHabitsForUser(
+          userId,
+          { includeArchived: true },
+          tx
+        );
+        const ownedById = new Map(ownedHabits.map((h) => [h.id, h]));
+
+        let sourceYearMonth: string;
+        let habitIds: string[];
+
+        if (input.sourceYearMonth) {
+          sourceYearMonth = input.sourceYearMonth;
+          habitIds = await this.habits.listMonthRosterHabitIds(
+            userId,
+            input.sourceYearMonth,
+            tx
+          );
+        } else {
+          const latest = await this.habits.findLatestMonthRosterBefore(
+            userId,
+            input.targetYearMonth,
+            tx
+          );
+          if (latest) {
+            sourceYearMonth = latest.yearMonth;
+            habitIds = latest.habitIds;
+          } else {
+            // Fallback for legacy users carrying active habits into their first explicit month
+            const activeIds = ownedHabits
+              .filter((h) => !h.isArchived)
+              .map((h) => h.id);
+            if (activeIds.length === 0) {
+              throw new ValidationError(
+                "No habits found in previous months to carry over."
+              );
+            }
+            sourceYearMonth = input.targetYearMonth;
+            habitIds = activeIds;
+          }
+        }
+
+        const validIds = Array.from(
+          new Set(habitIds.filter((id) => ownedById.has(id)))
+        );
+        if (validIds.length === 0) {
+          throw new ValidationError(
+            "No habits found in the selected previous month to carry over."
+          );
+        }
+
+        await this.habits.replaceMonthRoster(
+          userId,
+          input.targetYearMonth,
+          validIds,
+          tx
+        );
+
+        for (const habitId of validIds) {
+          const habit = ownedById.get(habitId)!;
+          const patch: { isArchived?: boolean; startDate?: string } = {};
+          if (input.targetYearMonth === currentMonth && habit.isArchived) {
+            patch.isArchived = false;
+          }
+          if (habit.startDate > calendar.monthEndKey) {
+            patch.startDate = calendar.monthStartKey;
+          }
+          if (
+            patch.isArchived !== undefined ||
+            patch.startDate !== undefined
+          ) {
+            await this.habits.updateHabitForUser(userId, habit.id, patch, tx);
+          }
+        }
+
+        return {
+          targetYearMonth: input.targetYearMonth,
+          sourceYearMonth,
+          habitIds: validIds,
+        };
+      })
+    );
+  }
+
+  /**
+   * Removes a habit from `yearMonth` ONLY without deleting or modifying its
+   * participation or historical logs in any other month.
+   */
+  async removeHabitFromMonth(
+    userId: string,
+    timezone: string,
+    input: { habitId: string; yearMonth: string }
+  ): Promise<{ yearMonth: string; removedHabitId: string }> {
+    if (!isValidYearMonth(input.yearMonth)) {
+      throw new ValidationError("Month must be in YYYY-MM format.");
+    }
+    const todayDateKey = getLocalDateKey(this.now(), timezone);
+    const currentMonth = todayDateKey.slice(0, 7);
+    if (input.yearMonth > currentMonth) {
+      throw new ValidationError(
+        "Future months cannot be tracked until they begin."
+      );
+    }
+
+    return withDbRetry(() =>
+      this.database.transaction(async (tx) => {
+        const target = await this.habits.getHabitForUser(
+          userId,
+          input.habitId,
+          tx
+        );
+        if (!target) {
+          throw new NotFoundError("Habit not found.");
+        }
+
+        const existingRoster = await this.habits.listMonthRosterHabitIds(
+          userId,
+          input.yearMonth,
+          tx
+        );
+        if (existingRoster.length === 0) {
+          // Materialize current active habits into an explicit roster for this month first
+          const allActive = await this.habits.listHabitsForUser(
+            userId,
+            { includeArchived: false },
+            tx
+          );
+          const remaining = allActive
+            .map((h) => h.id)
+            .filter((id) => id !== input.habitId);
+          await this.habits.replaceMonthRoster(
+            userId,
+            input.yearMonth,
+            remaining,
+            tx
+          );
+        } else {
+          await this.habits.removeHabitFromMonthRoster(
+            userId,
+            input.habitId,
+            input.yearMonth,
+            tx
+          );
+        }
+
+        return { yearMonth: input.yearMonth, removedHabitId: input.habitId };
+      })
+    );
   }
 
   async deleteHabit(userId: string, habitId: string): Promise<void> {
@@ -1003,6 +1388,23 @@ export class HabitService {
           throw new NotFoundError("Task not found.");
         }
 
+        const usesRosters = await this.habits.hasAnyMonthRosterForUser(
+          userId,
+          tx
+        );
+        if (usesRosters) {
+          await this.habits.upsertMonthRosterEntries(
+            [
+              {
+                userId,
+                habitId: habit.id,
+                yearMonth: todayDateKey.slice(0, 7),
+              },
+            ],
+            tx
+          );
+        }
+
         let initialLog: HabitLogRecord | null = null;
         if (taskMeta.status === "done") {
           const loggedAt = taskMeta.completedAt ?? nowMs;
@@ -1053,7 +1455,8 @@ export class HabitService {
   async bulkImportHabits(
     userId: string,
     timezone: string,
-    rawText: string
+    rawText: string,
+    targetYearMonth?: string
   ): Promise<HabitRecord[]> {
     const parsed = parseBulkHabitImport(rawText);
     if (parsed.error || parsed.rows.length === 0) {
@@ -1063,6 +1466,17 @@ export class HabitService {
     }
 
     const todayDateKey = getLocalDateKey(this.now(), timezone);
+    const currentMonth = todayDateKey.slice(0, 7);
+    if (targetYearMonth) {
+      if (!isValidYearMonth(targetYearMonth)) {
+        throw new ValidationError("Month must be in YYYY-MM format.");
+      }
+      if (targetYearMonth > currentMonth) {
+        throw new ValidationError(
+          "Future months cannot be tracked until they begin."
+        );
+      }
+    }
 
     return withDbRetry(() =>
       this.database.transaction(async (tx) => {
@@ -1072,7 +1486,7 @@ export class HabitService {
           parsed.rows.length
         );
 
-        return this.habits.createHabitsBatch(
+        const created = await this.habits.createHabitsBatch(
           parsed.rows.map((row, idx) => ({
             userId,
             title: row.title,
@@ -1080,7 +1494,10 @@ export class HabitService {
             cadenceType: row.cadenceType,
             scheduledDaysJson: JSON.stringify(row.scheduledDays),
             weeklyTargetCount: row.weeklyTargetCount,
-            startDate: row.startDate ?? todayDateKey,
+            startDate:
+              row.startDate && row.startDate.slice(0, 7) <= currentMonth
+                ? row.startDate
+                : todayDateKey,
             preferredTime: row.preferredTime,
             linkedProjectId: null,
             autoSyncDailyTask: false,
@@ -1088,6 +1505,33 @@ export class HabitService {
           })),
           tx
         );
+
+        const hadAnyRoster = await this.habits.hasAnyMonthRosterForUser(
+          userId,
+          tx
+        );
+        if ((hadAnyRoster || targetYearMonth) && created.length > 0) {
+          const enrollMonth = targetYearMonth ?? currentMonth;
+          const habitIdsToEnroll = hadAnyRoster
+            ? created.map((habit) => habit.id)
+            : (
+                await this.habits.listHabitsForUser(
+                  userId,
+                  { includeArchived: false },
+                  tx
+                )
+              ).map((h) => h.id);
+          await this.habits.upsertMonthRosterEntries(
+            habitIdsToEnroll.map((habitId) => ({
+              userId,
+              habitId,
+              yearMonth: enrollMonth,
+            })),
+            tx
+          );
+        }
+
+        return created;
       })
     );
   }
@@ -1135,8 +1579,15 @@ export class HabitService {
       );
     }
 
+    // Derive month rosters from parsed dates when not explicitly supplied by .xlsx sheets
+    // so CSV/TXT/pasted multi-month grids receive identical rename/merge/archival detection.
+    const effectiveRosters =
+      input.monthRosters.length > 0
+        ? input.monthRosters
+        : deriveMonthRostersFromLogs(rows);
+
     const evolution = planHabitEvolution(
-      input.monthRosters,
+      effectiveRosters,
       input.aliasOverrides
     );
     warnings.push(...evolution.warnings);
@@ -1156,60 +1607,91 @@ export class HabitService {
       lastDate: string;
       startDate: string;
       lastMonth: string | null;
+      sourceTitleKeys: Set<string>;
     }
     const groupByKey = new Map<string, CanonicalGroup>();
     for (const row of resolvedRows) {
       const key = normalizeImportTitle(row.canonicalTitle);
+      const sourceKey = normalizeImportTitle(row.title);
       const existing = groupByKey.get(key);
       if (!existing) {
         groupByKey.set(key, {
           title: row.canonicalTitle,
           firstDate: row.dateKey,
           lastDate: row.dateKey,
+          // Keep the actual first day this habit has a logged mark — never pull back to
+          // YYYY-MM-01, which would penalize mid-month starters with phantom missed days.
           startDate: row.dateKey,
-          lastMonth: null,
+          lastMonth: row.dateKey.slice(0, 7),
+          sourceTitleKeys: new Set([key, sourceKey]),
         });
         continue;
       }
+      existing.sourceTitleKeys.add(sourceKey);
       if (row.dateKey < existing.firstDate) {
         existing.firstDate = row.dateKey;
         existing.startDate = row.dateKey;
       }
-      if (row.dateKey > existing.lastDate) existing.lastDate = row.dateKey;
+      if (row.dateKey > existing.lastDate) {
+        existing.lastDate = row.dateKey;
+        existing.lastMonth = row.dateKey.slice(0, 7);
+      }
     }
 
     for (const group of evolution.groups) {
       const entry = groupByKey.get(normalizeImportTitle(group.canonicalTitle));
       if (!entry) continue;
-      entry.lastMonth = group.lastMonth || null;
-      if (group.firstMonth) {
-        const monthStart = monthStartKey(group.firstMonth);
-        if (monthStart < entry.startDate) entry.startDate = monthStart;
+      if (group.lastMonth) {
+        entry.lastMonth = group.lastMonth;
+      }
+      for (const sourceTitle of group.sourceTitles) {
+        entry.sourceTitleKeys.add(normalizeImportTitle(sourceTitle));
       }
     }
 
-    const allHabits = await this.habits.listHabitsForUser(userId, {
-      includeArchived: true,
-    });
-    const existingAliases = await this.habits.listAliasesForUser(userId);
-    const habitByKey = new Map<string, HabitRecord>();
-    for (const habit of allHabits) {
-      habitByKey.set(normalizeImportTitle(habit.title), habit);
-    }
-    for (const alias of existingAliases) {
-      if (habitByKey.has(alias.normalizedTitle)) continue;
-      const habit = allHabits.find((candidate) => candidate.id === alias.habitId);
-      if (habit) habitByKey.set(alias.normalizedTitle, habit);
-    }
-
     const canonicalKeys = Array.from(groupByKey.keys());
-    const missingKeys = canonicalKeys.filter((key) => !habitByKey.has(key));
-    const matchedTitleCount = canonicalKeys.length - missingKeys.length;
 
     return withDbRetry(() =>
       this.database.transaction(async (tx) => {
+        const [allHabits, existingAliases] = await Promise.all([
+          this.habits.listHabitsForUser(userId, { includeArchived: true }, tx),
+          this.habits.listAliasesForUser(userId, tx),
+        ]);
+
+        const habitById = new Map<string, HabitRecord>(
+          allHabits.map((h) => [h.id, h])
+        );
+        const habitByKey = new Map<string, HabitRecord>();
+        for (const habit of allHabits) {
+          habitByKey.set(normalizeImportTitle(habit.title), habit);
+        }
+        for (const alias of existingAliases) {
+          if (habitByKey.has(alias.normalizedTitle)) continue;
+          const habit = habitById.get(alias.habitId);
+          if (habit) habitByKey.set(alias.normalizedTitle, habit);
+        }
+
+        // Also match an evolution group against any of its historical source titles
+        // so incremental month-by-month imports after a rename link to the existing habit.
+        for (const key of canonicalKeys) {
+          if (habitByKey.has(key)) continue;
+          const group = groupByKey.get(key)!;
+          for (const sourceKey of group.sourceTitleKeys) {
+            const matchedHabit = habitByKey.get(sourceKey);
+            if (matchedHabit) {
+              habitByKey.set(key, matchedHabit);
+              break;
+            }
+          }
+        }
+
+        const missingKeys = canonicalKeys.filter((key) => !habitByKey.has(key));
+        const matchedTitleCount = canonicalKeys.length - missingKeys.length;
+
         let createdHabits: HabitRecord[] = [];
-        const effectiveKeys = input.createMissing ? canonicalKeys : matchedKeys(canonicalKeys, habitByKey);
+        const effectiveKeys = input.createMissing
+          ? canonicalKeys
+          : matchedKeys(canonicalKeys, habitByKey);
 
         if (input.createMissing && missingKeys.length > 0) {
           const positions = await this.allocateHabitPositions(
@@ -1238,9 +1720,33 @@ export class HabitService {
           }
         }
 
-        // Archive habits that disappear after their last source month.
+        // Backfill startDate on existing matched habits when imported history predates
+        // their current startDate so historical analytics include every imported mark.
+        for (const key of effectiveKeys) {
+          const habit = habitByKey.get(key);
+          const group = groupByKey.get(key);
+          if (!habit || !group) continue;
+          if (group.startDate < habit.startDate) {
+            const updated = await this.habits.updateHabitForUser(
+              userId,
+              habit.id,
+              { startDate: group.startDate },
+              tx
+            );
+            if (updated) {
+              habitByKey.set(key, updated);
+            }
+          }
+        }
+
+        // Archive habits that disappear after their last source month (only when
+        // importing across multiple months so a single-month import never archives).
         const archivedHabits: HabitRecord[] = [];
-        if (input.archiveRemoved && evolution.lastMonth) {
+        const hasMultipleMonths =
+          evolution.firstMonth !== null &&
+          evolution.lastMonth !== null &&
+          evolution.firstMonth < evolution.lastMonth;
+        if (input.archiveRemoved && hasMultipleMonths && evolution.lastMonth) {
           for (const key of effectiveKeys) {
             const habit = habitByKey.get(key);
             const group = groupByKey.get(key);
@@ -1253,21 +1759,31 @@ export class HabitService {
                 { isArchived: true },
                 tx
               );
-              if (updated) archivedHabits.push(updated);
-            } else if (group.lastMonth === evolution.lastMonth && habit.isArchived) {
+              if (updated) {
+                habitByKey.set(key, updated);
+                archivedHabits.push(updated);
+              }
+            } else if (
+              group.lastMonth === evolution.lastMonth &&
+              habit.isArchived
+            ) {
               // A removed habit came back — restore it instead of double-creating.
-              await this.habits.updateHabitForUser(
+              const restored = await this.habits.updateHabitForUser(
                 userId,
                 habit.id,
                 { isArchived: false },
                 tx
               );
+              if (restored) {
+                habitByKey.set(key, restored);
+              }
             }
           }
         }
 
+        const effectiveKeySet = new Set(effectiveKeys);
         const importRows = resolvedRows.filter((row) =>
-          effectiveKeys.includes(normalizeImportTitle(row.canonicalTitle))
+          effectiveKeySet.has(normalizeImportTitle(row.canonicalTitle))
         );
 
         if (importRows.length === 0) {
@@ -1301,24 +1817,60 @@ export class HabitService {
           existingLogs.map((log) => [`${log.habitId}|${log.dateKey}`, log.note])
         );
 
-        const logInputs = importRows.map((row) => {
-          const habit = habitByKey.get(normalizeImportTitle(row.canonicalTitle))!;
-          return {
+        // Deduplicate by (habitId, dateKey) after alias/merge resolution using
+        // deterministic precedence (done > skipped > missed) so merged habits never
+        // emit duplicate keys or overwrite a completion with a miss.
+        const dedupedLogInputs = new Map<
+          string,
+          {
+            habitId: string;
+            userId: string;
+            dateKey: string;
+            status: HabitLogStatus;
+            note: string | null;
+            loggedAt: number;
+            isBackfilledLate: boolean;
+          }
+        >();
+
+        for (const row of importRows) {
+          const habit = habitByKey.get(normalizeImportTitle(row.canonicalTitle));
+          if (!habit) continue;
+          const compositeKey = `${habit.id}|${row.dateKey}`;
+          const prev = dedupedLogInputs.get(compositeKey);
+          if (
+            prev &&
+            MERGE_STATUS_PRIORITY[prev.status] >= MERGE_STATUS_PRIORITY[row.status]
+          ) {
+            continue;
+          }
+          dedupedLogInputs.set(compositeKey, {
             habitId: habit.id,
             userId,
             dateKey: row.dateKey,
             status: row.status,
-            note: noteByKey.get(`${habit.id}|${row.dateKey}`) ?? null,
+            note: noteByKey.get(compositeKey) ?? null,
             loggedAt: nowMs,
             isBackfilledLate: computeIsBackfilledLate(
               row.dateKey,
               nowMs,
               timezone
             ),
-          };
-        });
+          });
+        }
 
+        const logInputs = Array.from(dedupedLogInputs.values());
         const saved = await this.habits.upsertLogsBatch(logInputs, tx);
+
+        // Enroll every imported habit into the exact months where it had marks
+        // so switching months shows ONLY that month's curated habit roster.
+        const rosterEntries = logInputs.map((log) => ({
+          userId,
+          habitId: log.habitId,
+          yearMonth: log.dateKey.slice(0, 7),
+        }));
+        await this.habits.upsertMonthRosterEntries(rosterEntries, tx);
+
         const syncedTaskCount = await this.tasks.syncLinkedTasksForHabitLogs(
           {
             userId,
@@ -1333,7 +1885,10 @@ export class HabitService {
         );
 
         // Persist source-title -> habit aliases so later imports keep identity.
-        const aliasMeta = new Map<string, { label: string; first: string; last: string }>();
+        const aliasMeta = new Map<
+          string,
+          { label: string; first: string; last: string }
+        >();
         for (const row of importRows) {
           const key = normalizeImportTitle(row.title);
           const meta = aliasMeta.get(key);
@@ -1348,36 +1903,42 @@ export class HabitService {
             if (row.dateKey > meta.last) meta.last = row.dateKey;
           }
         }
-        const habitTitleKeys = new Set(
-          allHabits.map((habit) => normalizeImportTitle(habit.title))
-        );
-        const aliasInputs = Array.from(aliasMeta.entries())
-          .filter(([key]) => {
-            const canonicalKey = normalizeImportTitle(
-              resolveCanonicalTitle(
-                aliasMeta.get(key)!.label,
-                evolution,
-                input.aliasOverrides
-              )
-            );
-            return key !== canonicalKey && !habitTitleKeys.has(key);
-          })
-          .map(([key, meta]) => {
-            const canonicalTitle = resolveCanonicalTitle(
-              meta.label,
-              evolution,
-              input.aliasOverrides
-            );
-            return {
-              userId,
-              habitId: habitByKey.get(normalizeImportTitle(canonicalTitle))!.id,
-              sourceTitle: meta.label,
-              normalizedTitle: key,
-              firstSeenDateKey: meta.first,
-              lastSeenDateKey: meta.last,
-            };
+        const habitTitleKeys = new Set([
+          ...allHabits.map((habit) => normalizeImportTitle(habit.title)),
+          ...createdHabits.map((habit) => normalizeImportTitle(habit.title)),
+        ]);
+        const aliasInputs: Array<{
+          userId: string;
+          habitId: string;
+          sourceTitle: string;
+          normalizedTitle: string;
+          firstSeenDateKey: string;
+          lastSeenDateKey: string;
+        }> = [];
+        for (const [key, meta] of aliasMeta.entries()) {
+          const canonicalTitle = resolveCanonicalTitle(
+            meta.label,
+            evolution,
+            input.aliasOverrides
+          );
+          const canonicalKey = normalizeImportTitle(canonicalTitle);
+          const targetHabit = habitByKey.get(canonicalKey);
+          if (!targetHabit) continue;
+          const targetTitleKey = normalizeImportTitle(targetHabit.title);
+          if (key === targetTitleKey || habitTitleKeys.has(key)) continue;
+          aliasInputs.push({
+            userId,
+            habitId: targetHabit.id,
+            sourceTitle: meta.label,
+            normalizedTitle: key,
+            firstSeenDateKey: meta.first,
+            lastSeenDateKey: meta.last,
           });
-        const savedAliases = await this.habits.upsertAliasesBatch(aliasInputs, tx);
+        }
+        const savedAliases = await this.habits.upsertAliasesBatch(
+          aliasInputs,
+          tx
+        );
 
         return {
           importedCount: saved.length,

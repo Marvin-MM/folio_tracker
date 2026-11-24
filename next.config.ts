@@ -9,7 +9,7 @@ const cspDirectives = [
   "img-src 'self' data: blob: https://lh3.googleusercontent.com https://*.googleusercontent.com",
   "font-src 'self' data:",
   "connect-src 'self' https://accounts.google.com https://oauth2.googleapis.com https://fcm.googleapis.com https://*.push.services.mozilla.com https://web.push.apple.com https://*.notify.windows.com",
-  "worker-src 'self'",
+  "worker-src 'self' blob:",
   "manifest-src 'self'",
   "frame-src 'self' https://accounts.google.com",
   "form-action 'self' https://accounts.google.com",
@@ -32,6 +32,10 @@ const nextConfig: NextConfig = {
     staleTimes: {
       dynamic: 60,
       static: 180,
+    },
+    // Allow 20,000-row habit history imports (~1.2–1.6 MB raw CSV/grid) cleanly
+    serverActions: {
+      bodySizeLimit: "2mb",
     },
   },
   async headers() {

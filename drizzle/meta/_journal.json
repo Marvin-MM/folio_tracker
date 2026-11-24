@@ -43,6 +43,13 @@
       "when": 1795550001000,
       "tag": "0005_admin_portal",
       "breakpoints": true
+    },
+    {
+      "idx": 6,
+      "version": "6",
+      "when": 1795550002000,
+      "tag": "0006_habit_month_rosters",
+      "breakpoints": true
     }
   ]
 }

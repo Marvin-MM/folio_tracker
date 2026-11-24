@@ -24,9 +24,10 @@ describe("habit evolution planning", () => {
     expect(titleSimilarity("Wake up at 4:30", "Wake up 4:30")).toBeGreaterThan(0.6);
     expect(titleSimilarity("Journal", "Journal (Dialy Prompt Challenge )")).toBeGreaterThan(0.6);
     expect(titleSimilarity("Edu - Podcasts", "French + podcast")).toBeLessThan(0.6);
+    // Distinct parenthetical qualifiers stay separate so they do not falsely auto-merge
     expect(
       titleSimilarity("Hydrate (Full Black Bottle)", "Hydrate (Hot spices)")
-    ).toBeGreaterThan(0.6);
+    ).toBeLessThan(0.6);
   });
 
   it("keeps a renamed habit as one identity across months", () => {

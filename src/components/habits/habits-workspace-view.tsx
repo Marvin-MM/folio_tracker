@@ -12,9 +12,11 @@ import { useRouter } from "next/navigation";
 import {
   AlertCircle,
   ArchiveRestore,
+  ArrowRightCircle,
   ChevronLeft,
   ChevronRight,
   FileSpreadsheet,
+  ListChecks,
   Plus,
   Repeat2,
   Settings2,
@@ -22,12 +24,17 @@ import {
   Upload,
 } from "lucide-react";
 import { toast } from "sonner";
-import { archiveHabitAction, logHabitDayAction } from "@/actions/habits";
+import {
+  archiveHabitAction,
+  carryOverHabitMonthRosterAction,
+  logHabitDayAction,
+} from "@/actions/habits";
 import { BulkImportHabitsDialog } from "@/components/habits/bulk-import-habits-dialog";
 import { BulkImportHistoryDialog } from "@/components/habits/bulk-import-history-dialog";
 import { CreateHabitDialog } from "@/components/habits/create-habit-dialog";
 import { HabitSettingsSheet } from "@/components/habits/habit-settings-sheet";
 import { HabitsMatrix } from "@/components/habits/habits-matrix";
+import { ManageMonthRosterDialog } from "@/components/habits/manage-month-roster-dialog";
 import { useDetailSheet } from "@/components/shell/detail-sheet-context";
 import { useWorkspaceChrome } from "@/components/shell/workspace-chrome-context";
 import { Badge } from "@/components/ui/badge";
@@ -155,6 +162,9 @@ export function HabitsWorkspaceView({
   const [createOpen, setCreateOpen] = useState(false);
   const [bulkOpen, setBulkOpen] = useState(false);
   const [historyOpen, setHistoryOpen] = useState(false);
+  const [rosterOpen, setRosterOpen] = useState(false);
+  const [rosterSession, setRosterSession] = useState(0);
+  const [rosterInitialIds, setRosterInitialIds] = useState<string[]>([]);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const showArchived = useWorkspaceUIStore((s) => s.habitsShowArchived);
   const setShowArchived = useWorkspaceUIStore((s) => s.setHabitsShowArchived);
@@ -211,7 +221,7 @@ export function HabitsWorkspaceView({
     if (!optimisticDirty && activeScoringMode === workspace.scoringMode) {
       return workspace.analytics;
     }
-    return computeHabitMonthAnalytics({
+    const recomputed = computeHabitMonthAnalytics({
       yearMonth: workspace.yearMonth,
       todayDateKey: workspace.todayDateKey,
       weekStartsOn: workspace.settings.weekStartsOn === 0 ? 0 : 1,
@@ -226,21 +236,63 @@ export function HabitsWorkspaceView({
       })),
       logs: Object.values(optimisticLogsByKey),
     });
+
+    // Streaks span across month boundaries and do not depend on scoringMode;
+    // preserve authoritative multi-month streaks when only scoringMode changed.
+    if (!optimisticDirty) {
+      for (const [habitId, summary] of Object.entries(recomputed.byHabitId)) {
+        const serverSummary = workspace.analytics.byHabitId[habitId];
+        if (serverSummary) {
+          summary.currentStreak = serverSummary.currentStreak;
+          summary.bestStreak = serverSummary.bestStreak;
+          summary.streakUnit = serverSummary.streakUnit;
+        }
+      }
+    }
+
+    return recomputed;
   }, [activeScoringMode, optimisticDirty, optimisticLogsByKey, workspace]);
 
   const currentMonth = workspace.todayDateKey.slice(0, 7);
+  const isAtCurrentMonth = workspace.yearMonth >= currentMonth;
 
   const navigateMonth = (nextMonth: string) => {
+    // Future months cannot be tracked until they begin
+    const clampedMonth = nextMonth > currentMonth ? currentMonth : nextMonth;
     if (onSelectMonth) {
-      onSelectMonth(nextMonth);
+      onSelectMonth(clampedMonth);
       return;
     }
     const params = new URLSearchParams();
-    params.set("month", nextMonth);
+    params.set("month", clampedMonth);
     if (activeScoringMode !== "elapsed") {
       params.set("mode", activeScoringMode);
     }
     router.push(`/app/habits?${params.toString()}`);
+  };
+
+  const openManageMonthRoster = (presetIds?: string[]) => {
+    setRosterInitialIds(presetIds ?? workspace.habits.map((h) => h.id));
+    setRosterSession((n) => n + 1);
+    setRosterOpen(true);
+  };
+
+  const handleCarryOverPreviousMonth = () => {
+    if (!workspace.previousRosterSource) return;
+    startTransition(async () => {
+      const result = await carryOverHabitMonthRosterAction({
+        targetYearMonth: workspace.yearMonth,
+        sourceYearMonth: workspace.previousRosterSource!.yearMonth,
+      });
+      if (!result.ok) {
+        toast.error(result.error.message);
+        return;
+      }
+      await invalidate(["habits", "today", "sidebar", "admin"]);
+      toast.success(
+        `Carried over ${result.data.habitIds.length} habits from ${workspace.previousRosterSource!.monthLabel} into ${analytics.calendar.monthLabel}.`
+      );
+    });
   };
 
   const handleSelectScoringMode = (nextMode: ScoringMode) => {
@@ -337,12 +389,29 @@ export function HabitsWorkspaceView({
         open={createOpen}
         onOpenChange={setCreateOpen}
         todayDateKey={workspace.todayDateKey}
+        targetYearMonth={workspace.yearMonth}
         projects={projects}
       />
-      <BulkImportHabitsDialog open={bulkOpen} onOpenChange={setBulkOpen} />
+      <BulkImportHabitsDialog
+        open={bulkOpen}
+        onOpenChange={setBulkOpen}
+        targetYearMonth={workspace.yearMonth}
+        onSwitchToHistoryImport={() => setHistoryOpen(true)}
+      />
       <BulkImportHistoryDialog
         open={historyOpen}
         onOpenChange={setHistoryOpen}
+        todayDateKey={workspace.todayDateKey}
+      />
+      <ManageMonthRosterDialog
+        key={`${workspace.yearMonth}-${rosterSession}`}
+        open={rosterOpen}
+        onOpenChange={setRosterOpen}
+        yearMonth={workspace.yearMonth}
+        monthLabel={analytics.calendar.monthLabel}
+        allHabits={workspace.allHabits}
+        initialSelectedIds={rosterInitialIds}
+        previousRosterSource={workspace.previousRosterSource}
       />
       <HabitSettingsSheet
         open={settingsOpen}
@@ -386,17 +455,33 @@ export function HabitsWorkspaceView({
               type="button"
               variant="ghost"
               size="icon"
-              aria-label="Next month"
-              onMouseEnter={() =>
-                onPrefetchMonth?.(shiftYearMonth(workspace.yearMonth, 1))
+              disabled={isAtCurrentMonth}
+              aria-label={
+                isAtCurrentMonth
+                  ? "Future months unlock when they begin"
+                  : "Next month"
               }
-              onFocus={() =>
-                onPrefetchMonth?.(shiftYearMonth(workspace.yearMonth, 1))
+              title={
+                isAtCurrentMonth
+                  ? "Future months unlock when they begin"
+                  : "Next month"
               }
-              onClick={() =>
-                navigateMonth(shiftYearMonth(workspace.yearMonth, 1))
-              }
-              className="mira-icon-btn rounded-l-none text-muted-foreground hover:text-foreground"
+              onMouseEnter={() => {
+                if (!isAtCurrentMonth) {
+                  onPrefetchMonth?.(shiftYearMonth(workspace.yearMonth, 1));
+                }
+              }}
+              onFocus={() => {
+                if (!isAtCurrentMonth) {
+                  onPrefetchMonth?.(shiftYearMonth(workspace.yearMonth, 1));
+                }
+              }}
+              onClick={() => {
+                if (!isAtCurrentMonth) {
+                  navigateMonth(shiftYearMonth(workspace.yearMonth, 1));
+                }
+              }}
+              className="mira-icon-btn rounded-l-none text-muted-foreground hover:text-foreground disabled:opacity-35"
             >
               <ChevronRight className="size-3.5" />
             </Button>
@@ -452,6 +537,21 @@ export function HabitsWorkspaceView({
 
         {/* Right Actions */}
         <div className="flex flex-wrap items-center gap-1.5">
+          {workspace.allHabits.length > 0 ? (
+            <Button
+              type="button"
+              variant="outline"
+              size="sm"
+              onClick={() => openManageMonthRoster()}
+              className="mira-row gap-1.5 border-border bg-card px-2.5 text-xs"
+            >
+              <ListChecks className="size-3.5 text-done" aria-hidden="true" />
+              Month habits
+              <span className="mono-tabular text-[10px] text-muted-foreground">
+                ({workspace.habits.length})
+              </span>
+            </Button>
+          ) : null}
           <Button
             type="button"
             variant="outline"
@@ -589,8 +689,72 @@ export function HabitsWorkspaceView({
         </div>
       </section>
 
-      {/* Main Content: Empty State OR Matrix + Analytics Charts */}
+      {/* Main Content: Empty State / Carry-Over Prompt OR Matrix + Analytics Charts */}
       {workspace.habits.length === 0 ? (
+        workspace.previousRosterSource ? (
+          <div className="rounded-md border border-dashed border-border bg-card px-6 py-10 text-center">
+            <div className="mx-auto flex size-9 items-center justify-center rounded-md border border-border bg-background text-done">
+              <ArrowRightCircle className="size-4" aria-hidden="true" />
+            </div>
+            <h2 className="mt-3 text-sm font-semibold text-foreground">
+              Set up {analytics.calendar.monthLabel} habits
+            </h2>
+            <p className="mx-auto mt-1 max-w-md text-xs leading-relaxed text-muted-foreground">
+              {workspace.previousRosterSource.monthLabel} had{" "}
+              <span className="mono-tabular font-medium text-foreground">
+                {workspace.previousRosterSource.habitIds.length}
+              </span>{" "}
+              tracked habits. Carry them into {analytics.calendar.monthLabel} as
+              is, customize the list for this month, or import historical data.
+            </p>
+            <div className="mt-4 flex flex-wrap items-center justify-center gap-2">
+              <Button
+                type="button"
+                size="sm"
+                onClick={handleCarryOverPreviousMonth}
+                className="mira-row gap-1.5 px-3.5 text-xs"
+              >
+                <ArrowRightCircle className="size-3.5" aria-hidden="true" />
+                Carry over {workspace.previousRosterSource.habitIds.length} from{" "}
+                {workspace.previousRosterSource.monthLabel}
+              </Button>
+              <Button
+                type="button"
+                variant="outline"
+                size="sm"
+                onClick={() =>
+                  openManageMonthRoster(
+                    workspace.previousRosterSource!.habitIds
+                  )
+                }
+                className="mira-row gap-1.5 px-3 text-xs"
+              >
+                <ListChecks className="size-3.5" aria-hidden="true" />
+                Customize from previous month
+              </Button>
+              <Button
+                type="button"
+                variant="outline"
+                size="sm"
+                onClick={() => setCreateOpen(true)}
+                className="mira-row gap-1.5 px-3 text-xs"
+              >
+                <Plus className="size-3.5" aria-hidden="true" />
+                New habit
+              </Button>
+              <Button
+                type="button"
+                variant="outline"
+                size="sm"
+                onClick={() => setHistoryOpen(true)}
+                className="mira-row gap-1.5 px-3 text-xs"
+              >
+                <FileSpreadsheet className="size-3.5" aria-hidden="true" />
+                Import history
+              </Button>
+            </div>
+          </div>
+        ) : (
         <div className="rounded-md border border-dashed border-border bg-card px-6 py-12 text-center">
           <div className="mx-auto flex size-9 items-center justify-center rounded-md border border-border bg-background text-done">
             <Repeat2 className="size-4" />
@@ -635,6 +799,7 @@ export function HabitsWorkspaceView({
             </Button>
           </div>
         </div>
+        )
       ) : (
         <>
           <HabitsMatrix

@@ -16,17 +16,34 @@ import {
 import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
 import {
+  IMPORT_FILE_ACCEPT,
+  isLikelyHistoryWorkbook,
   readWorkbook,
+  validateImportFile,
   worksheetToHabitCsv,
 } from "@/lib/spreadsheet-import";
 import {
   MAX_BULK_IMPORT_HABITS,
   parseBulkHabitImport,
+  type ParsedBulkHabitRow,
 } from "@/server/domain/habit-analytics";
+
+function formatPreviewCadence(row: ParsedBulkHabitRow): string {
+  if (row.cadenceType === "daily") return "Daily";
+  if (row.cadenceType === "weekly_target") {
+    return `${row.weeklyTargetCount ?? 3}×/wk`;
+  }
+  const key = row.scheduledDays.join(",");
+  if (key === "1,2,3,4,5") return "Mon–Fri";
+  if (key === "0,6") return "Weekends";
+  return `${row.scheduledDays.length}d/wk`;
+}
 
 interface BulkImportHabitsDialogProps {
   open: boolean;
   onOpenChange: (open: boolean) => void;
+  targetYearMonth?: string;
+  onSwitchToHistoryImport?: () => void;
 }
 
 const SAMPLE_CSV = `title,category,cadence,preferredTime,startDate
@@ -38,8 +55,11 @@ Read 20 pages,Learning,daily,21:30,`;
 export function BulkImportHabitsDialog({
   open,
   onOpenChange,
+  targetYearMonth,
+  onSwitchToHistoryImport,
 }: BulkImportHabitsDialogProps) {
   const [rawText, setRawText] = useState("");
+  const [historyFileHint, setHistoryFileHint] = useState(false);
   const [isPending, startTransition] = useTransition();
   const invalidate = useInvalidateWorkspace();
   const fileInputRef = useRef<HTMLInputElement>(null);
@@ -52,6 +72,7 @@ export function BulkImportHabitsDialog({
   const handleOpenChange = (nextOpen: boolean) => {
     if (!nextOpen) {
       setRawText("");
+      setHistoryFileHint(false);
     }
     onOpenChange(nextOpen);
   };
@@ -61,11 +82,20 @@ export function BulkImportHabitsDialog({
   ) => {
     const file = event.target.files?.[0];
     if (!file) return;
+    setHistoryFileHint(false);
     try {
-      if (/\.xlsx$/i.test(file.name)) {
+      const checked = await validateImportFile(file);
+      if (checked.kind === "xlsx") {
         const sheets = await readWorkbook(file);
         if (sheets.length === 0) {
           toast.error("That workbook has no sheets.");
+          return;
+        }
+        if (isLikelyHistoryWorkbook(sheets)) {
+          setHistoryFileHint(true);
+          toast.warning(
+            "This workbook contains a monthly completion grid. Use 'Import History' to import all months and marks."
+          );
           return;
         }
         setRawText(worksheetToHabitCsv(sheets[0]!));
@@ -73,8 +103,12 @@ export function BulkImportHabitsDialog({
       } else {
         setRawText(await file.text());
       }
-    } catch {
-      toast.error("Could not read selected file.");
+    } catch (error) {
+      toast.error(
+        error instanceof Error
+          ? error.message
+          : "Only .xlsx, .csv, and .txt files can be imported."
+      );
     } finally {
       if (fileInputRef.current) {
         fileInputRef.current.value = "";
@@ -89,12 +123,15 @@ export function BulkImportHabitsDialog({
     }
 
     startTransition(async () => {
-      const result = await bulkImportHabitsAction({ rawText });
+      const result = await bulkImportHabitsAction({
+        rawText,
+        targetYearMonth,
+      });
       if (!result.ok) {
         toast.error(result.error.message);
         return;
       }
-      await invalidate(["habits", "today", "sidebar"]);
+      await invalidate(["habits", "today", "sidebar", "admin"]);
       toast.success(
         `Imported ${result.data.importedCount} habit${result.data.importedCount === 1 ? "" : "s"}.`
       );
@@ -123,9 +160,12 @@ export function BulkImportHabitsDialog({
           <div className="flex flex-wrap items-center justify-between gap-2">
             <div className="flex items-center gap-1.5">
               <input
+                id="bulk-habits-file"
+                name="bulkHabitsFile"
+                aria-label="Upload habits CSV, TXT, or Excel file"
                 ref={fileInputRef}
                 type="file"
-                accept=".csv,.txt,.xlsx,text/csv,text/plain"
+                accept={IMPORT_FILE_ACCEPT}
                 onChange={handleFileChange}
                 className="hidden"
               />
@@ -164,6 +204,29 @@ export function BulkImportHabitsDialog({
             ) : null}
           </div>
 
+          {historyFileHint ? (
+            <div className="flex flex-wrap items-center justify-between gap-2 rounded-md border border-reminder/35 bg-reminder/10 px-3 py-2 text-xs text-foreground">
+              <span>
+                This Excel file contains monthly habit tracking grids. Use{" "}
+                <strong>Import History</strong> to import all months &amp; marks.
+              </span>
+              {onSwitchToHistoryImport ? (
+                <Button
+                  type="button"
+                  variant="outline"
+                  size="xs"
+                  onClick={() => {
+                    handleOpenChange(false);
+                    onSwitchToHistoryImport();
+                  }}
+                  className="h-7 px-2.5 text-xs"
+                >
+                  Open Import History
+                </Button>
+              ) : null}
+            </div>
+          ) : null}
+
           <div className="space-y-1.5">
             <Label htmlFor="bulk-habits-input" className="text-xs">
               Habits list or CSV
@@ -175,7 +238,7 @@ export function BulkImportHabitsDialog({
               placeholder={SAMPLE_CSV}
               value={rawText}
               onChange={(e) => setRawText(e.target.value)}
-              className="bg-background font-mono text-xs leading-relaxed"
+              className="max-h-40 resize-y overflow-y-auto bg-background font-mono text-xs leading-relaxed"
             />
             <p className="text-[11px] text-muted-foreground">
               Cadence accepts <code className="font-mono">daily</code>,{" "}
@@ -203,7 +266,9 @@ export function BulkImportHabitsDialog({
                     <tr key={row.title} className="border-t border-border/60">
                       <td className="py-1 pr-2 font-medium">{row.title}</td>
                       <td className="py-1 pr-2">{row.category ?? "—"}</td>
-                      <td className="py-1 pr-2">{row.cadenceType}</td>
+                      <td className="py-1 pr-2">
+                        {formatPreviewCadence(row)}
+                      </td>
                       <td className="py-1 font-mono">
                         {row.startDate ?? "today"}
                       </td>

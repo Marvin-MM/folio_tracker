@@ -14,7 +14,7 @@ Designed around a tactile **Warm Paper (Light)** and **Carbon Ink (Dark)** aesth
 - **Quiet & Timed Markdown Notes:** Lightweight markdown notes with tags, pinning, and instant search—quiet by default, with optional timed reminders attached atomically.
 - **Natural-Language Quick Capture (`⌘K`):** Live inline date/time parsing anchored to your IANA timezone (`"Pay invoice tomorrow 9am"`, `"n: Renewal code next Friday 10am"`).
 - **Durable Hybrid Reminders & PWA Push:** 14-day scheduling horizon, 5-minute Outbox Reconciliation, optimistic version locking, Service Worker push quick actions (`Snooze 15m`, `Mark Done`), automatic `404`/`410` endpoint pruning, and Resend email fallback.
-- **Real-Calendar Habit Tracking & Honest Analytics:** Full 28–31 day monthly calendar matrix with optimistic cell cycling (`done` / `skipped` / `missed`), elapsed-to-date scoring, mid-month `startDate` support, weekly-target habits, rest passes that protect streaks, bulk newline/CSV import, monochrome Recharts trend visualizations, bidirectional ACID Task ↔ Habit sync, and 15-minute timezone-aware habit nudges.
+- **Real-Calendar Habit Tracking, Per-Month Rosters & Excel/CSV History Import:** Full 28–31 day monthly calendar matrix with optimistic cell cycling (`done` / `skipped` / `missed`), elapsed-to-date scoring, mid-month `startDate` support, weekly-target habits, rest passes that protect streaks, per-month curated habit rosters (`habit_month_rosters`) with 1-click previous-month carry-over & editing, strict future-month tracking lock (months unlock when they begin), rename/merge-aware bulk history import (strictly restricted to `.xlsx`, `.csv`, `.txt` up to 20,000 marks via `habit_import_aliases`), bulk habit-definition import with optional `startDate`, monochrome Recharts trend visualizations, bidirectional ACID Task ↔ Habit sync, and 15-minute timezone-aware habit nudges.
 - **Accountability Circle & Dynamic Review Windows:** Invite accountability monitors via Quick-Pick collaborators or anti-enumeration email/token links (`/invite/habit/[token]`), share all or strictly selected habits (zero-leak DAL projection), enforce global or per-monitor commenting cadences (`weekly_window`, `interval_days`, or `anytime`) evaluated in the owner's IANA timezone, exchange threaded cycle reviews and monochrome reactions (`ack`, `solid`, `push`), and send automated hourly review-open digests.
 - **Shared Projects, RBAC & Unified Activity Timelines:** Direct-Turso `owner` / `editor` / `viewer` authorization (viewers remain read-only on shared items while still attaching private personal reminders), SHA-256 single-use 7-day email invitations (`/invite/[token]`), and a unified Warm Paper / Carbon Ink day-grouped chronological `<ActivityTimeline />` across Project Activity (with category filters and click-to-inspect Detail Sheet links), Reminders (`Recently triggered`), Accountability Circle cycle reviews, and the Notification Bell popover.
 - **Env-Synced Admin Operations Portal (`/app/admin`):** Configure comma-separated `ADMIN_EMAILS` in your environment to automatically promote matching verified accounts at boot (`src/instrumentation.ts`), on sign-up/update, and at runtime — and automatically demote removed admins with zero delay (fail-closed when empty). Includes privacy-first executive KPIs, 14-day Recharts activity & delivery pipeline trends, live subsystem health probes (Turso/libSQL, Redis, Inngest v4, Auth & Admin Policy, Push/Email), searchable user metadata & safe session-revoke/suspension controls (blocking self/admin suspension), and an immutable `admin_audit_logs` platform activity timeline. Non-admins never see the link and receive HTTP `404` (`Not Found`) on `/app/admin` and `403` on `/api/admin/overview`.
@@ -45,13 +45,13 @@ Designed around a tactile **Warm Paper (Light)** and **Carbon Ink (Dark)** aesth
 flowchart LR
   Browser["Browser / PWA\n(Warm Paper · Carbon Ink)"] --> Edge["Next.js 16 Edge & Proxy\nCSP · private, no-store · force-dynamic"]
   Edge --> Core["Server Actions · RSC · API\nZod -> requireSession -> Pure Domain & Services"]
-  Core --> Turso[("Turso / libSQL (23 Tables)\nACID · Direct-Turso RBAC, Admin & Circle Scope\nCascading FKs · Outbox · Audit Logs")]
+  Core --> Turso[("Turso / libSQL (25 Tables)\nACID · Direct-Turso RBAC, Admin & Circle Scope\nCascading FKs · Monthly Rosters · Outbox · Audits")]
   Core --> Redis[("Upstash / Local Redis\nRateLimiter & UnreadCounter ONLY")]
   Core -->|"Post-commit deterministic events"| Inngest["Inngest v4 (13 Functions)\nReminders · Nudges · Review Digests\nconcurrency: 5 (env-configurable) · LIMIT 200"]
   Inngest --> Channels["In-App · Web Push · Resend"]
 ```
 
-For full visual flowcharts, the 23-table ER model, env-synced admin role enforcement, reminder state machine, Task ↔ Habit sync, Accountability Circle invite/policy flows, and production invariants, see **[docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)**.
+For full visual flowcharts, the 25-table ER model, env-synced admin role enforcement, per-month habit rosters, reminder state machine, Task ↔ Habit sync, Accountability Circle invite/policy flows, and production invariants, see **[docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)**.
 
 ---
 
@@ -150,7 +150,7 @@ pnpm build        # Create optimized production build
 pnpm start        # Serve production build
 pnpm typecheck    # Run TypeScript strict typecheck (tsc --noEmit)
 pnpm lint         # Run ESLint
-pnpm test         # Run all 23 Vitest suites (93 tests, ephemeral SQLite DBs)
+pnpm test         # Run all 26 Vitest suites (110 tests, ephemeral SQLite DBs)
 pnpm db:generate  # Generate Drizzle SQL migrations after schema changes
 pnpm db:migrate   # Apply Drizzle migrations to TURSO_DATABASE_URL
 pnpm db:studio    # Launch Drizzle Studio
@@ -178,7 +178,7 @@ pnpm db:studio    # Launch Drizzle Studio
     └── server/
         ├── auth.ts           # Better Auth config, anti-mass-assignment fields & unverified-link policy
         ├── admin-policy.ts   # Fail-closed ADMIN_EMAILS parser & fingerprint helpers
-        ├── db/               # 23 Drizzle tables (incl. admin_audit_logs), relations, WAL client, withDbRetry
+        ├── db/               # 25 Drizzle tables (incl. admin_audit_logs, habit_import_aliases, habit_month_rosters)
         ├── domain/           # Pure zero-I/O engines (habit analytics, comment-window policy)
         ├── dal/              # Tenant-scoped repos, direct-Turso guards, zero-leak read DAL
         ├── services/         # ACID domain services + Vitest integration suites

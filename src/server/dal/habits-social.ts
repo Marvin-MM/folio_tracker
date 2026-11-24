@@ -1366,10 +1366,14 @@ export class DrizzleHabitMonitorReadDal implements HabitMonitorReadDal {
 
     const scopedHabitIdSet = new Set(scopedHabits.map((h) => h.id));
     const todayDateKey = getLocalDateKey(nowMs, ownerTimezone);
-    const yearMonth =
+    const currentMonth = todayDateKey.slice(0, 7);
+    const requestedMonth =
       params.yearMonth && isValidYearMonth(params.yearMonth)
         ? params.yearMonth
-        : todayDateKey.slice(0, 7);
+        : currentMonth;
+    // Never allow viewing or tracking future months before they begin
+    const yearMonth =
+      requestedMonth > currentMonth ? currentMonth : requestedMonth;
     const scoringMode: ScoringMode =
       params.scoringMode === "full_month" ? "full_month" : "elapsed";
     const weekStartsOn: 0 | 1 = globalSettings.weekStartsOn === 0 ? 0 : 1;

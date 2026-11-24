@@ -2,8 +2,8 @@ import type { HabitLogStatus } from "@/server/db/schema";
 import {
   isValidDateKey,
   isValidYearMonth,
-  splitCsvLine,
 } from "./habit-analytics";
+import type { MonthRoster } from "./habit-evolution";
 
 export interface ParsedHistoryLog {
   title: string;
@@ -20,7 +20,7 @@ export interface ParsedHistoryImport {
 }
 
 export interface ParseHistoryOptions {
-  /** YYYY-MM. Used when day columns contain plain day numbers (1–31). */
+  /** YYYY-MM. Used when day columns contain plain day numbers (1–31) or weekday letters. */
   month?: string;
   /** Preview-only guard; the service re-checks against the server clock. */
   todayDateKey?: string;
@@ -28,6 +28,33 @@ export interface ParseHistoryOptions {
 
 export const MAX_HISTORY_LOG_ROWS = 20_000;
 export const MAX_HISTORY_HABIT_TITLES = 500;
+
+const WEEKDAY_HEADER_REGEX =
+  /^(?:sun|mon|tue|wed|thu|fri|sat|su|mo|tu|we|th|fr|sa|s|m|t|w|f)$/i;
+
+const DAY_NUMBER_HEADER_REGEX =
+  /^(\d{1,2})(?:$|[\s\r\n/-]+(?:sun|mon|tue|wed|thu|fri|sat|su|mo|tu|we|th|fr|sa|s|m|t|w|f)$)/i;
+
+const SUMMARY_ROW_LABELS = new Set([
+  "total",
+  "totals",
+  "dailytotal",
+  "summary",
+  "average",
+  "avg",
+  "completion",
+  "completionrate",
+  "failurerate",
+  "monthlyprogress",
+  "weeklyprogress",
+  "progress",
+  "score",
+  "rate",
+  "coreday",
+  "logged",
+  "besthabit",
+  "needsattention",
+]);
 
 const STATUS_ALIASES: Record<string, HabitLogStatus> = {
   done: "done",
@@ -79,55 +106,174 @@ function normalizeHeader(value: string): string {
   return value
     .toLowerCase()
     .replace(/[\s_\-.]/g, "")
-    .replace(/️/g, "");
+    .replace(/\uFE0F/g, "");
 }
 
-function detectSeparator(lines: string[]): string {
-  const first = lines.find((line) => line.trim().length > 0) ?? "";
-  return first.includes("\t") ? "\t" : ",";
+export function isSummaryRowTitle(title: string): boolean {
+  const normalized = normalizeHeader(title).replace(/[?:!]/g, "");
+  return SUMMARY_ROW_LABELS.has(normalized);
 }
 
-function dayHeaderToDateKey(
-  raw: string,
+function detectSeparator(rawText: string): string {
+  // Inspect the first non-empty line outside quotes
+  let inQuotes = false;
+  let tabs = 0;
+  let commas = 0;
+  let started = false;
+
+  for (let i = 0; i < rawText.length; i++) {
+    const ch = rawText[i]!;
+    if (ch === '"') {
+      if (inQuotes && rawText[i + 1] === '"') {
+        i += 1;
+      } else {
+        inQuotes = !inQuotes;
+      }
+      started = true;
+    } else if (!inQuotes && (ch === "\n" || ch === "\r")) {
+      if (started) break;
+    } else {
+      if (ch.trim()) started = true;
+      if (!inQuotes) {
+        if (ch === "\t") tabs += 1;
+        else if (ch === ",") commas += 1;
+      }
+    }
+  }
+
+  return tabs > 0 && tabs >= commas ? "\t" : ",";
+}
+
+/**
+ * RFC-4180 quote-aware delimited row parser so multi-line Excel headers such
+ * as `"1\nM"` remain intact inside a single cell instead of splitting rows.
+ */
+function parseDelimitedRows(rawText: string, separator: string): string[][] {
+  const rows: string[][] = [];
+  let currentRow: string[] = [];
+  let currentCell = "";
+  let inQuotes = false;
+
+  for (let i = 0; i < rawText.length; i++) {
+    const ch = rawText[i]!;
+    if (ch === '"') {
+      if (inQuotes && rawText[i + 1] === '"') {
+        currentCell += '"';
+        i += 1;
+      } else {
+        inQuotes = !inQuotes;
+      }
+    } else if (!inQuotes && ch === separator) {
+      currentRow.push(currentCell.trim());
+      currentCell = "";
+    } else if (!inQuotes && (ch === "\n" || ch === "\r")) {
+      if (ch === "\r" && rawText[i + 1] === "\n") {
+        i += 1;
+      }
+      currentRow.push(currentCell.trim());
+      if (currentRow.some((cell) => cell.length > 0)) {
+        rows.push(currentRow);
+      }
+      currentRow = [];
+      currentCell = "";
+    } else {
+      currentCell += ch;
+    }
+  }
+
+  currentRow.push(currentCell.trim());
+  if (currentRow.some((cell) => cell.length > 0)) {
+    rows.push(currentRow);
+  }
+
+  return rows;
+}
+
+function resolveWideDateColumns(
+  header: string[],
   month: string | undefined,
   warnings: string[],
   lineNumber: number
-): string | null {
-  const value = raw.trim();
-  if (!value) return null;
+): Array<{ column: number; dateKey: string }> {
+  const result: Array<{ column: number; dateKey: string }> = [];
+  let weekdayOrdinal = 0;
 
-  if (isValidDateKey(value)) return value;
+  for (let col = 1; col < header.length; col++) {
+    const value = (header[col] ?? "").trim();
+    if (!value) continue;
 
-  const monthMatch = value.match(/^(\d{4})-(\d{1,2})-(\d{1,2})$/);
-  if (monthMatch) {
-    const [, y, m, d] = monthMatch;
-    const padded = `${y}-${m!.padStart(2, "0")}-${d!.padStart(2, "0")}`;
-    if (isValidDateKey(padded)) return padded;
-    warnings.push(`Line ${lineNumber}: invalid date header "${value}".`);
-    return null;
+    if (isValidDateKey(value)) {
+      result.push({ column: col, dateKey: value });
+      continue;
+    }
+
+    const isoMatch = value.match(/^(\d{4})[-_/](\d{1,2})[-_/](\d{1,2})$/);
+    if (isoMatch) {
+      const [, y, m, d] = isoMatch;
+      const padded = `${y}-${m!.padStart(2, "0")}-${d!.padStart(2, "0")}`;
+      if (isValidDateKey(padded)) {
+        result.push({ column: col, dateKey: padded });
+      } else {
+        warnings.push(`Line ${lineNumber}: invalid date header "${value}".`);
+      }
+      continue;
+    }
+
+    const dayMatch = value.match(DAY_NUMBER_HEADER_REGEX);
+    if (dayMatch) {
+      const day = Number(dayMatch[1]);
+      if (!month) {
+        warnings.push(
+          `Line ${lineNumber}: day column "${value}" needs a month (YYYY-MM).`
+        );
+        continue;
+      }
+      if (!isValidYearMonth(month)) {
+        warnings.push(`Line ${lineNumber}: invalid month "${month}".`);
+        continue;
+      }
+      const padded = `${month}-${String(day).padStart(2, "0")}`;
+      if (!isValidDateKey(padded)) {
+        warnings.push(`Line ${lineNumber}: invalid date header "${value}".`);
+        continue;
+      }
+      result.push({ column: col, dateKey: padded });
+      continue;
+    }
+
+    if (WEEKDAY_HEADER_REGEX.test(value)) {
+      weekdayOrdinal += 1;
+      if (!month) {
+        if (weekdayOrdinal === 1) {
+          warnings.push(
+            `Line ${lineNumber}: weekday headers require a month (YYYY-MM).`
+          );
+        }
+        continue;
+      }
+      if (!isValidYearMonth(month)) {
+        warnings.push(`Line ${lineNumber}: invalid month "${month}".`);
+        continue;
+      }
+      const padded = `${month}-${String(weekdayOrdinal).padStart(2, "0")}`;
+      if (isValidDateKey(padded)) {
+        result.push({ column: col, dateKey: padded });
+      }
+    }
   }
 
-  if (/^\d{1,2}$/.test(value)) {
-    const day = Number(value);
-    if (!month) {
-      warnings.push(
-        `Line ${lineNumber}: day column "${value}" needs a month (YYYY-MM).`
-      );
-      return null;
-    }
-    if (!isValidYearMonth(month)) {
-      warnings.push(`Line ${lineNumber}: invalid month "${month}".`);
-      return null;
-    }
-    const padded = `${month}-${String(day).padStart(2, "0")}`;
-    if (!isValidDateKey(padded)) {
-      warnings.push(`Line ${lineNumber}: invalid date header "${value}".`);
-      return null;
-    }
-    return padded;
-  }
+  return result;
+}
 
-  return null;
+function looksLikeWideDateHeader(value: string): boolean {
+  const trimmed = value.trim();
+  if (!trimmed) return false;
+  return (
+    isValidDateKey(trimmed) ||
+    /^(\d{4})[-_/](\d{1,2})[-_/](\d{1,2})$/.test(trimmed) ||
+    DAY_NUMBER_HEADER_REGEX.test(trimmed) ||
+    WEEKDAY_HEADER_REGEX.test(trimmed)
+  );
 }
 
 function buildResult(
@@ -212,15 +358,12 @@ function parseLongFormat(
 }
 
 function findWideHeaderIndex(rows: string[][]): number {
-  for (let i = 0; i < Math.min(rows.length, 12); i++) {
+  for (let i = 0; i < Math.min(rows.length, 15); i++) {
     const cells = rows[i]!;
     const label = normalizeHeader(cells[0] ?? "");
     if (label !== "habit" && label !== "title" && label !== "") continue;
 
-    const dateLike = cells.slice(1).filter((cell) => {
-      const value = cell.trim();
-      return isValidDateKey(value) || /^\d{1,2}$/.test(value);
-    });
+    const dateLike = cells.slice(1).filter(looksLikeWideDateHeader);
     if (dateLike.length >= 2) return i;
   }
   return -1;
@@ -233,20 +376,12 @@ function parseWideFormat(
 ): ParsedHistoryImport {
   const header = rows[headerIndex]!;
   const warnings: string[] = [];
-  const dateColumns = header
-    .slice(1)
-    .map((value, index) => ({
-      column: index + 1,
-      dateKey: dayHeaderToDateKey(
-        value,
-        options.month,
-        warnings,
-        headerIndex + 1
-      ),
-    }))
-    .filter((entry): entry is { column: number; dateKey: string } =>
-      Boolean(entry.dateKey)
-    );
+  const dateColumns = resolveWideDateColumns(
+    header,
+    options.month,
+    warnings,
+    headerIndex + 1
+  );
 
   if (dateColumns.length === 0) {
     return {
@@ -254,7 +389,7 @@ function parseWideFormat(
       titles: [],
       warnings,
       error:
-        "No date columns found. Use ISO dates (2026-01-01) or day numbers 1–31 plus a month.",
+        "No date columns found. Use ISO dates (2026-01-01) or day numbers 1–31 / weekday letters plus a month (YYYY-MM).",
     };
   }
 
@@ -262,7 +397,9 @@ function parseWideFormat(
   for (let i = headerIndex + 1; i < rows.length; i++) {
     const cells = rows[i]!;
     const title = (cells[0] ?? "").trim().slice(0, 120);
-    if (!title) continue;
+    if (!title || normalizeHeader(title) === "habit" || isSummaryRowTitle(title)) {
+      continue;
+    }
     for (const { column, dateKey } of dateColumns) {
       const status = parseStatusCell(cells[column]);
       if (!status) continue;
@@ -282,20 +419,40 @@ function parseWideFormat(
 }
 
 /**
+ * Derives per-month habit rosters directly from parsed completion rows so
+ * multi-month `.csv`, `.txt`, and pasted grids support the same rename/merge/
+ * removal detection as multi-sheet `.xlsx` workbooks.
+ */
+export function deriveMonthRostersFromLogs(
+  rows: ParsedHistoryLog[]
+): MonthRoster[] {
+  const byMonth = new Map<string, Set<string>>();
+  for (const row of rows) {
+    const month = row.dateKey.slice(0, 7);
+    if (!isValidYearMonth(month)) continue;
+    const set = byMonth.get(month) ?? new Set<string>();
+    set.add(row.title);
+    byMonth.set(month, set);
+  }
+  return Array.from(byMonth.entries())
+    .map(([month, titles]) => ({
+      month,
+      titles: Array.from(titles).sort((a, b) => a.localeCompare(b)),
+    }))
+    .sort((a, b) => a.month.localeCompare(b.month));
+}
+
+/**
  * Parses habit completion history from either a long CSV
  * (`Habit,Date,Status`) or an Excel-style wide grid where rows are habits and
- * columns are dates (ISO dates or day numbers interpreted with `options.month`).
+ * columns are dates (ISO dates, `1\nM` headers, bare day numbers 1–31, or
+ * weekday letters interpreted with `options.month`).
  */
 export function parseHabitHistoryImport(
   rawText: string,
   options: ParseHistoryOptions = {}
 ): ParsedHistoryImport {
-  const lines = rawText
-    .split(/\r?\n/)
-    .map((line) => line.trim())
-    .filter(Boolean);
-
-  if (lines.length === 0) {
+  if (!rawText.trim()) {
     return {
       rows: [],
       titles: [],
@@ -313,8 +470,16 @@ export function parseHabitHistoryImport(
     };
   }
 
-  const separator = detectSeparator(lines);
-  const rows = lines.map((line) => splitCsvLine(line, separator));
+  const separator = detectSeparator(rawText);
+  const rows = parseDelimitedRows(rawText, separator);
+  if (rows.length === 0) {
+    return {
+      rows: [],
+      titles: [],
+      warnings: [],
+      error: "Paste at least one habit row to import.",
+    };
+  }
 
   const longHeaderIndex = rows.findIndex((cells) => {
     const headers = cells.map(normalizeHeader);

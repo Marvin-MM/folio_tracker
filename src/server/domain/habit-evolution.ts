@@ -1,4 +1,4 @@
-import { isValidYearMonth } from "./habit-analytics";
+import { isValidYearMonth, splitCsvLine } from "./habit-analytics";
 
 /** The set of habit titles present in one month of a tracker workbook. */
 export interface MonthRoster {
@@ -96,6 +96,12 @@ function coreTitle(title: string): string {
     .trim();
 }
 
+function extractParenthetical(title: string): string {
+  const matches = title.match(/\(([^)]*)\)/g);
+  if (!matches) return "";
+  return normalizeImportTitle(matches.join(" "));
+}
+
 function meaningfulTokens(value: string): Set<string> {
   return new Set(
     value
@@ -114,10 +120,10 @@ function jaccard(a: Set<string>, b: Set<string>): number {
 
 /**
  * Conservative title similarity for rename detection. Parenthetical detail is
- * kept in the main key (so "Hydrate (Full...)" and "Hydrate (Hot...)" stay
- * distinct) but ignored in the core key (so "Journal" and "Journal (Prompt)"
- * still match). No edit-distance fallback: short unrelated titles used to
- * chain into one giant false group.
+ * kept when BOTH titles carry different qualifiers (so "Hydrate (Full Black
+ * Bottle)" and "Hydrate (Hot spices)" stay distinct), while adding/removing a
+ * single parenthetical qualifier ("Journal" <-> "Journal (Prompt)") matches
+ * cleanly as a rename.
  */
 export function titleSimilarity(left: string, right: string): number {
   const fullA = normalizeImportTitle(left);
@@ -126,11 +132,24 @@ export function titleSimilarity(left: string, right: string): number {
   const coreB = coreTitle(right);
   if (!fullA || !fullB) return 0;
 
-  if (coreA === coreB && coreA.length >= 4) return 1;
+  if (fullA === fullB) return 1;
+
+  const parenA = extractParenthetical(left);
+  const parenB = extractParenthetical(right);
+  const bothHaveDistinctParens =
+    parenA.length > 0 && parenB.length > 0 && parenA !== parenB;
+
+  if (!bothHaveDistinctParens && coreA === coreB && coreA.length >= 4) {
+    return 1;
+  }
 
   if (fullA.includes(fullB) || fullB.includes(fullA)) {
     const shorter = fullA.length < fullB.length ? fullA : fullB;
     if (shorter.length >= 5) return 0.9;
+  }
+
+  if (bothHaveDistinctParens) {
+    return jaccard(meaningfulTokens(fullA), meaningfulTokens(fullB));
   }
 
   return Math.max(
@@ -148,7 +167,7 @@ function minTemporalGap(
   monthsA: Set<string>,
   monthsB: Set<string>
 ): number {
-  if (monthsA.size === 0 || monthsB.size === 0) return 0;
+  if (monthsA.size === 0 || monthsB.size === 0) return Number.MAX_SAFE_INTEGER;
   let best = Number.MAX_SAFE_INTEGER;
   for (const a of monthsA) {
     for (const b of monthsB) {
@@ -226,7 +245,7 @@ function pickCanonicalTitle(
 /**
  * Detects how a habit roster changes across months: renames, merges,
  * additions, and removals. Grouping is conservative; ambiguous cases are
- * returned as suggestions so the UI can ask the user to confirm.
+ * returned as suggestions ordered chronologically (earlier -> later).
  */
 export function planHabitEvolution(
   rosters: MonthRoster[],
@@ -260,21 +279,6 @@ export function planHabitEvolution(
     }
   }
 
-  const overrideByNormalized = new Map<string, string>();
-  for (const override of overrides) {
-    const source = override.sourceTitle.trim();
-    const canonical = override.canonicalTitle.trim();
-    if (!source || !canonical) continue;
-    if (!titleMonths.has(source)) titleMonths.set(source, new Set());
-    if (!titleMonths.has(canonical)) titleMonths.set(canonical, new Set());
-    overrideByNormalized.set(normalizeImportTitle(source), canonical);
-    for (const [title, months] of titleMonths) {
-      if (title !== source && normalizeImportTitle(title) === normalizeImportTitle(source)) {
-        overrideByNormalized.set(normalizeImportTitle(title), canonical);
-      }
-    }
-  }
-
   const cooccurs = new Set<string>();
   for (const roster of validRosters) {
     for (let i = 0; i < roster.titles.length; i++) {
@@ -288,20 +292,48 @@ export function planHabitEvolution(
   const uf = new UnionFind();
   for (const title of titleMonths.keys()) uf.add(title);
 
-  const allTitles = Array.from(titleMonths.keys()).sort();
+  // Map normalized roster titles so overrides match regardless of casing/spacing
+  const rosterTitlesByNorm = new Map<string, string[]>();
+  for (const title of titleMonths.keys()) {
+    const norm = normalizeImportTitle(title);
+    const bucket = rosterTitlesByNorm.get(norm) ?? [];
+    bucket.push(title);
+    rosterTitlesByNorm.set(norm, bucket);
+  }
+
   const explicitPairs = new Set<string>();
+  const overrideTitles = new Set<string>();
   for (const override of overrides) {
     const source = override.sourceTitle.trim();
     const canonical = override.canonicalTitle.trim();
     if (!source || !canonical) continue;
-    uf.union(source, canonical);
-    explicitPairs.add(`${source}\u0000${canonical}`);
+
+    const matchedSources = rosterTitlesByNorm.get(normalizeImportTitle(source)) ?? [];
+    if (matchedSources.length === 0) {
+      // Only create nodes for overrides that actually reference a title in the workbook
+      continue;
+    }
+
+    const matchedCanonicals =
+      rosterTitlesByNorm.get(normalizeImportTitle(canonical)) ?? [];
+    const target = matchedCanonicals[0] ?? canonical;
+
+    uf.add(target);
+    overrideTitles.add(target);
+    for (const src of matchedSources) {
+      uf.union(src, target);
+      overrideTitles.add(src);
+      explicitPairs.add(`${src}\u0000${target}`);
+      explicitPairs.add(`${target}\u0000${src}`);
+    }
   }
 
-  for (let i = 0; i < allTitles.length; i++) {
-    for (let j = i + 1; j < allTitles.length; j++) {
-      const a = allTitles[i]!;
-      const b = allTitles[j]!;
+  // Only run heuristic similarity across titles that actually appeared in rosters
+  const rosterTitles = Array.from(titleMonths.keys()).sort();
+  for (let i = 0; i < rosterTitles.length; i++) {
+    for (let j = i + 1; j < rosterTitles.length; j++) {
+      const a = rosterTitles[i]!;
+      const b = rosterTitles[j]!;
       if (cooccurs.has(`${a}\u0000${b}`)) continue;
 
       const score = titleSimilarity(a, b);
@@ -315,6 +347,7 @@ export function planHabitEvolution(
       if (score >= 0.6 && gap <= allowedGap) {
         uf.union(a, b);
         explicitPairs.add(`${a}\u0000${b}`);
+        explicitPairs.add(`${b}\u0000${a}`);
       }
     }
   }
@@ -323,7 +356,13 @@ export function planHabitEvolution(
   for (const override of overrides) {
     const source = override.sourceTitle.trim();
     const canonical = override.canonicalTitle.trim();
-    if (source && canonical) preferredByRoot.set(uf.find(source), canonical);
+    if (!source || !canonical) continue;
+    const matchedSources = rosterTitlesByNorm.get(normalizeImportTitle(source)) ?? [];
+    if (matchedSources.length === 0) continue;
+    const matchedCanonicals =
+      rosterTitlesByNorm.get(normalizeImportTitle(canonical)) ?? [];
+    const target = matchedCanonicals[0] ?? canonical;
+    preferredByRoot.set(uf.find(matchedSources[0]!), target);
   }
 
   const groups: HabitEvolutionGroup[] = [];
@@ -338,10 +377,8 @@ export function planHabitEvolution(
       preferredByRoot.get(uf.find(titles[0]!)) ?? null
     );
     const keys = new Set(titles.map(normalizeImportTitle));
-    const confidence: EvolutionConfidence = titles.some(
-      (title) =>
-        overrides.some((o) => o.sourceTitle.trim() === title) ||
-        overrides.some((o) => o.canonicalTitle.trim() === title)
+    const confidence: EvolutionConfidence = titles.some((title) =>
+      overrideTitles.has(title)
     )
       ? "override"
       : keys.size === 1
@@ -367,30 +404,39 @@ export function planHabitEvolution(
   groups.sort((a, b) => a.canonicalTitle.localeCompare(b.canonicalTitle));
 
   const suggestions: EvolutionSuggestion[] = [];
-  for (let i = 0; i < allTitles.length; i++) {
-    for (let j = i + 1; j < allTitles.length; j++) {
-      const a = allTitles[i]!;
-      const b = allTitles[j]!;
+  for (let i = 0; i < rosterTitles.length; i++) {
+    for (let j = i + 1; j < rosterTitles.length; j++) {
+      const a = rosterTitles[i]!;
+      const b = rosterTitles[j]!;
       if (explicitPairs.has(`${a}\u0000${b}`)) continue;
       if (cooccurs.has(`${a}\u0000${b}`)) continue;
       if (uf.find(a) === uf.find(b)) continue;
 
       const score = titleSimilarity(a, b);
-      const gap = minTemporalGap(
-        titleMonths.get(a) ?? new Set(),
-        titleMonths.get(b) ?? new Set()
-      );
+      const monthsA = titleMonths.get(a) ?? new Set<string>();
+      const monthsB = titleMonths.get(b) ?? new Set<string>();
+      const gap = minTemporalGap(monthsA, monthsB);
       if (gap > 2) continue;
 
-      const tokensA = normalizeImportTitle(a).split(" ").filter((t) => t && !GENERIC_TOKENS.has(t));
-      const tokensB = normalizeImportTitle(b).split(" ").filter((t) => t && !GENERIC_TOKENS.has(t));
+      const tokensA = normalizeImportTitle(a)
+        .split(" ")
+        .filter((t) => t && !GENERIC_TOKENS.has(t));
+      const tokensB = normalizeImportTitle(b)
+        .split(" ")
+        .filter((t) => t && !GENERIC_TOKENS.has(t));
       const shared = tokensA.filter((t) => tokensB.includes(t));
       const leadingMatch = shared.length > 0 && tokensA[0] === tokensB[0];
 
       if (score >= 0.35 || leadingMatch) {
+        // Always orient sourceTitle (older) -> canonicalTitle (newer) chronologically
+        const lastA = latestMonth(monthsA) ?? "";
+        const lastB = latestMonth(monthsB) ?? "";
+        const [sourceTitle, canonicalTitle] =
+          lastA <= lastB ? [a, b] : [b, a];
+
         suggestions.push({
-          sourceTitle: a,
-          canonicalTitle: b,
+          sourceTitle,
+          canonicalTitle,
           score: Math.round(score * 100) / 100,
           reason: leadingMatch ? "shares a leading topic word" : "similar title",
         });
@@ -409,7 +455,7 @@ export function planHabitEvolution(
     (group) => group.firstMonth && group.firstMonth > firstMonth
   );
 
-  if (groups.length > 0) {
+  if (groups.length > 0 && validRosters.length > 1) {
     warnings.push(
       `${groups.length} habit identities detected across ${validRosters.length} months ` +
         `(${added.length} added later, ${removed.length} no longer present in the last month).`
@@ -462,7 +508,7 @@ export function monthStartKey(month: string): string {
   return `${month}-01`;
 }
 
-/** Parses a two-column `Source Title,Canonical Title` override CSV. */
+/** Parses a two-column `Source Title,Canonical Title` override CSV (supports quoted commas). */
 export function parseAliasOverrides(rawText: string): {
   overrides: AliasOverride[];
   error?: string;
@@ -473,17 +519,22 @@ export function parseAliasOverrides(rawText: string): {
     .filter(Boolean);
   if (lines.length === 0) return { overrides: [] };
 
-  const dataLines = /^(source\s*title|alias)\s*,/i.test(lines[0]!)
-    ? lines.slice(1)
-    : lines;
+  const firstParts = splitCsvLine(lines[0]!);
+  const isHeader =
+    /^(source\s*title|alias|old\s*title)$/i.test(firstParts[0] ?? "") &&
+    /^(canonical\s*title|current\s*title|target|habit)$/i.test(
+      firstParts[1] ?? ""
+    );
+  const dataLines = isHeader ? lines.slice(1) : lines;
+
   const overrides: AliasOverride[] = [];
   const seen = new Set<string>();
 
   for (const line of dataLines) {
-    const comma = line.indexOf(",");
-    const source = (comma >= 0 ? line.slice(0, comma) : line).trim();
-    const canonical = (comma >= 0 ? line.slice(comma + 1) : "").trim();
-    if (!source || !canonical) {
+    const parts = splitCsvLine(line);
+    const source = (parts[0] ?? "").trim();
+    const canonical = (parts[1] ?? "").trim();
+    if (parts.length < 2 || !source || !canonical) {
       return {
         overrides: [],
         error: "Each alias row needs 'Source Title,Canonical Title'.",

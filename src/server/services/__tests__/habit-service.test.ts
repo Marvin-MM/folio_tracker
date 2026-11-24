@@ -315,6 +315,17 @@ describe("HabitService ACID sync, tenant isolation, bulk import, and habit nudge
       updateHabitForUser: habitRepo.updateHabitForUser.bind(habitRepo),
       listAliasesForUser: habitRepo.listAliasesForUser.bind(habitRepo),
       upsertAliasesBatch: habitRepo.upsertAliasesBatch.bind(habitRepo),
+      listMonthRosterHabitIds:
+        habitRepo.listMonthRosterHabitIds.bind(habitRepo),
+      hasAnyMonthRosterForUser:
+        habitRepo.hasAnyMonthRosterForUser.bind(habitRepo),
+      findLatestMonthRosterBefore:
+        habitRepo.findLatestMonthRosterBefore.bind(habitRepo),
+      upsertMonthRosterEntries:
+        habitRepo.upsertMonthRosterEntries.bind(habitRepo),
+      replaceMonthRoster: habitRepo.replaceMonthRoster.bind(habitRepo),
+      removeHabitFromMonthRoster:
+        habitRepo.removeHabitFromMonthRoster.bind(habitRepo),
       upsertLogsBatch: habitRepo.upsertLogsBatch.bind(habitRepo),
       deleteHabitForUser: habitRepo.deleteHabitForUser.bind(habitRepo),
       rebalanceHabitPositions:

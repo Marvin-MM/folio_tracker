@@ -34,6 +34,10 @@ const optionalTimeSchema = z
   .optional()
   .transform((val) => (val === "" ? null : val));
 
+const yearMonthSchema = z
+  .string()
+  .regex(/^\d{4}-(0[1-9]|1[0-2])$/, "Month must be in YYYY-MM format.");
+
 const createHabitSchema = z.object({
   title: z.string().trim().min(1, "Habit title is required.").max(120),
   description: z.string().max(1_000).nullable().optional(),
@@ -42,6 +46,7 @@ const createHabitSchema = z.object({
   scheduledDays: z.array(z.number().int().min(0).max(6)).max(7).optional(),
   weeklyTargetCount: z.number().int().min(1).max(7).nullable().optional(),
   startDate: dateKeySchema.optional(),
+  targetYearMonth: yearMonthSchema.optional(),
   preferredTime: optionalTimeSchema,
   linkedProjectId: z.string().min(1).nullable().optional(),
   autoSyncDailyTask: z.boolean().optional(),
@@ -112,6 +117,22 @@ const bulkImportHabitsSchema = z.object({
     .trim()
     .min(1, "Paste at least one habit title or CSV row.")
     .max(20_000),
+  targetYearMonth: yearMonthSchema.optional(),
+});
+
+const saveMonthRosterSchema = z.object({
+  yearMonth: yearMonthSchema,
+  habitIds: z.array(z.string().min(1)).max(500),
+});
+
+const carryOverMonthRosterSchema = z.object({
+  targetYearMonth: yearMonthSchema,
+  sourceYearMonth: yearMonthSchema.optional(),
+});
+
+const removeHabitFromMonthSchema = z.object({
+  habitId: z.string().min(1),
+  yearMonth: yearMonthSchema,
 });
 
 const monthRosterSchema = z.object({
@@ -131,7 +152,7 @@ const bulkImportHistorySchema = z.object({
     .string()
     .trim()
     .min(1, "Paste at least one habit row to import.")
-    .max(1_000_000),
+    .max(1_600_000),
   month: z
     .string()
     .regex(/^\d{4}-(0[1-9]|1[0-2])$/, "Month must be YYYY-MM.")
@@ -331,10 +352,92 @@ export async function bulkImportHabitsAction(
     const created = await habitService.bulkImportHabits(
       user.id,
       user.timezone || "UTC",
-      parsed.data.rawText
+      parsed.data.rawText,
+      parsed.data.targetYearMonth
     );
     revalidateHabitPaths();
     return actionOk({ importedCount: created.length, habits: created });
+  } catch (error) {
+    return mapErrorToActionResult(error);
+  }
+}
+
+export async function saveHabitMonthRosterAction(
+  input: z.input<typeof saveMonthRosterSchema>
+): Promise<ActionResult<{ yearMonth: string; habitIds: string[] }>> {
+  const parsed = saveMonthRosterSchema.safeParse(input);
+  if (!parsed.success) {
+    return actionErr(
+      "VALIDATION_ERROR",
+      parsed.error.issues[0]?.message ?? "Invalid month roster."
+    );
+  }
+
+  try {
+    const { user } = await requireSession();
+    const saved = await habitService.saveMonthRoster(
+      user.id,
+      user.timezone || "UTC",
+      parsed.data
+    );
+    revalidateHabitPaths();
+    return actionOk(saved);
+  } catch (error) {
+    return mapErrorToActionResult(error);
+  }
+}
+
+export async function carryOverHabitMonthRosterAction(
+  input: z.input<typeof carryOverMonthRosterSchema>
+): Promise<
+  ActionResult<{
+    targetYearMonth: string;
+    sourceYearMonth: string;
+    habitIds: string[];
+  }>
+> {
+  const parsed = carryOverMonthRosterSchema.safeParse(input);
+  if (!parsed.success) {
+    return actionErr(
+      "VALIDATION_ERROR",
+      parsed.error.issues[0]?.message ?? "Invalid carry-over request."
+    );
+  }
+
+  try {
+    const { user } = await requireSession();
+    const carried = await habitService.carryOverPreviousMonthRoster(
+      user.id,
+      user.timezone || "UTC",
+      parsed.data
+    );
+    revalidateHabitPaths();
+    return actionOk(carried);
+  } catch (error) {
+    return mapErrorToActionResult(error);
+  }
+}
+
+export async function removeHabitFromMonthAction(
+  input: z.input<typeof removeHabitFromMonthSchema>
+): Promise<ActionResult<{ yearMonth: string; removedHabitId: string }>> {
+  const parsed = removeHabitFromMonthSchema.safeParse(input);
+  if (!parsed.success) {
+    return actionErr(
+      "VALIDATION_ERROR",
+      parsed.error.issues[0]?.message ?? "Invalid request."
+    );
+  }
+
+  try {
+    const { user } = await requireSession();
+    const removed = await habitService.removeHabitFromMonth(
+      user.id,
+      user.timezone || "UTC",
+      parsed.data
+    );
+    revalidateHabitPaths();
+    return actionOk(removed);
   } catch (error) {
     return mapErrorToActionResult(error);
   }

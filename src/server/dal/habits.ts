@@ -1,9 +1,22 @@
-import { and, asc, desc, eq, gte, inArray, isNotNull, lte, or, sql } from "drizzle-orm";
+import {
+  and,
+  asc,
+  desc,
+  eq,
+  gte,
+  inArray,
+  isNotNull,
+  lt,
+  lte,
+  or,
+  sql,
+} from "drizzle-orm";
 import { generateEvenPositions } from "@/lib/fractional-index";
 import { db, type AppDatabase, type DbExecutor } from "@/server/db";
 import {
   habitImportAliases,
   habitLogs,
+  habitMonthRosters,
   habits,
   habitTrackerSettings,
   tasks,
@@ -140,6 +153,36 @@ export interface HabitRepository {
     inputs: UpsertAliasRowInput[],
     executor?: DbExecutor
   ): Promise<HabitImportAliasRecord[]>;
+  listMonthRosterHabitIds(
+    userId: string,
+    yearMonth: string,
+    executor?: DbExecutor
+  ): Promise<string[]>;
+  hasAnyMonthRosterForUser(
+    userId: string,
+    executor?: DbExecutor
+  ): Promise<boolean>;
+  findLatestMonthRosterBefore(
+    userId: string,
+    yearMonth: string,
+    executor?: DbExecutor
+  ): Promise<{ yearMonth: string; habitIds: string[] } | null>;
+  upsertMonthRosterEntries(
+    entries: Array<{ userId: string; habitId: string; yearMonth: string }>,
+    executor?: DbExecutor
+  ): Promise<void>;
+  replaceMonthRoster(
+    userId: string,
+    yearMonth: string,
+    habitIds: string[],
+    executor?: DbExecutor
+  ): Promise<string[]>;
+  removeHabitFromMonthRoster(
+    userId: string,
+    habitId: string,
+    yearMonth: string,
+    executor?: DbExecutor
+  ): Promise<boolean>;
   deleteHabitForUser(
     userId: string,
     habitId: string,
@@ -330,28 +373,38 @@ export class DrizzleHabitRepository implements HabitRepository {
   ): Promise<HabitRecord[]> {
     if (inputs.length === 0) return [];
     const now = Date.now();
-    return executor
-      .insert(habits)
-      .values(
-        inputs.map((input) => ({
-          userId: input.userId,
-          title: input.title,
-          description: input.description ?? null,
-          category: input.category ?? null,
-          cadenceType: input.cadenceType ?? "daily",
-          scheduledDaysJson: input.scheduledDaysJson ?? "[]",
-          weeklyTargetCount: input.weeklyTargetCount ?? null,
-          startDate: input.startDate,
-          preferredTime: input.preferredTime ?? null,
-          linkedProjectId: input.linkedProjectId ?? null,
-          autoSyncDailyTask: input.autoSyncDailyTask ?? false,
-          position: input.position,
-          isArchived: false,
-          createdAt: now,
-          updatedAt: now,
-        }))
-      )
-      .returning();
+    const created: HabitRecord[] = [];
+    // Keep bind variables safely under SQLite's 999 parameter limit (50 * 15 = 750)
+    const chunkSize = 50;
+
+    for (let i = 0; i < inputs.length; i += chunkSize) {
+      const chunk = inputs.slice(i, i + chunkSize);
+      const rows = await executor
+        .insert(habits)
+        .values(
+          chunk.map((input) => ({
+            userId: input.userId,
+            title: input.title,
+            description: input.description ?? null,
+            category: input.category ?? null,
+            cadenceType: input.cadenceType ?? "daily",
+            scheduledDaysJson: input.scheduledDaysJson ?? "[]",
+            weeklyTargetCount: input.weeklyTargetCount ?? null,
+            startDate: input.startDate,
+            preferredTime: input.preferredTime ?? null,
+            linkedProjectId: input.linkedProjectId ?? null,
+            autoSyncDailyTask: input.autoSyncDailyTask ?? false,
+            position: input.position,
+            isArchived: false,
+            createdAt: now,
+            updatedAt: now,
+          }))
+        )
+        .returning();
+      created.push(...rows);
+    }
+
+    return created;
   }
 
   async updateHabitForUser(
@@ -389,7 +442,8 @@ export class DrizzleHabitRepository implements HabitRepository {
   ): Promise<HabitImportAliasRecord[]> {
     if (inputs.length === 0) return [];
     const saved: HabitImportAliasRecord[] = [];
-    const chunkSize = 200;
+    // Keep bind variables under SQLite's 999 parameter ceiling (100 * 8 = 800)
+    const chunkSize = 100;
 
     for (let i = 0; i < inputs.length; i += chunkSize) {
       const chunk = inputs.slice(i, i + chunkSize);
@@ -423,6 +477,147 @@ export class DrizzleHabitRepository implements HabitRepository {
     }
 
     return saved;
+  }
+
+  async listMonthRosterHabitIds(
+    userId: string,
+    yearMonth: string,
+    executor: DbExecutor = this.database
+  ): Promise<string[]> {
+    const rows = await executor
+      .select({ habitId: habitMonthRosters.habitId })
+      .from(habitMonthRosters)
+      .where(
+        and(
+          eq(habitMonthRosters.userId, userId),
+          eq(habitMonthRosters.yearMonth, yearMonth)
+        )
+      );
+    return rows.map((row) => row.habitId);
+  }
+
+  async hasAnyMonthRosterForUser(
+    userId: string,
+    executor: DbExecutor = this.database
+  ): Promise<boolean> {
+    const [row] = await executor
+      .select({ yearMonth: habitMonthRosters.yearMonth })
+      .from(habitMonthRosters)
+      .where(eq(habitMonthRosters.userId, userId))
+      .limit(1);
+    return Boolean(row);
+  }
+
+  async findLatestMonthRosterBefore(
+    userId: string,
+    yearMonth: string,
+    executor: DbExecutor = this.database
+  ): Promise<{ yearMonth: string; habitIds: string[] } | null> {
+    const [latest] = await executor
+      .select({ yearMonth: habitMonthRosters.yearMonth })
+      .from(habitMonthRosters)
+      .where(
+        and(
+          eq(habitMonthRosters.userId, userId),
+          lt(habitMonthRosters.yearMonth, yearMonth)
+        )
+      )
+      .orderBy(desc(habitMonthRosters.yearMonth))
+      .limit(1);
+
+    if (!latest) return null;
+
+    const habitIds = await this.listMonthRosterHabitIds(
+      userId,
+      latest.yearMonth,
+      executor
+    );
+    return habitIds.length > 0
+      ? { yearMonth: latest.yearMonth, habitIds }
+      : null;
+  }
+
+  async upsertMonthRosterEntries(
+    entries: Array<{ userId: string; habitId: string; yearMonth: string }>,
+    executor: DbExecutor = this.database
+  ): Promise<void> {
+    if (entries.length === 0) return;
+    const now = Date.now();
+    // Deduplicate in memory and chunk safely under SQLite's 999 bind-variable limit (200 * 4 = 800)
+    const unique = new Map<
+      string,
+      { userId: string; habitId: string; yearMonth: string }
+    >();
+    for (const entry of entries) {
+      unique.set(`${entry.userId}|${entry.habitId}|${entry.yearMonth}`, entry);
+    }
+    const list = Array.from(unique.values());
+    const chunkSize = 200;
+
+    for (let i = 0; i < list.length; i += chunkSize) {
+      const chunk = list.slice(i, i + chunkSize);
+      await executor
+        .insert(habitMonthRosters)
+        .values(
+          chunk.map((entry) => ({
+            userId: entry.userId,
+            habitId: entry.habitId,
+            yearMonth: entry.yearMonth,
+            createdAt: now,
+          }))
+        )
+        .onConflictDoNothing({
+          target: [
+            habitMonthRosters.userId,
+            habitMonthRosters.habitId,
+            habitMonthRosters.yearMonth,
+          ],
+        });
+    }
+  }
+
+  async replaceMonthRoster(
+    userId: string,
+    yearMonth: string,
+    habitIds: string[],
+    executor: DbExecutor = this.database
+  ): Promise<string[]> {
+    const deduped = Array.from(new Set(habitIds));
+    await executor
+      .delete(habitMonthRosters)
+      .where(
+        and(
+          eq(habitMonthRosters.userId, userId),
+          eq(habitMonthRosters.yearMonth, yearMonth)
+        )
+      );
+
+    if (deduped.length > 0) {
+      await this.upsertMonthRosterEntries(
+        deduped.map((habitId) => ({ userId, habitId, yearMonth })),
+        executor
+      );
+    }
+    return deduped;
+  }
+
+  async removeHabitFromMonthRoster(
+    userId: string,
+    habitId: string,
+    yearMonth: string,
+    executor: DbExecutor = this.database
+  ): Promise<boolean> {
+    const deleted = await executor
+      .delete(habitMonthRosters)
+      .where(
+        and(
+          eq(habitMonthRosters.userId, userId),
+          eq(habitMonthRosters.habitId, habitId),
+          eq(habitMonthRosters.yearMonth, yearMonth)
+        )
+      )
+      .returning({ habitId: habitMonthRosters.habitId });
+    return deleted.length > 0;
   }
 
   async deleteHabitForUser(
@@ -542,7 +737,8 @@ export class DrizzleHabitRepository implements HabitRepository {
   ): Promise<HabitLogRecord[]> {
     if (inputs.length === 0) return [];
     const saved: HabitLogRecord[] = [];
-    const chunkSize = 400;
+    // Keep bind variables safely under SQLite's 999 parameter ceiling (100 * 8 = 800)
+    const chunkSize = 100;
 
     for (let i = 0; i < inputs.length; i += chunkSize) {
       const chunk = inputs.slice(i, i + chunkSize);

@@ -35,7 +35,7 @@ flowchart TB
   end
 
   subgraph Infra["Persistence & External Services"]
-    DB[("Turso / libSQL (SQLite WAL) — 23 Tables, ULID PKs, Cascading FKs, CHECK & Partial Unique Indexes")]
+    DB[("Turso / libSQL (SQLite WAL) — 25 Tables, ULID PKs, Cascading FKs, CHECK & Partial Unique Indexes")]
     RDS[("Redis 3-Tier (Upstash -> ioredis -> Memory) — RateLimiter & UnreadCounter ONLY")]
     ING["Inngest v4 Durable Engine — 13 Functions, Plan-Safe Concurrency (default 5, crons 1) & LIMIT 200 Crons"]
     EXT["External Delivery & Identity (Resend, VAPID Web Push, Google OAuth)"]
@@ -70,7 +70,7 @@ flowchart TB
 
 ## 2. SOLID Clean Layering & Dependency Direction
 
-Dependencies point strictly inward toward `src/server/db/` and `src/server/domain/`. Pure domain calculations (`habit-analytics.ts`, `comment-window-policy.ts`) have zero DB or network imports, while every service accepts repositories and providers via constructor injection (DIP) so all 23 Vitest suites (93 tests) execute offline against ephemeral SQLite databases.
+Dependencies point strictly inward toward `src/server/db/` and `src/server/domain/`. Pure domain calculations (`habit-analytics.ts`, `comment-window-policy.ts`, `habit-import.ts`, `habit-evolution.ts`) have zero DB or network imports, while every service accepts repositories and providers via constructor injection (DIP) so all 26 Vitest suites (110 tests) execute offline against ephemeral SQLite databases.
 
 ```mermaid
 flowchart LR
@@ -95,7 +95,7 @@ flowchart LR
   end
 
   subgraph Foundations["Schema & Concrete Adapters"]
-    SCHEMA["src/server/db/ (23 Drizzle Tables, Relations, WAL Client, withDbRetry)"]
+    SCHEMA["src/server/db/ (25 Drizzle Tables, Relations, WAL Client, withDbRetry)"]
     ADAPT["External Adapters (Inngest v4, Resend, web-push, Upstash / ioredis / InMemory)"]
   end
 
@@ -123,7 +123,7 @@ flowchart LR
 
 ---
 
-## 3. Unified Entity-Relationship Model (23 Tables)
+## 3. Unified Entity-Relationship Model (25 Tables)
 
 All primary keys are sortable ULIDs (`ulidx`), all timestamps are UTC Unix epoch milliseconds (`integer`) paired with explicit IANA timezone strings and calendar date keys (`YYYY-MM-DD`), and referential integrity is enforced by SQLite/Turso (`PRAGMA foreign_keys = ON`, `CHECK` constraints, partial unique indexes, and cascading deletes).
 
@@ -268,7 +268,7 @@ erDiagram
   users ||--o{ admin_audit_logs : "records"
 ```
 
-### 3B. Habits Ledger & Accountability Circle (9 Tables)
+### 3B. Habits Ledger, Per-Month Rosters & Accountability Circle (11 Tables)
 
 Anchored to `users`, `projects`, and `tasks(habit_id)` via strict cascading and `SET NULL` foreign keys.
 
@@ -322,6 +322,21 @@ erDiagram
     text status "CHECK done, missed, skipped"
     text note
     boolean is_backfilled_late
+  }
+  habit_import_aliases {
+    text id PK "ULID"
+    text user_id FK "CASCADE"
+    text habit_id FK "CASCADE"
+    text source_title
+    text normalized_title "UNIQUE(user_id, normalized_title)"
+    text first_seen_date_key
+    text last_seen_date_key
+  }
+  habit_month_rosters {
+    text user_id PK "FK CASCADE -> users"
+    text habit_id PK "FK CASCADE -> habits"
+    text year_month PK "YYYY-MM"
+    integer created_at
   }
   habit_monitors {
     text id PK "ULID"
@@ -624,8 +639,10 @@ flowchart TB
   end
 ```
 
-**Honest Analytics Invariants (`src/server/domain/habit-analytics.ts`):**
+**Honest Analytics, Per-Month Rosters & History Import Invariants (`habit-analytics.ts`, `habit-import.ts`, `habit-evolution.ts`):**
 - Real calendar lengths (28–31 days with leap-year Feb 29), **elapsed-to-date denominators** (future days excluded), mid-month `startDate` clamping, `'skipped'` rest passes excluded from denominators without breaking streaks, and `'weekly_target'` habits capped at `weeklyTargetCount` per calendar week.
+- **Per-Month Curated Rosters (`habit_month_rosters`) & Future-Month Lock:** Each month (`YYYY-MM`) maintains its own enrolled habit roster so switching between months displays and scores ONLY that month's habits; entering a new month offers 1-click carry-over or customization from the previous month without altering prior months' history; and future months (`> currentMonth`) are strictly clamped/rejected across UI, API, and Service layers until they begin.
+- **Excel/CSV History Migration (`habit_import_aliases`):** Strictly restricted to validated `.xlsx` (OOXML ZIP magic-byte checked, lazy-loaded `read-excel-file/browser`, CSP `worker-src 'self' blob:`), `.csv`, and `.txt` files (max 10 MB), supporting 1-sheet or multi-sheet workbooks up to 20,000 marks in chunked ACID transactions, rename/merge identity resolution, true first-appearance `startDate` backfill, and automatic per-month roster population.
 
 ---
 
@@ -659,7 +676,7 @@ flowchart TB
   subgraph Offboard["Safe Account Offboarding"]
     DelAcc["AccountService.deleteAccount(userId)"] --> Sole{"Sole owner of shared project with members?"}
     Sole -->|Yes| Block["400 ValidationError (transfer or delete shared project first)"]
-    Sole -->|No| Sweep["ACID tx: collect scheduled reminders -> DELETE user (cascades all 23 tables) -> reset UnreadCounterCache -> emit cancellations"]
+    Sole -->|No| Sweep["ACID tx: collect scheduled reminders -> DELETE user (cascades all 25 tables) -> reset UnreadCounterCache -> emit cancellations"]
   end
 ```
 

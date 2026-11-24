@@ -369,8 +369,15 @@ export function HabitsMatrix({
                   >
                     {readOnly ? (
                       <div className="flex min-h-9 w-full flex-col justify-center text-left md:min-h-7">
-                        <span className="max-w-[140px] truncate text-xs font-medium text-foreground sm:max-w-[175px]">
-                          {habit.title}
+                        <span className="flex items-center gap-1.5">
+                          <span className="max-w-[140px] truncate text-xs font-medium text-foreground sm:max-w-[175px]">
+                            {habit.title}
+                          </span>
+                          {habit.isArchived ? (
+                            <span className="shrink-0 rounded border border-border bg-muted px-1 py-0.5 text-[9px] font-medium text-muted-foreground">
+                              Archived
+                            </span>
+                          ) : null}
                         </span>
                         <span className="mt-0.5 flex items-center gap-1.5 text-[10px] text-muted-foreground">
                           <span className="mono-tabular">{cadenceTag}</span>
@@ -394,6 +401,11 @@ export function HabitsMatrix({
                           <span className="max-w-[130px] truncate text-xs font-medium text-foreground sm:max-w-[165px]">
                             {habit.title}
                           </span>
+                          {habit.isArchived ? (
+                            <span className="shrink-0 rounded border border-border bg-muted px-1 py-0.5 text-[9px] font-medium text-muted-foreground">
+                              Archived
+                            </span>
+                          ) : null}
                           {hasLinkedTask || habit.autoSyncDailyTask ? (
                             <Link2
                               aria-label="Linked with tasks"

@@ -142,6 +142,9 @@ export function FriendHabitsView({
     });
   }, [scoringMode, workspace]);
 
+  const currentMonth = workspace.todayDateKey.slice(0, 7);
+  const isAtCurrentMonth = workspace.yearMonth >= currentMonth;
+
   const navigate = (opts: {
     month?: string;
     mode?: ScoringMode;
@@ -151,9 +154,13 @@ export function FriendHabitsView({
       setScoringMode(opts.mode);
       return;
     }
-    if (opts.month && onSelectMonth) {
-      onSelectMonth(opts.month);
-      return;
+    if (opts.month) {
+      const clamped = opts.month > currentMonth ? currentMonth : opts.month;
+      if (onSelectMonth) {
+        onSelectMonth(clamped);
+        return;
+      }
+      opts = { ...opts, month: clamped };
     }
     if (opts.cycle && onSelectCycle) {
       onSelectCycle(opts.cycle);
@@ -249,14 +256,28 @@ export function FriendHabitsView({
             type="button"
             variant="ghost"
             size="icon"
-            aria-label="Next month"
-            onMouseEnter={() =>
-              onPrefetchMonth?.(shiftYearMonth(workspace.yearMonth, 1))
+            disabled={isAtCurrentMonth}
+            aria-label={
+              isAtCurrentMonth
+                ? "Future months unlock when they begin"
+                : "Next month"
             }
-            onClick={() =>
-              navigate({ month: shiftYearMonth(workspace.yearMonth, 1) })
+            title={
+              isAtCurrentMonth
+                ? "Future months unlock when they begin"
+                : "Next month"
             }
-            className="mira-icon-btn rounded-l-none text-muted-foreground hover:text-foreground"
+            onMouseEnter={() => {
+              if (!isAtCurrentMonth) {
+                onPrefetchMonth?.(shiftYearMonth(workspace.yearMonth, 1));
+              }
+            }}
+            onClick={() => {
+              if (!isAtCurrentMonth) {
+                navigate({ month: shiftYearMonth(workspace.yearMonth, 1) });
+              }
+            }}
+            className="mira-icon-btn rounded-l-none text-muted-foreground hover:text-foreground disabled:opacity-35"
           >
             <ChevronRight className="size-3.5" />
           </Button>

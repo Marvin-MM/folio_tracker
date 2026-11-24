@@ -1,7 +1,13 @@
 import { relations } from "drizzle-orm";
 import { adminAuditLogs } from "./admin";
 import { accounts, sessions, users } from "./auth";
-import { habitLogs, habits, habitTrackerSettings } from "./habits";
+import {
+  habitImportAliases,
+  habitLogs,
+  habitMonthRosters,
+  habits,
+  habitTrackerSettings,
+} from "./habits";
 import {
   habitComments,
   habitMonitorItems,
@@ -39,6 +45,8 @@ export const usersRelations = relations(users, ({ one, many }) => ({
     references: [habitTrackerSettings.userId],
   }),
   habits: many(habits),
+  habitImportAliases: many(habitImportAliases),
+  habitMonthRosters: many(habitMonthRosters),
   habitLogs: many(habitLogs),
   habitMonitorsAsOwner: many(habitMonitors, {
     relationName: "habitMonitorOwner",
@@ -227,10 +235,40 @@ export const habitsRelations = relations(habits, ({ one, many }) => ({
     references: [projects.id],
   }),
   logs: many(habitLogs),
+  importAliases: many(habitImportAliases),
+  monthRosters: many(habitMonthRosters),
   linkedTasks: many(tasks),
   monitorItems: many(habitMonitorItems),
   comments: many(habitComments),
 }));
+
+export const habitMonthRostersRelations = relations(
+  habitMonthRosters,
+  ({ one }) => ({
+    user: one(users, {
+      fields: [habitMonthRosters.userId],
+      references: [users.id],
+    }),
+    habit: one(habits, {
+      fields: [habitMonthRosters.habitId],
+      references: [habits.id],
+    }),
+  })
+);
+
+export const habitImportAliasesRelations = relations(
+  habitImportAliases,
+  ({ one }) => ({
+    user: one(users, {
+      fields: [habitImportAliases.userId],
+      references: [users.id],
+    }),
+    habit: one(habits, {
+      fields: [habitImportAliases.habitId],
+      references: [habits.id],
+    }),
+  })
+);
 
 export const habitLogsRelations = relations(habitLogs, ({ one }) => ({
   habit: one(habits, {

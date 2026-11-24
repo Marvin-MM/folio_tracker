@@ -32,6 +32,7 @@ interface CreateHabitDialogProps {
   open: boolean;
   onOpenChange: (open: boolean) => void;
   todayDateKey: string;
+  targetYearMonth?: string;
   projects: SidebarProjectItem[];
 }
 
@@ -49,6 +50,7 @@ export function CreateHabitDialog({
   open,
   onOpenChange,
   todayDateKey,
+  targetYearMonth,
   projects,
 }: CreateHabitDialogProps) {
   const [title, setTitle] = useState("");
@@ -108,6 +110,7 @@ export function CreateHabitDialog({
         weeklyTargetCount:
           cadenceType === "weekly_target" ? weeklyTargetCount : null,
         startDate,
+        targetYearMonth,
         preferredTime: preferredTime.trim() || null,
         linkedProjectId: linkedProjectId === "none" ? null : linkedProjectId,
         autoSyncDailyTask,
@@ -118,7 +121,7 @@ export function CreateHabitDialog({
         return;
       }
 
-      await invalidate(["habits", "today", "tasks", "sidebar"]);
+      await invalidate(["habits", "today", "tasks", "sidebar", "admin"]);
       toast.success(`Habit "${result.data.title}" added.`);
       handleOpenChange(false);
     });
@@ -178,6 +181,7 @@ export function CreateHabitDialog({
                 name="habitStartDate"
                 type="date"
                 required
+                max={todayDateKey}
                 value={startDate}
                 onChange={(e) => setStartDate(e.target.value)}
                 className="mono-tabular mira-row bg-background text-xs"

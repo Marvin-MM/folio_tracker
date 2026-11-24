@@ -3,6 +3,7 @@ import {
   check,
   index,
   integer,
+  primaryKey,
   sqliteTable,
   text,
   uniqueIndex,
@@ -193,6 +194,38 @@ export const habitImportAliases = sqliteTable(
 );
 
 export type HabitImportAliasRecord = typeof habitImportAliases.$inferSelect;
+
+/**
+ * Per-month habit enrollment roster: records exactly which habits belong to a
+ * given `year_month` (`YYYY-MM`) so each month renders its own curated habit
+ * list and accurate monthly analytics while allowing carry-over & editing
+ * between months without altering historical months.
+ */
+export const habitMonthRosters = sqliteTable(
+  "habit_month_rosters",
+  {
+    userId: text("user_id")
+      .notNull()
+      .references(() => users.id, { onDelete: "cascade" }),
+    habitId: text("habit_id")
+      .notNull()
+      .references(() => habits.id, { onDelete: "cascade" }),
+    yearMonth: text("year_month").notNull(),
+    createdAt: integer("created_at", { mode: "number" })
+      .notNull()
+      .$defaultFn(() => Date.now()),
+  },
+  (table) => [
+    primaryKey({ columns: [table.userId, table.habitId, table.yearMonth] }),
+    index("habit_month_rosters_user_month_idx").on(
+      table.userId,
+      table.yearMonth
+    ),
+    index("habit_month_rosters_habit_idx").on(table.habitId, table.yearMonth),
+  ]
+);
+
+export type HabitMonthRosterRecord = typeof habitMonthRosters.$inferSelect;
 
 export const habitLogs = sqliteTable(
   "habit_logs",

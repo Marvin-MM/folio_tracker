@@ -2,7 +2,7 @@
   "version": "6",
   "dialect": "sqlite",
   "id": "d08cf5c5-8ef2-416b-b9d9-e09e6e05d38c",
-  "prevId": "4ebcc292-5d12-4916-bb89-2803d80e6810",
+  "prevId": "bf49e207-3664-4975-9fa4-6c477445ef21",
   "tables": {
     "accounts": {
       "name": "accounts",
@@ -2870,6 +2870,116 @@
           "tableTo": "users",
           "columnsFrom": [
             "owner_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "cascade",
+          "onUpdate": "no action"
+        }
+      },
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {},
+      "checkConstraints": {}
+    },
+    "habit_import_aliases": {
+      "name": "habit_import_aliases",
+      "columns": {
+        "id": {
+          "name": "id",
+          "type": "text",
+          "primaryKey": true,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "user_id": {
+          "name": "user_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "habit_id": {
+          "name": "habit_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "source_title": {
+          "name": "source_title",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "normalized_title": {
+          "name": "normalized_title",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "first_seen_date_key": {
+          "name": "first_seen_date_key",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "last_seen_date_key": {
+          "name": "last_seen_date_key",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "created_at": {
+          "name": "created_at",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        }
+      },
+      "indexes": {
+        "habit_import_alias_user_title_uq": {
+          "name": "habit_import_alias_user_title_uq",
+          "columns": [
+            "user_id",
+            "normalized_title"
+          ],
+          "isUnique": true
+        },
+        "habit_import_alias_user_habit_idx": {
+          "name": "habit_import_alias_user_habit_idx",
+          "columns": [
+            "user_id",
+            "habit_id"
+          ],
+          "isUnique": false
+        }
+      },
+      "foreignKeys": {
+        "habit_import_aliases_user_id_users_id_fk": {
+          "name": "habit_import_aliases_user_id_users_id_fk",
+          "tableFrom": "habit_import_aliases",
+          "tableTo": "users",
+          "columnsFrom": [
+            "user_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "cascade",
+          "onUpdate": "no action"
+        },
+        "habit_import_aliases_habit_id_habits_id_fk": {
+          "name": "habit_import_aliases_habit_id_habits_id_fk",
+          "tableFrom": "habit_import_aliases",
+          "tableTo": "habits",
+          "columnsFrom": [
+            "habit_id"
           ],
           "columnsTo": [
             "id"
