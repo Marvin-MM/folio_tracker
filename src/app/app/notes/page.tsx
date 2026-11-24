@@ -1,6 +1,6 @@
 import type { Metadata } from "next";
-import { ViewHeader } from "@/components/workspace/view-header";
-import { NoteListView } from "@/components/workspace/workspace-lists";
+import { NotesWorkspaceClient } from "@/components/workspace/workspace-query-views";
+import { getServerTimestampMs } from "@/lib/query/clock";
 import { requireSession } from "@/server/dal/auth-guard";
 import { noteRepository } from "@/server/dal/note-repository";
 
@@ -21,22 +21,15 @@ export default async function NotesPage({ searchParams }: NotesPageProps) {
   ]);
 
   const timezone = user.timezone || "UTC";
-  const noteItems = await noteRepository.listNotesWithReminders(user.id);
+  const initialFetchedAtMs = getServerTimestampMs();
+  const items = await noteRepository.listNotesWithReminders(user.id);
 
   return (
-    <div className="flex flex-1 flex-col">
-      <ViewHeader
-        title="Notes"
-        subtitle="Quiet markdown notes with optional timed reminders"
-        meta={`${noteItems.length} ${noteItems.length === 1 ? "note" : "notes"}`}
-      />
-      <div className="mx-auto w-full max-w-3xl p-4 md:p-6">
-        <NoteListView
-          notes={noteItems}
-          timezone={timezone}
-          initialSelectedId={params.item ?? null}
-        />
-      </div>
-    </div>
+    <NotesWorkspaceClient
+      userId={user.id}
+      initialData={{ items, timezone }}
+      initialFetchedAtMs={initialFetchedAtMs}
+      initialSelectedId={params.item ?? null}
+    />
   );
 }

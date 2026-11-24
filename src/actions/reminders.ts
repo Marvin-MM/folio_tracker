@@ -1,6 +1,5 @@
 "use server";
 
-import { revalidatePath } from "next/cache";
 import { z } from "zod";
 import { requireSession } from "@/server/dal/auth-guard";
 import {
@@ -39,13 +38,7 @@ const cancelReminderSchema = z.object({
 });
 
 function revalidateReminderPaths() {
-  revalidatePath("/app", "layout");
-  revalidatePath("/app/inbox");
-  revalidatePath("/app/today");
-  revalidatePath("/app/upcoming");
-  revalidatePath("/app/reminders");
-  revalidatePath("/app/notes");
-  revalidatePath("/app/projects", "layout");
+  // Client freshness is driven by TanStack Query domain invalidation; hard reloads read live Turso.
 }
 
 export async function attachReminderAction(

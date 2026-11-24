@@ -4,6 +4,7 @@ import { useMemo, useRef, useState, useTransition, type FormEvent } from "react"
 import { Loader2, Upload } from "lucide-react";
 import { toast } from "sonner";
 import { bulkImportHabitsAction } from "@/actions/habits";
+import { useInvalidateWorkspace } from "@/hooks/use-workspace-queries";
 import { Button } from "@/components/ui/button";
 import {
   Dialog,
@@ -40,6 +41,7 @@ export function BulkImportHabitsDialog({
 }: BulkImportHabitsDialogProps) {
   const [rawText, setRawText] = useState("");
   const [isPending, startTransition] = useTransition();
+  const invalidate = useInvalidateWorkspace();
   const fileInputRef = useRef<HTMLInputElement>(null);
 
   const preview = useMemo(() => {
@@ -92,6 +94,7 @@ export function BulkImportHabitsDialog({
         toast.error(result.error.message);
         return;
       }
+      await invalidate(["habits", "today", "sidebar"]);
       toast.success(
         `Imported ${result.data.importedCount} habit${result.data.importedCount === 1 ? "" : "s"}.`
       );

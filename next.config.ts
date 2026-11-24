@@ -23,6 +23,17 @@ const contentSecurityPolicy = cspDirectives.join("; ");
 
 const nextConfig: NextConfig = {
   serverExternalPackages: ["@libsql/client", "web-push", "ioredis"],
+  images: {
+    formats: ["image/avif", "image/webp"],
+  },
+  experimental: {
+    // Allow 60s client Router Cache reuse for visited dynamic App Router views
+    // while TanStack Query manages fine-grained stale-while-revalidate & invalidation.
+    staleTimes: {
+      dynamic: 60,
+      static: 180,
+    },
+  },
   async headers() {
     return [
       {
@@ -39,6 +50,24 @@ const nextConfig: NextConfig = {
           {
             key: "Service-Worker-Allowed",
             value: "/",
+          },
+        ],
+      },
+      {
+        source: "/icons/:path*",
+        headers: [
+          {
+            key: "Cache-Control",
+            value: "public, max-age=31536000, immutable",
+          },
+        ],
+      },
+      {
+        source: "/splash/:path*",
+        headers: [
+          {
+            key: "Cache-Control",
+            value: "public, max-age=31536000, immutable",
           },
         ],
       },

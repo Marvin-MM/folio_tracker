@@ -4,6 +4,7 @@ import { useState, useTransition, type FormEvent } from "react";
 import { Loader2 } from "lucide-react";
 import { toast } from "sonner";
 import { createHabitAction } from "@/actions/habits";
+import { useInvalidateWorkspace } from "@/hooks/use-workspace-queries";
 import { Button } from "@/components/ui/button";
 import {
   Dialog,
@@ -61,6 +62,7 @@ export function CreateHabitDialog({
   const [linkedProjectId, setLinkedProjectId] = useState("none");
   const [autoSyncDailyTask, setAutoSyncDailyTask] = useState(false);
   const [isPending, startTransition] = useTransition();
+  const invalidate = useInvalidateWorkspace();
 
   const editableProjects = projects.filter(
     (p) => p.role === "owner" || p.role === "editor"
@@ -116,6 +118,7 @@ export function CreateHabitDialog({
         return;
       }
 
+      await invalidate(["habits", "today", "tasks", "sidebar"]);
       toast.success(`Habit "${result.data.title}" added.`);
       handleOpenChange(false);
     });

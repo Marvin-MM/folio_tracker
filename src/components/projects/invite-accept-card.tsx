@@ -17,7 +17,10 @@ import {
   CardHeader,
   CardTitle,
 } from "@/components/ui/card";
-import { performSecureSignOut } from "@/lib/client-sign-out";
+import {
+  hardNavigateAfterSignOut,
+  performSecureSignOut,
+} from "@/lib/client-sign-out";
 import type { InvitationPreviewResult } from "@/server/services/project-invite-service";
 
 interface InviteAcceptCardProps {
@@ -110,8 +113,9 @@ export function InviteAcceptCard({
     setSwitchingAccount(true);
     try {
       await performSecureSignOut();
-      router.push(`/login?callbackURL=${encodeURIComponent(callbackPath)}`);
-      router.refresh();
+      hardNavigateAfterSignOut(
+        `/login?callbackURL=${encodeURIComponent(callbackPath)}`
+      );
     } finally {
       setSwitchingAccount(false);
     }

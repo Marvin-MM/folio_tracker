@@ -12,6 +12,7 @@ import {
 } from "lucide-react";
 import { toast } from "sonner";
 import { logHabitDayAction } from "@/actions/habits";
+import { useInvalidateWorkspace } from "@/hooks/use-workspace-queries";
 import { cn } from "@/lib/utils";
 import type { HabitLogStatus } from "@/server/db/schema";
 import type { TodayHabitStripItem } from "@/server/services/habit-service";
@@ -26,6 +27,7 @@ export function TodayHabitsStrip({
   initialItems,
 }: TodayHabitsStripProps) {
   const [expanded, setExpanded] = useState(true);
+  const invalidate = useInvalidateWorkspace();
   const [, startTransition] = useTransition();
 
   const [optimisticItems, applyOptimistic] = useOptimistic<
@@ -86,7 +88,9 @@ export function TodayHabitsStrip({
 
       if (!result.ok) {
         toast.error(result.error.message);
+        return;
       }
+      await invalidate(["habits", "today", "tasks", "sidebar"]);
     });
   };
 
@@ -116,7 +120,7 @@ export function TodayHabitsStrip({
 
         <Link
           href="/app/habits"
-          className="text-[11px] font-medium text-muted-foreground underline-offset-2 hover:text-foreground hover:underline"
+          className="inline-flex min-h-9 items-center px-1 text-[11px] font-medium text-muted-foreground underline-offset-2 hover:text-foreground hover:underline md:min-h-6"
         >
           Matrix →
         </Link>
@@ -192,7 +196,7 @@ export function TodayHabitsStrip({
                   title={isSkipped ? "Skipped (click to clear)" : "Skip today"}
                   aria-pressed={isSkipped}
                   className={cn(
-                    "ml-0.5 flex size-6 items-center justify-center rounded border transition-colors md:size-5",
+                    "ml-0.5 flex size-9 items-center justify-center rounded border transition-colors md:size-5",
                     isSkipped
                       ? "border-foreground/40 bg-accent text-foreground"
                       : "border-transparent text-muted-foreground hover:border-border hover:bg-accent hover:text-foreground"

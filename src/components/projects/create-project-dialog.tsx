@@ -16,6 +16,7 @@ import {
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
+import { useInvalidateWorkspace } from "@/hooks/use-workspace-queries";
 import { cn } from "@/lib/utils";
 import type { ProjectColorToken } from "@/server/services/project-service";
 
@@ -40,6 +41,7 @@ export function CreateProjectDialog({
   onOpenChange,
 }: CreateProjectDialogProps) {
   const router = useRouter();
+  const invalidate = useInvalidateWorkspace();
   const [name, setName] = useState("");
   const [description, setDescription] = useState("");
   const [colorToken, setColorToken] = useState<ProjectColorToken>("collab");
@@ -70,6 +72,7 @@ export function CreateProjectDialog({
         return;
       }
 
+      await invalidate(["sidebar", "projects"]);
       toast.success(`Project "${result.data.name}" created.`);
       handleOpenChange(false);
       router.push(`/app/projects/${result.data.id}`);

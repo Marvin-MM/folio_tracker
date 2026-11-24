@@ -1,11 +1,73 @@
-/* Folio Service Worker — Web Push & Notification Deep Links */
+/* Folio Service Worker — Web Push, Notification Quick Actions & Public-Only Offline Fallback */
+
+const PUBLIC_CACHE_NAME = "folio-public-v1";
+const OFFLINE_URL = "/offline";
+const PUBLIC_PRECACHE_URLS = [
+  OFFLINE_URL,
+  "/manifest.webmanifest",
+  "/icons/icon-192.png",
+  "/icons/icon-512.png",
+];
 
 self.addEventListener("install", (event) => {
-  event.waitUntil(self.skipWaiting());
+  event.waitUntil(
+    caches
+      .open(PUBLIC_CACHE_NAME)
+      .then((cache) => cache.addAll(PUBLIC_PRECACHE_URLS))
+      .catch(() => undefined)
+      .then(() => self.skipWaiting())
+  );
 });
 
 self.addEventListener("activate", (event) => {
-  event.waitUntil(self.clients.claim());
+  event.waitUntil(
+    caches
+      .keys()
+      .then((keys) =>
+        Promise.all(
+          keys
+            .filter((key) => key !== PUBLIC_CACHE_NAME)
+            .map((key) => caches.delete(key))
+        )
+      )
+      .then(() => self.clients.claim())
+  );
+});
+
+/**
+ * Security-first navigation fetch handler:
+ * - Always goes network-first for page navigations.
+ * - Falls back to the static `/offline` page ONLY when the network fails.
+ * - NEVER writes `/api/*`, `/app/*`, or `/invite/*` private responses into Cache Storage.
+ */
+self.addEventListener("fetch", (event) => {
+  const { request } = event;
+  if (request.method !== "GET") return;
+
+  const url = new URL(request.url);
+  if (url.origin !== self.location.origin) return;
+
+  // Never intercept or cache private API endpoints or invite tokens
+  if (
+    url.pathname.startsWith("/api/") ||
+    url.pathname.startsWith("/invite/")
+  ) {
+    return;
+  }
+
+  if (request.mode === "navigate") {
+    event.respondWith(
+      fetch(request).catch(async () => {
+        const cache = await caches.open(PUBLIC_CACHE_NAME);
+        const cachedOffline = await cache.match(OFFLINE_URL);
+        if (cachedOffline) return cachedOffline;
+        return new Response("You are offline. Please reconnect to use Folio.", {
+          status: 503,
+          headers: { "Content-Type": "text/plain; charset=utf-8" },
+        });
+      })
+    );
+  }
 });
 
 self.addEventListener("push", (event) => {
@@ -27,9 +89,7 @@ self.addEventListener("push", (event) => {
     payload.body = event.data.text() || payload.body;
   }
 
-  const actions = [
-    { action: "open", title: "Open" },
-  ];
+  const actions = [{ action: "open", title: "Open" }];
 
   if (payload.reminderId) {
     actions.push({ action: "snooze_15m", title: "Snooze 15m" });

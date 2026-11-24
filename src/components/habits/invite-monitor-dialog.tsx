@@ -7,6 +7,7 @@ import {
   inviteCollaboratorMonitorAction,
   inviteMonitorByEmailAction,
 } from "@/actions/habits-social";
+import { useInvalidateWorkspace } from "@/hooks/use-workspace-queries";
 import { Button } from "@/components/ui/button";
 import { Checkbox } from "@/components/ui/checkbox";
 import {
@@ -73,6 +74,7 @@ export function InviteMonitorDialog({
   const [intervalOpenHours, setIntervalOpenHours] = useState("24");
   const [allowReactions, setAllowReactions] = useState(true);
   const [isPending, startTransition] = useTransition();
+  const invalidate = useInvalidateWorkspace();
 
   const handleOpenChange = (nextOpen: boolean) => {
     if (!nextOpen) {
@@ -140,6 +142,7 @@ export function InviteMonitorDialog({
         toast.error(result.error.message);
         return;
       }
+      await invalidate(["circle"]);
       toast.success(result.data.message);
       handleOpenChange(false);
     });
@@ -164,6 +167,7 @@ export function InviteMonitorDialog({
         toast.error(result.error.message);
         return;
       }
+      await invalidate(["circle"]);
       toast.success(result.data.message);
       handleOpenChange(false);
     });

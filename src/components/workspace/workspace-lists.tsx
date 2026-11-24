@@ -47,6 +47,7 @@ import { useDetailSheet } from "@/components/shell/detail-sheet-context";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
+import { useInvalidateWorkspace } from "@/hooks/use-workspace-queries";
 import { parseQuickCapture } from "@/lib/natural-language-capture";
 import type { SnoozePreset } from "@/lib/reminder-presets";
 import { cn } from "@/lib/utils";
@@ -113,6 +114,7 @@ export function TaskListView({
   initialSelectedId?: string | null;
 }) {
   const { openDetail, activeItem, closeDetail } = useDetailSheet();
+  const invalidate = useInvalidateWorkspace();
   const [quickInput, setQuickInput] = useState("");
   const [showCompleted, setShowCompleted] = useState(false);
   const [isPending, startTransition] = useTransition();
@@ -195,6 +197,7 @@ export function TaskListView({
         return;
       }
 
+      await invalidate(["tasks", "reminders", "sidebar"]);
       toast.success(
         result.data.reminder
           ? `Task added with reminder (${formatShortTimestamp(
@@ -227,6 +230,11 @@ export function TaskListView({
         return;
       }
 
+      await invalidate(
+        entry.task.habitId
+          ? ["tasks", "reminders", "habits", "projects", "sidebar"]
+          : ["tasks", "reminders", "projects", "sidebar"]
+      );
       if (nextStatus === "done" && result.data.cancelledReminderCount > 0) {
         toast.success("Completed and cancelled pending reminder.");
       }
@@ -244,6 +252,7 @@ export function TaskListView({
         toast.error(result.error.message);
         return;
       }
+      await invalidate(["tasks", "reminders", "projects", "sidebar"]);
       toast.success("Task deleted.");
     });
   };
@@ -280,7 +289,9 @@ export function TaskListView({
       });
       if (!result.ok) {
         toast.error(result.error.message);
+        return;
       }
+      await invalidate(["tasks"]);
     });
   };
 
@@ -354,27 +365,31 @@ export function TaskListView({
           isSelected && "bg-accent"
         )}
       >
-        <div className="flex min-w-0 flex-1 items-center gap-2">
+        <div className="flex min-w-0 flex-1 items-center gap-1 md:gap-2">
           <button
             type="button"
             role="checkbox"
             aria-checked={isDone}
             aria-label={isDone ? `Mark "${task.title}" incomplete` : `Complete "${task.title}"`}
             onClick={() => handleToggleDone(entry)}
-            className={cn(
-              "flex size-4 shrink-0 items-center justify-center rounded-[4px] border transition-colors",
-              isDone
-                ? "border-done bg-done text-primary-foreground"
-                : "border-muted-foreground/50 bg-background hover:border-foreground"
-            )}
+            className="flex size-9 shrink-0 items-center justify-center rounded md:size-5"
           >
-            {isDone ? <Check className="size-2.5 stroke-[2.5]" /> : null}
+            <span
+              className={cn(
+                "flex size-4 items-center justify-center rounded-[4px] border transition-colors",
+                isDone
+                  ? "border-done bg-done text-primary-foreground"
+                  : "border-muted-foreground/50 bg-background hover:border-foreground"
+              )}
+            >
+              {isDone ? <Check className="size-2.5 stroke-[2.5]" /> : null}
+            </span>
           </button>
 
           <button
             type="button"
             onClick={() => openDetail({ kind: "task", data: entry })}
-            className="flex min-w-0 flex-1 items-center gap-2 py-1 text-left"
+            className="flex min-h-9 min-w-0 flex-1 items-center gap-2 py-1 text-left md:min-h-7"
           >
             <span
               className={cn(
@@ -435,7 +450,7 @@ export function TaskListView({
             </span>
           ) : null}
 
-          <div className="flex items-center gap-0.5 opacity-0 transition-opacity group-focus-within:opacity-100 group-hover:opacity-100">
+          <div className="flex items-center gap-0.5 md:opacity-0 md:transition-opacity md:group-focus-within:opacity-100 md:group-hover:opacity-100">
             {allowReorder && groupItems.length > 1 ? (
               <>
                 <button
@@ -443,7 +458,7 @@ export function TaskListView({
                   disabled={index === 0 || isPending}
                   onClick={() => handleMove(groupItems, index, -1)}
                   aria-label="Move task up"
-                  className="flex size-5 items-center justify-center rounded text-muted-foreground hover:bg-muted hover:text-foreground disabled:opacity-30"
+                  className="flex size-9 items-center justify-center rounded text-muted-foreground hover:bg-muted hover:text-foreground disabled:opacity-30 md:size-5"
                 >
                   <ArrowUp className="size-3" />
                 </button>
@@ -452,7 +467,7 @@ export function TaskListView({
                   disabled={index === groupItems.length - 1 || isPending}
                   onClick={() => handleMove(groupItems, index, 1)}
                   aria-label="Move task down"
-                  className="flex size-5 items-center justify-center rounded text-muted-foreground hover:bg-muted hover:text-foreground disabled:opacity-30"
+                  className="flex size-9 items-center justify-center rounded text-muted-foreground hover:bg-muted hover:text-foreground disabled:opacity-30 md:size-5"
                 >
                   <ArrowDown className="size-3" />
                 </button>
@@ -463,7 +478,7 @@ export function TaskListView({
               disabled={isPending}
               onClick={() => handleDelete(task.id)}
               aria-label={`Delete "${task.title}"`}
-              className="flex size-5 items-center justify-center rounded text-muted-foreground hover:bg-muted hover:text-overdue"
+              className="flex size-9 items-center justify-center rounded text-muted-foreground hover:bg-muted hover:text-overdue md:size-5"
             >
               <Trash2 className="size-3" />
             </button>
@@ -494,7 +509,7 @@ export function TaskListView({
             type="submit"
             size="sm"
             disabled={!parsedQuick.cleanTitle.trim() || isPending}
-            className="h-7 px-2.5 text-xs"
+            className="h-9 px-3 text-xs md:h-7 md:px-2.5"
           >
             Add
           </Button>
@@ -604,6 +619,7 @@ export function ReminderListView({
   nowMs: number;
 }) {
   const { openDetail, activeItem, closeDetail } = useDetailSheet();
+  const invalidate = useInvalidateWorkspace();
   const [isPending, startTransition] = useTransition();
 
   const [optimisticItems, applyOptimistic] = useOptimistic<
@@ -659,6 +675,7 @@ export function ReminderListView({
         return;
       }
 
+      await invalidate(["reminders", "tasks", "notes", "projects", "sidebar"]);
       toast.success(
         `Snoozed to ${formatShortTimestamp(result.data.remindAt, timezone)}`
       );
@@ -684,6 +701,7 @@ export function ReminderListView({
         toast.error(result.error.message);
         return;
       }
+      await invalidate(["reminders", "tasks", "notes", "projects", "sidebar"]);
       toast.success("Reminder cancelled.");
     });
   };
@@ -764,10 +782,7 @@ export function ReminderListView({
 
                   <div className="flex shrink-0 items-center gap-1.5">
                     <span className="mono-tabular text-[11px] font-medium text-reminder">
-                      {formatShortTimestamp(
-                        reminder.remindAt,
-                        reminder.timezone || timezone
-                      )}
+                      {formatShortTimestamp(reminder.remindAt, timezone)}
                     </span>
 
                     <div className="flex items-center gap-1">
@@ -837,6 +852,7 @@ export function NoteListView({
   initialSelectedId?: string | null;
 }) {
   const { openDetail, activeItem } = useDetailSheet();
+  const invalidate = useInvalidateWorkspace();
   const [searchQuery, setSearchQuery] = useState("");
   const [activeTag, setActiveTag] = useState<string | null>(null);
   const [newNoteTitle, setNewNoteTitle] = useState("");
@@ -917,6 +933,7 @@ export function NoteListView({
         return;
       }
 
+      await invalidate(["notes", "reminders", "sidebar"]);
       toast.success(
         result.data.reminder
           ? `Note created with reminder (${formatShortTimestamp(
@@ -944,7 +961,9 @@ export function NoteListView({
       const result = await toggleNotePinAction({ noteId });
       if (!result.ok) {
         toast.error(result.error.message);
+        return;
       }
+      await invalidate(["notes"]);
     });
   };
 
@@ -965,7 +984,7 @@ export function NoteListView({
         <button
           type="button"
           onClick={() => openDetail({ kind: "note", data: entry })}
-          className="flex min-w-0 flex-1 items-center gap-2 text-left"
+          className="flex min-h-9 min-w-0 flex-1 items-center gap-2 text-left md:min-h-7"
         >
           <FileText className="size-3.5 shrink-0 text-muted-foreground" />
           <span className="truncate font-medium text-foreground">
@@ -999,7 +1018,7 @@ export function NoteListView({
             onClick={() => handleTogglePin(note.id)}
             aria-label={note.isPinned ? `Unpin "${note.title}"` : `Pin "${note.title}"`}
             className={cn(
-              "flex size-6 items-center justify-center rounded transition-colors hover:bg-muted",
+              "flex size-9 items-center justify-center rounded transition-colors hover:bg-muted md:size-6",
               note.isPinned
                 ? "text-foreground"
                 : "text-muted-foreground opacity-50 group-hover:opacity-100"
@@ -1033,7 +1052,7 @@ export function NoteListView({
             type="submit"
             size="sm"
             disabled={!newNoteTitle.trim() || isPending}
-            className="h-7 px-2.5 text-xs"
+            className="h-9 px-3 text-xs md:h-7 md:px-2.5"
           >
             New note
           </Button>
@@ -1069,7 +1088,7 @@ export function NoteListView({
             type="button"
             onClick={() => setActiveTag(null)}
             className={cn(
-              "rounded border px-2 py-0.5 text-[11px] transition-colors",
+              "min-h-9 rounded border px-2.5 py-0.5 text-[11px] transition-colors md:min-h-6 md:px-2",
               activeTag === null
                 ? "border-foreground bg-primary text-primary-foreground"
                 : "border-border bg-card text-muted-foreground hover:text-foreground"
@@ -1085,7 +1104,7 @@ export function NoteListView({
                 setActiveTag((prev) => (prev === tag ? null : tag))
               }
               className={cn(
-                "rounded border px-2 py-0.5 text-[11px] transition-colors",
+                "min-h-9 rounded border px-2.5 py-0.5 text-[11px] transition-colors md:min-h-6 md:px-2",
                 activeTag === tag
                   ? "border-foreground bg-primary text-primary-foreground"
                   : "border-border bg-card text-muted-foreground hover:text-foreground"
@@ -1160,7 +1179,10 @@ export function NoteListView({
       )}
 
       <div className="flex items-center justify-end text-[11px] text-muted-foreground">
-        <Link href="/app/reminders" className="hover:text-foreground hover:underline">
+        <Link
+          href="/app/reminders"
+          className="inline-flex min-h-9 items-center px-1 hover:text-foreground hover:underline md:min-h-6"
+        >
           View all active reminders →
         </Link>
       </div>

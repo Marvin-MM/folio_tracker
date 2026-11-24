@@ -35,7 +35,11 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { Switch } from "@/components/ui/switch";
-import { performSecureSignOut } from "@/lib/client-sign-out";
+import { useInvalidateWorkspace } from "@/hooks/use-workspace-queries";
+import {
+  hardNavigateAfterSignOut,
+  performSecureSignOut,
+} from "@/lib/client-sign-out";
 import type { UserPreferencesRecord } from "@/server/dal/user-repository";
 
 interface SettingsPanelProps {
@@ -52,6 +56,7 @@ export function SettingsPanel({
   timezoneOptions,
 }: SettingsPanelProps) {
   const router = useRouter();
+  const invalidate = useInvalidateWorkspace();
   const { theme, setTheme } = useTheme();
   const isMounted = useSyncExternalStore(
     emptySubscribe,
@@ -91,6 +96,8 @@ export function SettingsPanel({
         return;
       }
 
+      await invalidate(["all"]);
+      router.refresh();
       toast.success("Preferences saved.");
     });
   };
@@ -121,8 +128,7 @@ export function SettingsPanel({
       }
 
       toast.success("Your account has been permanently deleted.");
-      router.push("/login");
-      router.refresh();
+      hardNavigateAfterSignOut("/login");
     });
   };
 
@@ -151,6 +157,7 @@ export function SettingsPanel({
               <Input
                 id="settings-name"
                 name="name"
+                autoComplete="name"
                 value={name}
                 onChange={(event) => setName(event.target.value)}
                 required
@@ -166,6 +173,8 @@ export function SettingsPanel({
                 <Input
                   id="settings-email"
                   name="email"
+                  type="email"
+                  autoComplete="email"
                   value={profile.email}
                   disabled
                   className="mira-row bg-muted/40 text-muted-foreground"
@@ -205,7 +214,9 @@ export function SettingsPanel({
                   id="settings-timezone"
                   className="mira-row mono-tabular w-full bg-background text-xs"
                 >
-                  <SelectValue placeholder="Select timezone" />
+                  <SelectValue placeholder="Select timezone">
+                    {timezone}
+                  </SelectValue>
                 </SelectTrigger>
                 <SelectContent className="max-h-72">
                   {allTimezones.map((tz) => (

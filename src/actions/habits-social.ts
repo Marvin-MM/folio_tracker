@@ -130,9 +130,7 @@ const toggleReactionSchema = z.object({
 });
 
 function revalidateCirclePaths(ownerId?: string) {
-  revalidatePath("/app", "layout");
-  revalidatePath("/app/habits");
-  revalidatePath("/app/habits/circle");
+  // External token acceptance still refreshes server routes; in-app circle mutations use TanStack Query.
   if (ownerId) {
     revalidatePath(`/app/habits/circle/${ownerId}`);
   }

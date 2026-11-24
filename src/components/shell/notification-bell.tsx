@@ -17,6 +17,7 @@ import {
   PopoverTrigger,
 } from "@/components/ui/popover";
 import { Separator } from "@/components/ui/separator";
+import { useInvalidateWorkspace } from "@/hooks/use-workspace-queries";
 import type { SnoozePreset } from "@/lib/reminder-presets";
 import { cn } from "@/lib/utils";
 import type { NotificationRecord } from "@/server/db/schema";
@@ -82,6 +83,7 @@ export function NotificationBell({
   timezone,
 }: NotificationBellProps) {
   const [open, setOpen] = useState(false);
+  const invalidate = useInvalidateWorkspace();
   const [isPending, startTransition] = useTransition();
 
   const [optimisticItems, applyOptimistic] = useOptimistic<
@@ -105,7 +107,9 @@ export function NotificationBell({
       const result = await markAllNotificationsReadAction();
       if (!result.ok) {
         toast.error(result.error.message);
+        return;
       }
+      await invalidate(["notifications"]);
     });
   };
 
@@ -115,7 +119,9 @@ export function NotificationBell({
       const result = await markNotificationReadAction({ notificationId: id });
       if (!result.ok) {
         toast.error(result.error.message);
+        return;
       }
+      await invalidate(["notifications"]);
     });
   };
 
@@ -136,6 +142,7 @@ export function NotificationBell({
         return;
       }
 
+      await invalidate(["notifications", "reminders", "tasks", "notes", "sidebar"]);
       toast.success(
         `Snoozed until ${formatCreatedAt(snoozeRes.data.remindAt, timezone)}`
       );
@@ -167,6 +174,7 @@ export function NotificationBell({
 
       <PopoverContent
         align="end"
+        aria-label="Notifications"
         className="w-[340px] border-border bg-popover p-0"
       >
         <div className="flex items-center justify-between px-3 py-2.5">

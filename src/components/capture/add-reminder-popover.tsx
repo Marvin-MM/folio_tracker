@@ -14,6 +14,7 @@ import {
   PopoverTrigger,
 } from "@/components/ui/popover";
 import { Separator } from "@/components/ui/separator";
+import { useInvalidateWorkspace } from "@/hooks/use-workspace-queries";
 import {
   computeQuickReminderPresetUtcMs,
   zonedWallClockToUtcMs,
@@ -46,6 +47,7 @@ export function AddReminderPopover({
   triggerLabel = "Add reminder",
 }: AddReminderPopoverProps) {
   const [open, setOpen] = useState(false);
+  const invalidate = useInvalidateWorkspace();
   const [isPending, startTransition] = useTransition();
 
   const [customDate, setCustomDate] = useState(() =>
@@ -66,14 +68,15 @@ export function AddReminderPopover({
         return;
       }
 
+      setOpen(false);
+      onAttached?.(result.data);
       const formatted = formatInTimeZone(
         result.data.remindAt,
         timezone,
         "MMM d · HH:mm"
       );
       toast.success(`Reminder set for ${formatted}`);
-      onAttached?.(result.data);
-      setOpen(false);
+      await invalidate(["reminders", "tasks", "notes", "projects", "sidebar"]);
     });
   };
 
@@ -106,6 +109,7 @@ export function AddReminderPopover({
       </PopoverTrigger>
       <PopoverContent
         align="end"
+        aria-label="Schedule reminder"
         className="w-64 space-y-2.5 border-border bg-popover p-3"
       >
         <div className="flex items-center justify-between">

@@ -1,6 +1,13 @@
 "use client";
 
-import { useMemo, useOptimistic, useState, useTransition } from "react";
+import {
+  useEffect,
+  useMemo,
+  useOptimistic,
+  useState,
+  useTransition,
+} from "react";
+import dynamic from "next/dynamic";
 import { useRouter } from "next/navigation";
 import {
   AlertCircle,
@@ -20,16 +27,18 @@ import { BulkImportHabitsDialog } from "@/components/habits/bulk-import-habits-d
 import { BulkImportHistoryDialog } from "@/components/habits/bulk-import-history-dialog";
 import { CreateHabitDialog } from "@/components/habits/create-habit-dialog";
 import { HabitSettingsSheet } from "@/components/habits/habit-settings-sheet";
-import { HabitsAnalyticsCharts } from "@/components/habits/habits-analytics-charts";
 import { HabitsMatrix } from "@/components/habits/habits-matrix";
 import { useDetailSheet } from "@/components/shell/detail-sheet-context";
+import { useWorkspaceChrome } from "@/components/shell/workspace-chrome-context";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
+import { Skeleton } from "@/components/ui/skeleton";
 import {
   Tooltip,
   TooltipContent,
   TooltipTrigger,
 } from "@/components/ui/tooltip";
+import { useWorkspaceInvalidation } from "@/hooks/use-workspace-queries";
 import { cn } from "@/lib/utils";
 import type { SidebarProjectItem } from "@/server/dal/workspace-repository";
 import type {
@@ -45,11 +54,35 @@ import {
   type ScoringMode,
 } from "@/server/domain/habit-analytics";
 import type { HabitMonthWorkspace } from "@/server/services/habit-service";
+import { useWorkspaceUIStore } from "@/stores/workspace-ui-store";
+
+const HabitsAnalyticsCharts = dynamic(
+  () =>
+    import("@/components/habits/habits-analytics-charts").then(
+      (mod) => mod.HabitsAnalyticsCharts
+    ),
+  {
+    ssr: false,
+    loading: () => (
+      <div
+        aria-label="Loading analytics charts"
+        className="grid grid-cols-1 gap-3 lg:grid-cols-12"
+      >
+        <Skeleton className="h-[282px] rounded-md border border-border lg:col-span-7" />
+        <Skeleton className="h-[282px] rounded-md border border-border lg:col-span-5" />
+      </div>
+    ),
+  }
+);
 
 interface HabitsWorkspaceViewProps {
   workspace: HabitMonthWorkspace;
   projects: SidebarProjectItem[];
   timezone: string;
+  initialModeOverride?: ScoringMode | null;
+  isSwitchingMonth?: boolean;
+  onSelectMonth?: (nextMonth: string) => void;
+  onPrefetchMonth?: (yearMonth: string) => void;
 }
 
 type OptimisticLogAction = {
@@ -108,16 +141,39 @@ export function HabitsWorkspaceView({
   workspace,
   projects,
   timezone,
+  initialModeOverride = null,
+  isSwitchingMonth = false,
+  onSelectMonth,
+  onPrefetchMonth,
 }: HabitsWorkspaceViewProps) {
   const router = useRouter();
   const { openDetail } = useDetailSheet();
+  const { userId } = useWorkspaceChrome();
+  const invalidate = useWorkspaceInvalidation(userId);
   const [, startTransition] = useTransition();
 
   const [createOpen, setCreateOpen] = useState(false);
   const [bulkOpen, setBulkOpen] = useState(false);
   const [historyOpen, setHistoryOpen] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
-  const [showArchived, setShowArchived] = useState(false);
+  const showArchived = useWorkspaceUIStore((s) => s.habitsShowArchived);
+  const setShowArchived = useWorkspaceUIStore((s) => s.setHabitsShowArchived);
+  const storedScoringMode = useWorkspaceUIStore((s) => s.habitsScoringMode);
+  const setStoredScoringMode = useWorkspaceUIStore(
+    (s) => s.setHabitsScoringMode
+  );
+  const [modeTouched, setModeTouched] = useState(false);
+
+  // Guarantee persisted scoring mode & archive prefs hydrate cleanly on direct SSR reloads
+  useEffect(() => {
+    if (!useWorkspaceUIStore.persist?.hasHydrated()) {
+      void useWorkspaceUIStore.persist?.rehydrate();
+    }
+  }, []);
+
+  const activeScoringMode: ScoringMode = modeTouched
+    ? storedScoringMode
+    : initialModeOverride ?? storedScoringMode;
   const [optimisticDirty, setOptimisticDirty] = useState(false);
 
   const [optimisticLogsByKey, applyOptimisticLog] = useOptimistic<
@@ -150,16 +206,16 @@ export function HabitsWorkspaceView({
     };
   });
 
-  // Live optimistic analytics so KPI cards, streaks, and Recharts respond at 0ms
+  // Live optimistic & scoring-mode analytics so KPI cards, streaks, and Recharts respond at 0ms with zero server refetch
   const analytics = useMemo(() => {
-    if (!optimisticDirty) {
+    if (!optimisticDirty && activeScoringMode === workspace.scoringMode) {
       return workspace.analytics;
     }
     return computeHabitMonthAnalytics({
       yearMonth: workspace.yearMonth,
       todayDateKey: workspace.todayDateKey,
       weekStartsOn: workspace.settings.weekStartsOn === 0 ? 0 : 1,
-      scoringMode: workspace.scoringMode,
+      scoringMode: activeScoringMode,
       habits: workspace.habits.map((h) => ({
         id: h.id,
         title: h.title,
@@ -170,18 +226,26 @@ export function HabitsWorkspaceView({
       })),
       logs: Object.values(optimisticLogsByKey),
     });
-  }, [optimisticDirty, optimisticLogsByKey, workspace]);
+  }, [activeScoringMode, optimisticDirty, optimisticLogsByKey, workspace]);
 
   const currentMonth = workspace.todayDateKey.slice(0, 7);
 
-  const navigateMonth = (nextMonth: string, nextMode?: ScoringMode) => {
-    const mode = nextMode ?? workspace.scoringMode;
+  const navigateMonth = (nextMonth: string) => {
+    if (onSelectMonth) {
+      onSelectMonth(nextMonth);
+      return;
+    }
     const params = new URLSearchParams();
     params.set("month", nextMonth);
-    if (mode !== "elapsed") {
-      params.set("mode", mode);
+    if (activeScoringMode !== "elapsed") {
+      params.set("mode", activeScoringMode);
     }
     router.push(`/app/habits?${params.toString()}`);
+  };
+
+  const handleSelectScoringMode = (nextMode: ScoringMode) => {
+    setModeTouched(true);
+    setStoredScoringMode(nextMode);
   };
 
   const handleCycleLog = (
@@ -207,6 +271,8 @@ export function HabitsWorkspaceView({
 
       if (!result.ok) {
         toast.error(result.error.message);
+      } else {
+        await invalidate(["habits", "today", "tasks", "sidebar"]);
       }
       setOptimisticDirty(false);
     });
@@ -238,6 +304,8 @@ export function HabitsWorkspaceView({
 
       if (!result.ok) {
         toast.error(result.error.message);
+      } else {
+        await invalidate(["habits", "today", "tasks", "sidebar"]);
       }
       setOptimisticDirty(false);
     });
@@ -253,6 +321,7 @@ export function HabitsWorkspaceView({
         toast.error(result.error.message);
         return;
       }
+      await invalidate(["habits", "today", "sidebar"]);
       toast.success(`Restored "${habit.title}".`);
     });
   };
@@ -292,6 +361,12 @@ export function HabitsWorkspaceView({
               variant="ghost"
               size="icon"
               aria-label="Previous month"
+              onMouseEnter={() =>
+                onPrefetchMonth?.(shiftYearMonth(workspace.yearMonth, -1))
+              }
+              onFocus={() =>
+                onPrefetchMonth?.(shiftYearMonth(workspace.yearMonth, -1))
+              }
               onClick={() =>
                 navigateMonth(shiftYearMonth(workspace.yearMonth, -1))
               }
@@ -299,7 +374,12 @@ export function HabitsWorkspaceView({
             >
               <ChevronLeft className="size-3.5" />
             </Button>
-            <span className="mono-tabular min-w-[126px] px-2 text-center text-xs font-semibold text-foreground">
+            <span
+              className={cn(
+                "mono-tabular min-w-[126px] px-2 text-center text-xs font-semibold text-foreground transition-opacity",
+                isSwitchingMonth && "opacity-50"
+              )}
+            >
               {analytics.calendar.monthLabel}
             </span>
             <Button
@@ -307,6 +387,12 @@ export function HabitsWorkspaceView({
               variant="ghost"
               size="icon"
               aria-label="Next month"
+              onMouseEnter={() =>
+                onPrefetchMonth?.(shiftYearMonth(workspace.yearMonth, 1))
+              }
+              onFocus={() =>
+                onPrefetchMonth?.(shiftYearMonth(workspace.yearMonth, 1))
+              }
               onClick={() =>
                 navigateMonth(shiftYearMonth(workspace.yearMonth, 1))
               }
@@ -321,6 +407,7 @@ export function HabitsWorkspaceView({
               type="button"
               variant="outline"
               size="sm"
+              onMouseEnter={() => onPrefetchMonth?.(currentMonth)}
               onClick={() => navigateMonth(currentMonth)}
               className="mira-row border-border bg-card px-2.5 text-xs"
             >
@@ -328,7 +415,7 @@ export function HabitsWorkspaceView({
             </Button>
           ) : null}
 
-          {/* Elapsed-to-Date vs Full Month Scoring Toggle */}
+          {/* Elapsed-to-Date vs Full Month Scoring Toggle (0ms pure client recomputation) */}
           <div
             role="group"
             aria-label="Scoring denominator mode"
@@ -336,11 +423,11 @@ export function HabitsWorkspaceView({
           >
             <button
               type="button"
-              onClick={() => navigateMonth(workspace.yearMonth, "elapsed")}
-              aria-pressed={workspace.scoringMode === "elapsed"}
+              onClick={() => handleSelectScoringMode("elapsed")}
+              aria-pressed={activeScoringMode === "elapsed"}
               className={cn(
                 "min-h-9 rounded px-2.5 text-xs font-medium transition-colors md:min-h-6",
-                workspace.scoringMode === "elapsed"
+                activeScoringMode === "elapsed"
                   ? "bg-primary text-primary-foreground"
                   : "text-muted-foreground hover:text-foreground"
               )}
@@ -349,11 +436,11 @@ export function HabitsWorkspaceView({
             </button>
             <button
               type="button"
-              onClick={() => navigateMonth(workspace.yearMonth, "full_month")}
-              aria-pressed={workspace.scoringMode === "full_month"}
+              onClick={() => handleSelectScoringMode("full_month")}
+              aria-pressed={activeScoringMode === "full_month"}
               className={cn(
                 "min-h-9 rounded px-2.5 text-xs font-medium transition-colors md:min-h-6",
-                workspace.scoringMode === "full_month"
+                activeScoringMode === "full_month"
                   ? "bg-primary text-primary-foreground"
                   : "text-muted-foreground hover:text-foreground"
               )}
@@ -419,7 +506,7 @@ export function HabitsWorkspaceView({
               Monthly Progress
             </span>
             <span className="mono-tabular text-[11px] text-muted-foreground">
-              {workspace.scoringMode === "elapsed" ? "Elapsed" : "Full month"}
+              {activeScoringMode === "elapsed" ? "Elapsed" : "Full month"}
             </span>
           </div>
           <div className="mt-1 flex items-baseline justify-between gap-2">
@@ -584,7 +671,7 @@ export function HabitsWorkspaceView({
         <div className="rounded-md border border-border bg-card">
           <button
             type="button"
-            onClick={() => setShowArchived((prev) => !prev)}
+            onClick={() => setShowArchived(!showArchived)}
             aria-expanded={showArchived}
             className="flex min-h-9 w-full items-center justify-between px-3.5 py-2 text-xs text-muted-foreground hover:text-foreground"
           >

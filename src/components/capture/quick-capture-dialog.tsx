@@ -16,6 +16,7 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
+import { useInvalidateWorkspace } from "@/hooks/use-workspace-queries";
 import {
   parseQuickCapture,
   type CaptureEntityKind,
@@ -38,6 +39,7 @@ export function QuickCaptureDialog({
   const [defaultKind, setDefaultKind] = useState<CaptureEntityKind>("task");
   const [priority, setPriority] = useState<TaskPriority>("none");
   const [tagsText, setTagsText] = useState("");
+  const invalidate = useInvalidateWorkspace();
   const [isPending, startTransition] = useTransition();
 
   const handleOpenChange = (nextOpen: boolean) => {
@@ -88,6 +90,7 @@ export function QuickCaptureDialog({
           return;
         }
 
+        await invalidate(["tasks", "reminders", "sidebar"]);
         toast.success(
           result.data.reminder && formattedReminder
             ? `Task captured with reminder (${formattedReminder})`
@@ -114,6 +117,7 @@ export function QuickCaptureDialog({
         return;
       }
 
+      await invalidate(["notes", "reminders", "sidebar"]);
       toast.success(
         result.data.reminder && formattedReminder
           ? `Note saved with reminder (${formattedReminder})`

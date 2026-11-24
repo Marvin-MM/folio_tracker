@@ -30,6 +30,7 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { Separator } from "@/components/ui/separator";
+import { useInvalidateWorkspace } from "@/hooks/use-workspace-queries";
 import type { ProjectMemberWithUser } from "@/server/dal/project-repository";
 import type {
   InvitationRole,
@@ -66,6 +67,7 @@ export function ProjectShareDialog({
   const [role, setRole] = useState<InvitationRole>("editor");
   const [lastInviteUrl, setLastInviteUrl] = useState<string | null>(null);
   const [copied, setCopied] = useState(false);
+  const invalidate = useInvalidateWorkspace();
   const [isPending, startTransition] = useTransition();
 
   const handleOpenChange = (nextOpen: boolean) => {
@@ -99,6 +101,7 @@ export function ProjectShareDialog({
           : result.data.invitePath;
       setLastInviteUrl(fullUrl);
       setEmail("");
+      await invalidate(["projects"], { projectId });
       toast.success("Invitation created and dispatched.");
     });
   };
@@ -125,6 +128,7 @@ export function ProjectShareDialog({
         toast.error(res.error.message);
         return;
       }
+      await invalidate(["projects"], { projectId });
       toast.success("Invitation revoked.");
     });
   };
@@ -140,6 +144,7 @@ export function ProjectShareDialog({
         toast.error(res.error.message);
         return;
       }
+      await invalidate(["projects"], { projectId });
       toast.success(`Role updated to ${nextRole}.`);
     });
   };
@@ -154,6 +159,7 @@ export function ProjectShareDialog({
         toast.error(res.error.message);
         return;
       }
+      await invalidate(["projects", "sidebar"], { projectId });
       toast.success(`Removed ${memberName} from project.`);
     });
   };

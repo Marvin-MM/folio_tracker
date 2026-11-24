@@ -12,6 +12,11 @@ export const dynamic = "force-dynamic";
 
 export const metadata: Metadata = {
   title: "Sign in",
+  description:
+    "Sign in to Folio to manage your tasks, quiet markdown notes, durable reminders, and real-calendar habits.",
+  alternates: {
+    canonical: "/login",
+  },
 };
 
 interface LoginPageProps {

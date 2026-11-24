@@ -1,9 +1,7 @@
 import type { Metadata } from "next";
-import { HabitsSubnav } from "@/components/habits/habits-subnav";
-import { HabitsWorkspaceView } from "@/components/habits/habits-workspace-view";
-import { ViewHeader } from "@/components/workspace/view-header";
+import { HabitsMonthClient } from "@/components/habits/habits-query-views";
+import { getServerTimestampMs } from "@/lib/query/clock";
 import { requireSession } from "@/server/dal/auth-guard";
-import { workspaceRepository } from "@/server/dal/workspace-repository";
 import type { ScoringMode } from "@/server/domain/habit-analytics";
 import { habitMonitorService } from "@/server/services/habit-monitor-service";
 import { habitService } from "@/server/services/habit-service";
@@ -25,33 +23,30 @@ export default async function HabitsPage({ searchParams }: HabitsPageProps) {
   ]);
 
   const timezone = user.timezone || "UTC";
-  const scoringMode: ScoringMode =
-    params.mode === "full_month" ? "full_month" : "elapsed";
+  const initialFetchedAtMs = getServerTimestampMs();
+  const initialModeParam: ScoringMode | null =
+    params.mode === "full_month"
+      ? "full_month"
+      : params.mode === "elapsed"
+        ? "elapsed"
+        : null;
 
-  const [workspace, sidebarSummary, circleBadgeCount] = await Promise.all([
+  // Eliminates duplicate getSidebarSummary() call — projects are served from AppShellLayout's bootstrap query
+  const [workspace, circleBadgeCount] = await Promise.all([
     habitService.getMonthWorkspace(user.id, timezone, {
       yearMonth: params.month,
-      scoringMode,
+      scoringMode: initialModeParam ?? "elapsed",
     }),
-    workspaceRepository.getSidebarSummary(user.id, timezone),
     habitMonitorService.getCircleBadgeCount(user.id),
   ]);
 
   return (
-    <div className="flex flex-1 flex-col">
-      <ViewHeader
-        title="Habits"
-        subtitle="Real-calendar tracking, streaks, and honest monthly analytics"
-        meta={`${workspace.analytics.calendar.monthLabel} · ${workspace.habits.length} active`}
-      />
-      <HabitsSubnav circleBadgeCount={circleBadgeCount} />
-      <div className="mx-auto w-full max-w-[1400px] min-w-0 p-4 md:p-6">
-        <HabitsWorkspaceView
-          workspace={workspace}
-          projects={sidebarSummary.projects}
-          timezone={timezone}
-        />
-      </div>
-    </div>
+    <HabitsMonthClient
+      userId={user.id}
+      initialYearMonth={workspace.yearMonth}
+      initialModeParam={initialModeParam}
+      initialData={{ workspace, circleBadgeCount, timezone }}
+      initialFetchedAtMs={initialFetchedAtMs}
+    />
   );
 }

@@ -1,5 +1,7 @@
 "use client";
 
+import { useMemo, useState } from "react";
+import dynamic from "next/dynamic";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import {
@@ -12,10 +14,10 @@ import {
   TrendingUp,
 } from "lucide-react";
 import { HabitReviewPanel } from "@/components/habits/habit-review-panel";
-import { HabitsAnalyticsCharts } from "@/components/habits/habits-analytics-charts";
 import { HabitsMatrix } from "@/components/habits/habits-matrix";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
+import { Skeleton } from "@/components/ui/skeleton";
 import {
   Tooltip,
   TooltipContent,
@@ -24,14 +26,36 @@ import {
 import { cn } from "@/lib/utils";
 import type { ScopedFriendWorkspace } from "@/server/dal/habits-social";
 import {
+  computeHabitMonthAnalytics,
+  parseScheduledDaysJson,
   shiftYearMonth,
   type HabitRankHighlight,
   type ScoringMode,
 } from "@/server/domain/habit-analytics";
 
+const HabitsAnalyticsCharts = dynamic(
+  () =>
+    import("@/components/habits/habits-analytics-charts").then(
+      (mod) => mod.HabitsAnalyticsCharts
+    ),
+  {
+    ssr: false,
+    loading: () => (
+      <div className="grid grid-cols-1 gap-3 lg:grid-cols-12">
+        <Skeleton className="h-[282px] rounded-md border border-border lg:col-span-7" />
+        <Skeleton className="h-[282px] rounded-md border border-border lg:col-span-5" />
+      </div>
+    ),
+  }
+);
+
 interface FriendHabitsViewProps {
   currentUserId: string;
   workspace: ScopedFriendWorkspace;
+  initialModeOverride?: ScoringMode | null;
+  onSelectMonth?: (nextMonth: string) => void;
+  onSelectCycle?: (nextCycle: string) => void;
+  onPrefetchMonth?: (yearMonth: string) => void;
 }
 
 function FriendRankHighlight({
@@ -85,21 +109,61 @@ function FriendRankHighlight({
 export function FriendHabitsView({
   currentUserId,
   workspace,
+  initialModeOverride = null,
+  onSelectMonth,
+  onSelectCycle,
+  onPrefetchMonth,
 }: FriendHabitsViewProps) {
   const router = useRouter();
-  const { analytics, owner, windowState } = workspace;
+  const { owner, windowState } = workspace;
+  const [scoringMode, setScoringMode] = useState<ScoringMode>(
+    initialModeOverride ?? workspace.scoringMode
+  );
+
+  const analytics = useMemo(() => {
+    if (scoringMode === workspace.scoringMode) {
+      return workspace.analytics;
+    }
+    return computeHabitMonthAnalytics({
+      yearMonth: workspace.yearMonth,
+      todayDateKey: workspace.todayDateKey,
+      weekStartsOn:
+        workspace.analytics.calendar.weeks[1]?.days[0]?.dayOfWeek === 0 ? 0 : 1,
+      scoringMode,
+      habits: workspace.habits.map((h) => ({
+        id: h.id,
+        title: h.title,
+        cadenceType: h.cadenceType,
+        scheduledDays: parseScheduledDaysJson(h.scheduledDaysJson),
+        weeklyTargetCount: h.weeklyTargetCount,
+        startDate: h.startDate,
+      })),
+      logs: Object.values(workspace.logsByKey),
+    });
+  }, [scoringMode, workspace]);
 
   const navigate = (opts: {
     month?: string;
     mode?: ScoringMode;
     cycle?: string;
   }) => {
+    if (opts.mode) {
+      setScoringMode(opts.mode);
+      return;
+    }
+    if (opts.month && onSelectMonth) {
+      onSelectMonth(opts.month);
+      return;
+    }
+    if (opts.cycle && onSelectCycle) {
+      onSelectCycle(opts.cycle);
+      return;
+    }
     const params = new URLSearchParams();
     const nextMonth = opts.month ?? workspace.yearMonth;
-    const nextMode = opts.mode ?? workspace.scoringMode;
     const nextCycle = opts.cycle ?? workspace.activeCycleKey;
     params.set("month", nextMonth);
-    if (nextMode !== "elapsed") params.set("mode", nextMode);
+    if (scoringMode !== "elapsed") params.set("mode", scoringMode);
     if (nextCycle !== windowState.cycleKey) params.set("cycle", nextCycle);
     router.push(`/app/habits/circle/${owner.id}?${params.toString()}`);
   };
@@ -168,6 +232,9 @@ export function FriendHabitsView({
             variant="ghost"
             size="icon"
             aria-label="Previous month"
+            onMouseEnter={() =>
+              onPrefetchMonth?.(shiftYearMonth(workspace.yearMonth, -1))
+            }
             onClick={() =>
               navigate({ month: shiftYearMonth(workspace.yearMonth, -1) })
             }
@@ -183,6 +250,9 @@ export function FriendHabitsView({
             variant="ghost"
             size="icon"
             aria-label="Next month"
+            onMouseEnter={() =>
+              onPrefetchMonth?.(shiftYearMonth(workspace.yearMonth, 1))
+            }
             onClick={() =>
               navigate({ month: shiftYearMonth(workspace.yearMonth, 1) })
             }
@@ -200,10 +270,10 @@ export function FriendHabitsView({
           <button
             type="button"
             onClick={() => navigate({ mode: "elapsed" })}
-            aria-pressed={workspace.scoringMode === "elapsed"}
+            aria-pressed={scoringMode === "elapsed"}
             className={cn(
               "min-h-9 rounded px-2.5 text-xs font-medium transition-colors md:min-h-6",
-              workspace.scoringMode === "elapsed"
+              scoringMode === "elapsed"
                 ? "bg-primary text-primary-foreground"
                 : "text-muted-foreground hover:text-foreground"
             )}
@@ -213,10 +283,10 @@ export function FriendHabitsView({
           <button
             type="button"
             onClick={() => navigate({ mode: "full_month" })}
-            aria-pressed={workspace.scoringMode === "full_month"}
+            aria-pressed={scoringMode === "full_month"}
             className={cn(
               "min-h-9 rounded px-2.5 text-xs font-medium transition-colors md:min-h-6",
-              workspace.scoringMode === "full_month"
+              scoringMode === "full_month"
                 ? "bg-primary text-primary-foreground"
                 : "text-muted-foreground hover:text-foreground"
             )}
@@ -237,7 +307,7 @@ export function FriendHabitsView({
               Monthly Progress
             </span>
             <span className="mono-tabular text-[11px] text-muted-foreground">
-              {workspace.scoringMode === "elapsed" ? "Elapsed" : "Full month"}
+              {scoringMode === "elapsed" ? "Elapsed" : "Full month"}
             </span>
           </div>
           <div className="mt-1 flex items-baseline justify-between gap-2">

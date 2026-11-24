@@ -1,11 +1,14 @@
 "use client";
 
 import { createContext, useContext } from "react";
+import type { SidebarProjectItem } from "@/server/dal/workspace-repository";
 import type { NotificationRecord } from "@/server/db/schema";
 
 interface WorkspaceChromeContextValue {
+  userId: string;
   openQuickCapture: () => void;
   notifications: NotificationRecord[];
+  projects: SidebarProjectItem[];
   timezone: string;
 }
 

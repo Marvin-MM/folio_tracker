@@ -124,7 +124,6 @@ export async function markNotificationReadAction(
     if (marked) {
       await defaultUnreadCounterCache.decrement(user.id, 1);
     }
-    revalidatePath("/app", "layout");
     return actionOk({ marked });
   } catch (error) {
     return mapErrorToActionResult(error);
@@ -138,7 +137,6 @@ export async function markAllNotificationsReadAction(): Promise<
     const { user } = await requireSession();
     const count = await notificationRepository.markAllRead(user.id);
     await defaultUnreadCounterCache.reset(user.id);
-    revalidatePath("/app", "layout");
     return actionOk({ count });
   } catch (error) {
     return mapErrorToActionResult(error);

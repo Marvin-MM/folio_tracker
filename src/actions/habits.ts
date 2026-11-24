@@ -1,6 +1,5 @@
 "use server";
 
-import { revalidatePath } from "next/cache";
 import { z } from "zod";
 import { requireSession } from "@/server/dal/auth-guard";
 import {
@@ -144,13 +143,7 @@ const bulkImportHistorySchema = z.object({
 });
 
 function revalidateHabitPaths() {
-  revalidatePath("/app", "layout");
-  revalidatePath("/app/habits");
-  revalidatePath("/app/habits/circle", "layout");
-  revalidatePath("/app/today");
-  revalidatePath("/app/inbox");
-  revalidatePath("/app/upcoming");
-  revalidatePath("/app/projects", "layout");
+  // Client freshness is driven by TanStack Query domain invalidation; hard reloads read live Turso.
 }
 
 export async function createHabitAction(

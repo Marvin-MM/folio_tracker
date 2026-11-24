@@ -1,19 +1,38 @@
 import type { Metadata } from "next";
 import { notFound } from "next/navigation";
-import { ProjectWorkspaceView } from "@/components/projects/project-workspace-view";
+import { ProjectWorkspaceClient } from "@/components/workspace/workspace-query-views";
+import { getServerTimestampMs } from "@/lib/query/clock";
 import { requireSession } from "@/server/dal/auth-guard";
 import { ForbiddenError, NotFoundError } from "@/server/dal/errors";
 import { projectService } from "@/server/services/project-service";
 
 export const dynamic = "force-dynamic";
 
-export const metadata: Metadata = {
-  title: "Project",
-};
-
 interface ProjectPageProps {
   params: Promise<{ projectId: string }>;
   searchParams: Promise<{ tab?: string; item?: string }>;
+}
+
+export async function generateMetadata({
+  params,
+}: ProjectPageProps): Promise<Metadata> {
+  try {
+    const [{ user }, { projectId }] = await Promise.all([
+      requireSession(),
+      params,
+    ]);
+    const workspace = await projectService.getProjectWorkspace(
+      projectId,
+      user.id
+    );
+    return {
+      title: workspace.project.name,
+    };
+  } catch {
+    return {
+      title: "Project",
+    };
+  }
 }
 
 export default async function ProjectPage({
@@ -26,6 +45,7 @@ export default async function ProjectPage({
     searchParams,
   ]);
 
+  const initialFetchedAtMs = getServerTimestampMs();
   let workspace;
   try {
     workspace = await projectService.getProjectWorkspace(projectId, user.id);
@@ -40,9 +60,11 @@ export default async function ProjectPage({
     query.tab === "notes" || query.tab === "activity" ? query.tab : "tasks";
 
   return (
-    <ProjectWorkspaceView
-      workspace={workspace}
-      timezone={user.timezone || "UTC"}
+    <ProjectWorkspaceClient
+      userId={user.id}
+      projectId={projectId}
+      initialData={{ workspace, timezone: user.timezone || "UTC" }}
+      initialFetchedAtMs={initialFetchedAtMs}
       initialTab={initialTab}
       initialSelectedId={query.item ?? null}
     />

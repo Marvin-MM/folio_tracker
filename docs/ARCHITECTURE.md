@@ -11,19 +11,20 @@ Every request passes through a defense-in-depth edge boundary (`next.config.ts` 
 ```mermaid
 flowchart TB
   subgraph Client["Client Runtime (Browser / Installed PWA)"]
-    UI["Next.js React 19 UI — Warm Paper / Carbon Ink Mira, Quick Capture, Recharts"]
-    SW["Service Worker (/sw.js) — Web Push + Quick Actions"]
+    UI["Next.js React 19 UI — Warm Paper / Carbon Ink Mira, TanStack Query v5 + Zustand v5, Lazy Quick Capture & Recharts"]
+    PWA["PWA Runtime — PwaLaunchSplash, StandaloneRootGuard (/ -> /login), ServiceWorkerRegistrar"]
+    SW["Service Worker (/sw.js) — Public Shell Precache + /offline Fallback + Web Push Quick Actions (Zero Private Caching)"]
   end
 
   subgraph Edge["Vercel Edge & Next.js 16 Boundary"]
-    HDR["next.config.ts Headers — CSP, DENY, nosniff, Referrer-Policy"]
+    HDR["next.config.ts Headers — CSP, DENY, nosniff, Referrer-Policy, staleTimes (dynamic 60s / static 180s)"]
     PRX["src/proxy.ts — Optimistic /app/* Guard + private, no-store on /app/* & /invite/*"]
   end
 
   subgraph App["Next.js App Router (force-dynamic)"]
-    RSC["RSC Pages & Layouts (/app/*, /app/habits*, /invite/[token], /invite/habit/[token])"]
-    ACT["Server Actions (src/actions/*) — Zod -> Auth -> Service -> Revalidate"]
-    API["Route Handlers (/api/auth, /api/inngest, /api/health, /api/reminders, /api/notifications)"]
+    RSC["RSC Pages & Layouts (/, /login, /offline, /app/*, /app/habits*, /invite/*)"]
+    ACT["Server Actions (src/actions/*) — Zod -> Auth -> Service -> Targeted Query Invalidation"]
+    API["Route Handlers (/api/workspace/* x8, /api/auth, /api/inngest, /api/health, /api/reminders, /api/notifications)"]
   end
 
   subgraph Core["SOLID Domain Core (src/server/)"]
@@ -69,12 +70,13 @@ flowchart TB
 
 ## 2. SOLID Clean Layering & Dependency Direction
 
-Dependencies point strictly inward toward `src/server/db/` and `src/server/domain/`. Pure domain calculations (`habit-analytics.ts`, `comment-window-policy.ts`) have zero DB or network imports, while every service accepts repositories and providers via constructor injection (DIP) so all 17 Vitest suites execute offline against ephemeral SQLite databases.
+Dependencies point strictly inward toward `src/server/db/` and `src/server/domain/`. Pure domain calculations (`habit-analytics.ts`, `comment-window-policy.ts`) have zero DB or network imports, while every service accepts repositories and providers via constructor injection (DIP) so all 20 Vitest suites (84 tests) execute offline against ephemeral SQLite databases.
 
 ```mermaid
 flowchart LR
-  subgraph Presentation["Presentation"]
-    COMP["src/components/ (Pure Mira UI + useOptimistic — Zero DB/Provider imports)"]
+  subgraph Presentation["Presentation & Client State"]
+    COMP["src/components/ (Pure Mira UI + useOptimistic + Lazy Dynamic Chunks — Zero DB/Provider imports)"]
+    STATE["Client State Split: TanStack Query v5 (User-Scoped Server Cache) + Zustand v5 (Non-PII UI Chrome)"]
   end
 
   subgraph Boundary["App Boundary"]
@@ -97,6 +99,8 @@ flowchart LR
     ADAPT["External Adapters (Inngest v4, Resend, web-push, Upstash / ioredis / InMemory)"]
   end
 
+  COMP --> STATE
+  STATE -->|"GET /api/workspace/* (private, no-store)"| APP
   COMP --> ACTS
   COMP -.->|"Pure types/formatters"| PURE
   APP --> DALS
@@ -612,15 +616,22 @@ flowchart TB
 
 ---
 
-## 7. Shared-Device Push Hygiene, Rebalancing & Safe Offboarding
+## 7. Client State Architecture, SEO, PWA Lifecycle & Shared-Device Hygiene
+
+Folio enforces a strict client-state split so navigating across Inbox, Today, Upcoming, Notes, Reminders, Projects, Habits, and Circle feels instantaneous (`0` redundant refetches inside the 60s stale window) without leaking tenant data across sessions:
+
+- **Server State (TanStack React Query v5 — `src/hooks/use-workspace-queries.ts`):** Every workspace view hydrates on initial SSR (`initialData` + `initialDataUpdatedAt`) and reads through 8 thin authenticated `GET /api/workspace/*` routes (`bootstrap`, `tasks`, `notes`, `reminders`, `projects/[projectId]`, `habits`, `habits/circle`, `habits/circle/[ownerId]`), all guarded by `requireSession()` + `Cache-Control: private, no-store`. Keys are strictly user-scoped (`["workspace", userId, ...]`), hover/focus prefetching warms destination routes from `LeftRail` and `HabitsSubnav`, and mutations call targeted domain invalidation (`invalidateWorkspaceDomains()`) instead of shotgun `revalidatePath("/app", "layout")`. Switching Habits scoring modes (`Elapsed-to-Date` ↔ `Full Month`) recomputes purely on the client at `0ms` with `0` network calls.
+- **Client UI State (Zustand v5 — `src/stores/workspace-ui-store.ts`):** Persists **only** harmless, non-PII layout preferences (`railCollapsed`, `habitsScoringMode`, `habitsShowArchived`) under `folio-ui-prefs` with `skipHydration: true` + post-mount rehydration. Ephemeral session state (`activeDetail`, `projectActiveTabs`, `quickCaptureOpen`, `mobileMenuOpen`, `isOnline`) stays in memory and resets on sign-out.
+- **SEO & Installed-PWA Landing Isolation:** Public `/` serves an editorial Mira landing page with `WebApplication` JSON-LD, dynamic `opengraph-image` / `twitter-image`, `robots.ts`, `sitemap.ts`, and canonical URL resolution (`NEXT_PUBLIC_SITE_URL ?? BETTER_AUTH_URL ?? "https://folio.renult.xyz"`). Private `/app/*` and `/invite/*` routes emit `noindex, nofollow, nocache`. When launched as an installed PWA (`display-mode: standalone` or iOS `navigator.standalone`), `manifest.ts` launches at `/app/inbox` (redirecting signed-out users directly to `/login`), CSS hides `[data-folio-landing="true"]`, `StandaloneRootGuard` immediately redirects `/` → `/login`, and `PwaLaunchSplash` displays a calm once-per-session launch curtain paired with 12 Light/Dark iOS startup images (`public/splash/`).
 
 ```mermaid
 flowchart TB
-  subgraph Push["Shared-Device Web Push Hygiene"]
-    SO["performSecureSignOut()"] --> SWCheck["navigator.serviceWorker.ready -> pushManager.getSubscription()"]
+  subgraph Push["Shared-Device Sign-Out, Cache Wipe & Web Push Hygiene"]
+    SO["performSecureSignOut()"] --> CacheWipe["clearBrowserQueryClient() + useWorkspaceUIStore.resetSessionState()"]
+    CacheWipe --> SWCheck["navigator.serviceWorker.ready -> pushManager.getSubscription()"]
     SWCheck --> DelServer["removePushSubscriptionAction() — DELETE WHERE user_id=? AND endpoint=?"]
     DelServer --> Unsub["subscription.unsubscribe()"]
-    Unsub --> BASignOut["authClient.signOut()"]
+    Unsub --> BASignOut["authClient.signOut() -> hardNavigateAfterSignOut('/login')"]
 
     SubB["User B subscribes on same device"] --> Upsert["Atomic SQLite UPSERT — ON CONFLICT(endpoint) DO UPDATE SET user_id = User B"]
   end
@@ -650,5 +661,5 @@ flowchart TB
 | **Zero-Leak Isolation** | `assertProjectRole()`, `canUserReadEntity()`, and `habit_monitors` checks always hit Turso directly (zero Redis security cache); `DrizzleHabitMonitorReadDal` and `deliverHabitReviewDigestFn` strictly project only `allowedHabitIds` when `scope = 'selected'`. |
 | **Anti-Enumeration** | Email monitor invites return a uniform non-enumerating status regardless of whether the target email belongs to an existing account; token URLs use 32-byte CSPRNG values hashed with SHA-256 before persistence. |
 | **Vercel Scale** | All periodic crons (`far-future`, `outbox`, `habit-nudge`, `habit-review-digest`) enforce singleton `concurrency: { limit: 1 }` and loop `LIMIT 200` pages inside isolated `step.run()` steps; event-driven Inngest workers enforce `concurrency: { limit: INNGEST_CONCURRENCY_LIMIT }` (default `5`, Free-Plan safe) and `retries: 4`. |
-| **Edge Cache Isolation** | Every `/app/*`, `/invite/*`, and `/api/*` endpoint uses `force-dynamic`, zero unscoped `unstable_cache`, and `Cache-Control: private, no-store` alongside strict CSP & `X-Frame-Options: DENY`. |
-| **Design System & Scope** | `shadcn/ui` **Mira** in Warm Paper (Light) and Carbon Ink (Dark), WCAG AA contrast, `Geist` + `Geist Mono tabular-nums`, zero glassmorphism, `>= 36px` mobile / `28px` desktop targets, and strictly in-app sharing (zero PNG/canvas/image-card exports). |
+| **Edge & Client Cache Isolation** | Every `/app/*`, `/invite/*`, and `/api/*` endpoint uses `force-dynamic`, zero unscoped `unstable_cache`, and `Cache-Control: private, no-store` alongside strict CSP & `X-Frame-Options: DENY`. Service Worker (`public/sw.js`) caches **only** public static shell assets and `/offline` (never `/api/*`, `/app/*`, or `/invite/*`). TanStack Query keys are user-scoped (`["workspace", userId, ...]`), Zustand persists zero PII, and `performSecureSignOut()` clears QueryClient + Zustand + push subscription + hard-navigates to `/login`. |
+| **Design System & Scope** | `shadcn/ui` **Mira** in Warm Paper (Light) and Carbon Ink (Dark) honoring OS `prefers-color-scheme` by default, WCAG AA contrast (including dark-mode Recharts ticks), `Geist` + `Geist Mono tabular-nums`, zero glassmorphism, `>= 36px` mobile / `28px` desktop targets, Skip-to-main-content landmark focus, reduced-motion compliance, and strictly in-app sharing (zero PNG/canvas/image-card exports). |

@@ -13,7 +13,7 @@ import {
   CardTitle,
 } from "@/components/ui/card";
 
-export default function GlobalError({
+export default function RouteError({
   error,
   reset,
 }: {

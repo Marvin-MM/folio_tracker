@@ -1,6 +1,5 @@
 "use server";
 
-import { revalidatePath } from "next/cache";
 import { z } from "zod";
 import { requireSession } from "@/server/dal/auth-guard";
 import type { NoteRecord, ReminderRecord } from "@/server/db/schema";
@@ -35,10 +34,7 @@ const noteIdSchema = z.object({
 });
 
 function revalidateNotePaths() {
-  revalidatePath("/app", "layout");
-  revalidatePath("/app/notes");
-  revalidatePath("/app/reminders");
-  revalidatePath("/app/projects", "layout");
+  // Client freshness is driven by TanStack Query domain invalidation; hard reloads read live Turso.
 }
 
 export async function createNoteAction(

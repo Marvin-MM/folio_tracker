@@ -13,7 +13,10 @@ import {
 import { toast } from "sonner";
 import { acceptHabitInviteTokenAction } from "@/actions/habits-social";
 import { Button } from "@/components/ui/button";
-import { performSecureSignOut } from "@/lib/client-sign-out";
+import {
+  hardNavigateAfterSignOut,
+  performSecureSignOut,
+} from "@/lib/client-sign-out";
 import type { HabitInviteTokenPreview } from "@/server/services/habit-monitor-service";
 
 interface HabitInviteAcceptCardProps {
@@ -100,8 +103,9 @@ export function HabitInviteAcceptCard({
     setSigningOut(true);
     try {
       await performSecureSignOut();
-      router.push(`/login?callbackURL=${encodeURIComponent(callbackUrl)}`);
-      router.refresh();
+      hardNavigateAfterSignOut(
+        `/login?callbackURL=${encodeURIComponent(callbackUrl)}`
+      );
     } finally {
       setSigningOut(false);
     }

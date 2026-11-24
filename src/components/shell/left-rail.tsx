@@ -2,7 +2,7 @@
 
 import { useState } from "react";
 import Link from "next/link";
-import { usePathname, useRouter } from "next/navigation";
+import { usePathname } from "next/navigation";
 import {
   Bell,
   CalendarCheck2,
@@ -38,8 +38,13 @@ import {
   TooltipContent,
   TooltipTrigger,
 } from "@/components/ui/tooltip";
-import { performSecureSignOut } from "@/lib/client-sign-out";
+import { usePrefetchWorkspaceView } from "@/hooks/use-workspace-queries";
+import {
+  hardNavigateAfterSignOut,
+  performSecureSignOut,
+} from "@/lib/client-sign-out";
 import { APP_NAME } from "@/lib/constants";
+import { getCurrentYearMonthForTimezone } from "@/lib/query/clock";
 import { cn } from "@/lib/utils";
 import type {
   SidebarProjectItem,
@@ -63,11 +68,15 @@ interface LeftRailProps {
 }
 
 function getInitials(name: string): string {
-  const parts = name.trim().split(/\s+/).filter(Boolean);
+  const parts = name
+    .trim()
+    .split(/\s+/)
+    .map((part) => part.replace(/^[^A-Za-z0-9]+|[^A-Za-z0-9]+$/g, ""))
+    .filter(Boolean);
   if (parts.length === 0) return "?";
   const first = parts[0]?.[0] ?? "";
-  const second = parts.length > 1 ? parts[parts.length - 1]?.[0] ?? "" : "";
-  return `${first}${second}`.toUpperCase();
+  const second = parts.length > 1 ? parts[1]?.[0] ?? "" : "";
+  return `${first}${second}`.toUpperCase() || "?";
 }
 
 const PROJECT_DOT_CLASS: Record<string, string> = {
@@ -85,10 +94,23 @@ export function LeftRail({
   onNavigate,
 }: LeftRailProps) {
   const pathname = usePathname();
-  const router = useRouter();
   const { openQuickCapture } = useWorkspaceChrome();
+  const prefetch = usePrefetchWorkspaceView(user.id);
   const [signingOut, setSigningOut] = useState(false);
   const [createProjectOpen, setCreateProjectOpen] = useState(false);
+
+  const handlePrefetchSmartView = (href: string) => {
+    if (href === "/app/inbox") prefetch.prefetchTasks("inbox");
+    else if (href === "/app/today") prefetch.prefetchTasks("today");
+    else if (href === "/app/upcoming") prefetch.prefetchTasks("upcoming");
+    else if (href === "/app/notes") prefetch.prefetchNotes();
+    else if (href === "/app/reminders") prefetch.prefetchReminders();
+    else if (href === "/app/habits") {
+      prefetch.prefetchHabitsMonth(
+        getCurrentYearMonthForTimezone(user.timezone)
+      );
+    }
+  };
 
   const smartViews = [
     {
@@ -136,8 +158,7 @@ export function LeftRail({
     setSigningOut(true);
     try {
       await performSecureSignOut();
-      router.push("/login");
-      router.refresh();
+      hardNavigateAfterSignOut("/login");
     } finally {
       setSigningOut(false);
     }
@@ -152,6 +173,8 @@ export function LeftRail({
         key={project.id}
         href={href}
         onClick={onNavigate}
+        onMouseEnter={() => prefetch.prefetchProject(project.id)}
+        onFocus={() => prefetch.prefetchProject(project.id)}
         aria-label={collapsed ? project.name : undefined}
         aria-current={isActive ? "page" : undefined}
         className={cn(
@@ -312,6 +335,8 @@ export function LeftRail({
                   key={item.href}
                   href={item.href}
                   onClick={onNavigate}
+                  onMouseEnter={() => handlePrefetchSmartView(item.href)}
+                  onFocus={() => handlePrefetchSmartView(item.href)}
                   aria-label={collapsed ? item.label : undefined}
                   aria-current={isActive ? "page" : undefined}
                   className={cn(

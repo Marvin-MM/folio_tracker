@@ -4,6 +4,7 @@ import { useState, useTransition } from "react";
 import { Loader2 } from "lucide-react";
 import { toast } from "sonner";
 import { updateHabitSettingsAction } from "@/actions/habits";
+import { useInvalidateWorkspace } from "@/hooks/use-workspace-queries";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -85,6 +86,7 @@ export function HabitSettingsSheet({
     settings.allowReactionsWhenLocked
   );
   const [isPending, startTransition] = useTransition();
+  const invalidate = useInvalidateWorkspace();
 
   const handleOpenChange = (nextOpen: boolean) => {
     if (nextOpen) {
@@ -140,6 +142,7 @@ export function HabitSettingsSheet({
         return;
       }
 
+      await invalidate(["habits", "circle"]);
       toast.success("Habit tracker settings saved.");
       onOpenChange(false);
     });

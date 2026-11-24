@@ -1,10 +1,11 @@
 import type { Metadata } from "next";
 import Link from "next/link";
 import { ShieldAlert } from "lucide-react";
-import { FriendHabitsView } from "@/components/habits/friend-habits-view";
+import { FriendHabitsClient } from "@/components/habits/habits-query-views";
 import { HabitsSubnav } from "@/components/habits/habits-subnav";
 import { Button } from "@/components/ui/button";
 import { ViewHeader } from "@/components/workspace/view-header";
+import { getServerTimestampMs } from "@/lib/query/clock";
 import { requireSession } from "@/server/dal/auth-guard";
 import { ForbiddenError, NotFoundError } from "@/server/dal/errors";
 import { habitMonitorReadDal } from "@/server/dal/habits-social";
@@ -32,8 +33,14 @@ export default async function FriendHabitsPage({
     searchParams,
   ]);
 
-  const scoringMode: ScoringMode =
-    query.mode === "full_month" ? "full_month" : "elapsed";
+  const initialFetchedAtMs = getServerTimestampMs();
+  const initialModeParam: ScoringMode | null =
+    query.mode === "full_month"
+      ? "full_month"
+      : query.mode === "elapsed"
+        ? "elapsed"
+        : null;
+  const initialCycleKey = query.cycle?.trim() || null;
 
   const [circleBadgeCount, workspaceResult] = await Promise.all([
     habitMonitorService.getCircleBadgeCount(user.id),
@@ -42,8 +49,8 @@ export default async function FriendHabitsPage({
         viewerUserId: user.id,
         ownerId: routeParams.ownerId,
         yearMonth: query.month,
-        scoringMode,
-        selectedCycleKey: query.cycle,
+        scoringMode: initialModeParam ?? "elapsed",
+        selectedCycleKey: initialCycleKey ?? undefined,
       })
       .then((data) => ({ ok: true as const, data }))
       .catch((error: unknown) => {
@@ -69,8 +76,15 @@ export default async function FriendHabitsPage({
               {workspaceResult.message}
             </p>
             <div className="pt-1">
-              <Button asChild variant="outline" size="sm" className="mira-row text-xs">
-                <Link href="/app/habits/circle">Back to Accountability Circle</Link>
+              <Button
+                asChild
+                variant="outline"
+                size="sm"
+                className="mira-row text-xs"
+              >
+                <Link href="/app/habits/circle">
+                  Back to Accountability Circle
+                </Link>
               </Button>
             </div>
           </div>
@@ -82,16 +96,14 @@ export default async function FriendHabitsPage({
   const workspace = workspaceResult.data;
 
   return (
-    <div className="flex flex-1 flex-col">
-      <ViewHeader
-        title="Habits"
-        subtitle={`Monitoring ${workspace.owner.name} (Read-only)`}
-        meta={`${workspace.analytics.calendar.monthLabel} · ${workspace.habits.length} shared`}
-      />
-      <HabitsSubnav circleBadgeCount={circleBadgeCount} />
-      <div className="mx-auto w-full max-w-[1400px] min-w-0 p-4 md:p-6">
-        <FriendHabitsView currentUserId={user.id} workspace={workspace} />
-      </div>
-    </div>
+    <FriendHabitsClient
+      userId={user.id}
+      ownerId={routeParams.ownerId}
+      initialYearMonth={workspace.yearMonth}
+      initialCycleKey={initialCycleKey}
+      initialModeParam={initialModeParam}
+      initialData={{ workspace, circleBadgeCount }}
+      initialFetchedAtMs={initialFetchedAtMs}
+    />
   );
 }

@@ -61,6 +61,7 @@ import {
 } from "@/components/ui/select";
 import { Textarea } from "@/components/ui/textarea";
 import { ViewHeader } from "@/components/workspace/view-header";
+import { useInvalidateWorkspace } from "@/hooks/use-workspace-queries";
 import { parseQuickCapture } from "@/lib/natural-language-capture";
 import { cn } from "@/lib/utils";
 import type { NoteWithReminders } from "@/server/dal/note-repository";
@@ -70,6 +71,7 @@ import type {
 } from "@/server/dal/project-repository";
 import type { TaskStatus } from "@/server/db/schema";
 import type { ProjectWorkspaceData } from "@/server/services/project-service";
+import { useWorkspaceUIStore } from "@/stores/workspace-ui-store";
 
 interface ProjectWorkspaceViewProps {
   workspace: ProjectWorkspaceData;
@@ -87,7 +89,11 @@ const DOT_CLASS: Record<string, string> = {
 
 function initials(name: string | null): string {
   if (!name) return "?";
-  const parts = name.trim().split(/\s+/).filter(Boolean);
+  const parts = name
+    .trim()
+    .split(/\s+/)
+    .map((part) => part.replace(/^[^A-Za-z0-9]+|[^A-Za-z0-9]+$/g, ""))
+    .filter(Boolean);
   return ((parts[0]?.[0] ?? "") + (parts[1]?.[0] ?? "")).toUpperCase() || "?";
 }
 
@@ -158,15 +164,20 @@ export function ProjectWorkspaceView({
 }: ProjectWorkspaceViewProps) {
   const router = useRouter();
   const { openDetail, activeItem, closeDetail } = useDetailSheet();
+  const invalidate = useInvalidateWorkspace();
   const { project, viewerRole, members, pendingInvitations, activities, referenceUtcMs } =
     workspace;
 
   const canMutate = viewerRole === "owner" || viewerRole === "editor";
   const isOwner = viewerRole === "owner";
 
-  const [activeTab, setActiveTab] = useState<"tasks" | "notes" | "activity">(
-    initialTab
+  const persistedTab = useWorkspaceUIStore(
+    (s) => s.projectActiveTabs[project.id]
   );
+  const setPersistedTab = useWorkspaceUIStore((s) => s.setProjectActiveTab);
+  const activeTab = persistedTab ?? initialTab;
+  const setActiveTab = (tab: "tasks" | "notes" | "activity") =>
+    setPersistedTab(project.id, tab);
   const [assigneeFilter, setAssigneeFilter] = useState<string>("all");
   const [statusFilter, setStatusFilter] = useState<"active" | "done" | "all">(
     "active"
@@ -310,6 +321,9 @@ export function ProjectWorkspaceView({
         setTaskInput(taskInput);
         return;
       }
+      await invalidate(["projects", "tasks", "reminders", "sidebar"], {
+        projectId: project.id,
+      });
       toast.success("Project task added.");
     });
   };
@@ -331,7 +345,14 @@ export function ProjectWorkspaceView({
       });
       if (!res.ok) {
         toast.error(res.error.message);
+        return;
       }
+      await invalidate(
+        entry.task.habitId
+          ? ["projects", "tasks", "reminders", "habits", "sidebar"]
+          : ["projects", "tasks", "reminders", "sidebar"],
+        { projectId: project.id }
+      );
     });
   };
 
@@ -347,6 +368,9 @@ export function ProjectWorkspaceView({
         toast.error(res.error.message);
         return;
       }
+      await invalidate(["projects", "tasks", "reminders", "sidebar"], {
+        projectId: project.id,
+      });
       toast.success("Task deleted.");
     });
   };
@@ -370,6 +394,9 @@ export function ProjectWorkspaceView({
         setNoteInput(raw);
         return;
       }
+      await invalidate(["projects", "notes", "reminders", "sidebar"], {
+        projectId: project.id,
+      });
       toast.success("Project note created.");
       openDetail({
         kind: "note",
@@ -390,7 +417,11 @@ export function ProjectWorkspaceView({
     startTransition(async () => {
       applyNoteOptimistic({ type: "pin", noteId });
       const res = await toggleNotePinAction({ noteId });
-      if (!res.ok) toast.error(res.error.message);
+      if (!res.ok) {
+        toast.error(res.error.message);
+        return;
+      }
+      await invalidate(["projects", "notes"], { projectId: project.id });
     });
   };
 
@@ -407,6 +438,7 @@ export function ProjectWorkspaceView({
         toast.error(res.error.message);
         return;
       }
+      await invalidate(["projects", "sidebar"], { projectId: project.id });
       toast.success("Project settings saved.");
       setSettingsOpen(false);
     });
@@ -420,6 +452,7 @@ export function ProjectWorkspaceView({
         toast.error(res.error.message);
         return;
       }
+      await invalidate(["projects", "tasks", "notes", "reminders", "sidebar"]);
       toast.success("Project deleted.");
       setSettingsOpen(false);
       router.push("/app/inbox");
@@ -607,10 +640,12 @@ export function ProjectWorkspaceView({
               <div className="flex items-center gap-1.5">
                 <UserCircle2 className="size-3.5 text-muted-foreground" />
                 <Select
+                  name="assigneeFilter"
                   value={assigneeFilter}
                   onValueChange={setAssigneeFilter}
                 >
                   <SelectTrigger
+                    id="project-assignee-filter"
                     aria-label="Filter by assignee"
                     className="h-7 w-40 bg-card text-xs"
                   >

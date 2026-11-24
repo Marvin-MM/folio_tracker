@@ -12,7 +12,6 @@ import {
   CardDescription,
   CardFooter,
   CardHeader,
-  CardTitle,
 } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -82,9 +81,9 @@ export function LoginForm({
     return (
       <Card className="border-border bg-card shadow-none">
         <CardHeader className="space-y-1">
-          <CardTitle className="text-base font-semibold tracking-tight">
+          <h1 className="text-base font-semibold leading-none tracking-tight text-foreground">
             Sign in
-          </CardTitle>
+          </h1>
           <CardDescription className="text-xs text-muted-foreground">
             Continue with your Google account to access your workspace.
           </CardDescription>
@@ -96,7 +95,7 @@ export function LoginForm({
             googleEnabled={googleEnabled}
             hideConfigHint
           />
-          <p className="text-center text-[11px] text-muted-foreground">
+          <p className="text-balance text-center text-[11px] text-muted-foreground">
             New to Folio? Your workspace is created automatically on first sign-in.
           </p>
         </CardContent>
@@ -112,9 +111,9 @@ export function LoginForm({
   return (
     <Card className="border-border bg-card shadow-none">
       <CardHeader className="space-y-1">
-        <CardTitle className="text-base font-semibold tracking-tight">
+        <h1 className="text-base font-semibold leading-none tracking-tight text-foreground">
           Sign in
-        </CardTitle>
+        </h1>
         <CardDescription className="text-xs text-muted-foreground">
           Enter your credentials to access your workspace.
         </CardDescription>

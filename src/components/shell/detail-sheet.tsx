@@ -54,6 +54,7 @@ import {
 } from "@/components/ui/sheet";
 import { Switch } from "@/components/ui/switch";
 import { Textarea } from "@/components/ui/textarea";
+import { useInvalidateWorkspace } from "@/hooks/use-workspace-queries";
 import {
   zonedWallClockToUtcMs,
   type SnoozePreset,
@@ -119,6 +120,7 @@ function AttachedRemindersSection({
   onCancelled: (reminderId: string) => void;
 }) {
   const [isPending, startTransition] = useTransition();
+  const invalidate = useInvalidateWorkspace();
 
   const handleSnooze = (reminder: ReminderRecord, preset: SnoozePreset) => {
     startTransition(async () => {
@@ -132,6 +134,7 @@ function AttachedRemindersSection({
         return;
       }
       onUpdated(result.data);
+      await invalidate(["reminders", "tasks", "notes", "projects", "sidebar"]);
       toast.success(
         `Snoozed to ${formatUtcMs(result.data.remindAt, timezone)}`
       );
@@ -149,6 +152,7 @@ function AttachedRemindersSection({
         return;
       }
       onCancelled(reminder.id);
+      await invalidate(["reminders", "tasks", "notes", "projects", "sidebar"]);
       toast.success("Reminder cancelled.");
     });
   };
@@ -176,7 +180,7 @@ function AttachedRemindersSection({
               <div className="flex items-center justify-between gap-2">
                 <span className="mono-tabular flex items-center gap-1.5 text-[11px] font-medium text-reminder">
                   <Bell className="size-3 shrink-0" />
-                  {formatUtcMs(rem.remindAt, rem.timezone || timezone)}
+                  {formatUtcMs(rem.remindAt, timezone)}
                 </span>
                 <Badge
                   variant="outline"
@@ -253,6 +257,7 @@ function TaskInspectorForm({
   onClose: () => void;
 }) {
   const [title, setTitle] = useState(item.task.title);
+  const invalidate = useInvalidateWorkspace();
   const [description, setDescription] = useState(item.task.description ?? "");
   const [status, setStatus] = useState<TaskStatus>(item.task.status);
   const [priority, setPriority] = useState<TaskPriority>(item.task.priority);
@@ -297,6 +302,11 @@ function TaskInspectorForm({
         reminders:
           status === "done" || status === "archived" ? [] : item.reminders,
       });
+      await invalidate(
+        item.task.habitId
+          ? ["tasks", "reminders", "projects", "habits", "sidebar"]
+          : ["tasks", "reminders", "projects", "sidebar"]
+      );
       toast.success("Task updated.");
     });
   };
@@ -309,6 +319,7 @@ function TaskInspectorForm({
         toast.error(result.error.message);
         return;
       }
+      await invalidate(["tasks", "reminders", "projects", "sidebar"]);
       toast.success("Task deleted.");
       onClose();
     });
@@ -328,6 +339,7 @@ function TaskInspectorForm({
         ...item,
         task: result.data.task,
       });
+      await invalidate(["tasks", "habits", "projects", "sidebar"]);
       toast.success(`"${result.data.habit.title}" is now tracked as a habit.`);
     });
   };
@@ -600,6 +612,7 @@ function NoteInspectorForm({
   onClose: () => void;
 }) {
   const [title, setTitle] = useState(item.note.title);
+  const invalidate = useInvalidateWorkspace();
   const [content, setContent] = useState(item.note.content);
   const [tags, setTags] = useState<string[]>(item.tags);
   const [tagDraft, setTagDraft] = useState("");
@@ -640,6 +653,7 @@ function NoteInspectorForm({
         note: result.data,
         tags,
       });
+      await invalidate(["notes", "projects", "sidebar"]);
       toast.success("Note saved.");
     });
   };
@@ -652,6 +666,7 @@ function NoteInspectorForm({
         toast.error(result.error.message);
         return;
       }
+      await invalidate(["notes", "reminders", "projects", "sidebar"]);
       toast.success("Note deleted.");
       onClose();
     });
@@ -913,6 +928,7 @@ function ReminderInspectorBody({
   onClose: () => void;
 }) {
   const [isPending, startTransition] = useTransition();
+  const invalidate = useInvalidateWorkspace();
   const { reminder } = item;
 
   const handleSnooze = (preset: SnoozePreset) => {
@@ -927,6 +943,7 @@ function ReminderInspectorBody({
         return;
       }
       onSync({ ...item, reminder: result.data });
+      await invalidate(["reminders", "tasks", "notes", "projects", "sidebar"]);
       toast.success(
         `Snoozed to ${formatUtcMs(result.data.remindAt, timezone)}`
       );
@@ -943,6 +960,7 @@ function ReminderInspectorBody({
         toast.error(result.error.message);
         return;
       }
+      await invalidate(["reminders", "tasks", "notes", "projects", "sidebar"]);
       toast.success("Reminder cancelled.");
       onClose();
     });
@@ -971,11 +989,11 @@ function ReminderInspectorBody({
         <dt className="text-muted-foreground">Scheduled</dt>
         <dd className="mono-tabular flex items-center gap-1.5 text-reminder">
           <Calendar className="size-3" />
-          {formatUtcMs(reminder.remindAt, reminder.timezone || timezone)}
+          {formatUtcMs(reminder.remindAt, timezone)}
         </dd>
         <dt className="text-muted-foreground">Timezone</dt>
         <dd className="mono-tabular text-muted-foreground">
-          {reminder.timezone}
+          {timezone}
         </dd>
         <dt className="text-muted-foreground">Version</dt>
         <dd className="mono-tabular text-muted-foreground">
@@ -1061,6 +1079,7 @@ function HabitInspectorForm({
   onClose: () => void;
 }) {
   const [title, setTitle] = useState(habit.title);
+  const invalidate = useInvalidateWorkspace();
   const [category, setCategory] = useState(habit.category ?? "");
   const [description, setDescription] = useState(habit.description ?? "");
   const [cadenceType, setCadenceType] = useState<HabitCadenceType>(
@@ -1121,6 +1140,7 @@ function HabitInspectorForm({
       }
 
       onSync(result.data);
+      await invalidate(["habits", "today", "tasks", "circle", "sidebar"]);
       toast.success("Habit updated.");
     });
   };
@@ -1135,6 +1155,7 @@ function HabitInspectorForm({
         toast.error(result.error.message);
         return;
       }
+      await invalidate(["habits", "today", "circle", "sidebar"]);
       toast.success(
         result.data.isArchived ? "Habit archived." : "Habit restored."
       );
@@ -1149,6 +1170,7 @@ function HabitInspectorForm({
         toast.error(result.error.message);
         return;
       }
+      await invalidate(["habits", "today", "tasks", "circle", "sidebar"]);
       toast.success("Habit deleted.");
       onClose();
     });

@@ -198,7 +198,7 @@ export function HabitsAnalyticsCharts({
               axisLine={false}
               interval="preserveStartEnd"
               minTickGap={14}
-              tick={{ fontSize: 10 }}
+              tick={{ fontSize: 10, fill: "var(--muted-foreground)" }}
             />
             <YAxis
               domain={[0, 100]}
@@ -206,7 +206,7 @@ export function HabitsAnalyticsCharts({
               tickLine={false}
               axisLine={false}
               tickFormatter={(v: number) => `${v}%`}
-              tick={{ fontSize: 10 }}
+              tick={{ fontSize: 10, fill: "var(--muted-foreground)" }}
             />
             <ChartTooltip
               cursor={{ stroke: "var(--border)", strokeWidth: 1 }}
@@ -269,7 +269,7 @@ export function HabitsAnalyticsCharts({
               dataKey="weekLabel"
               tickLine={false}
               axisLine={false}
-              tick={{ fontSize: 10 }}
+              tick={{ fontSize: 10, fill: "var(--muted-foreground)" }}
             />
             <YAxis
               domain={[0, 100]}
@@ -277,7 +277,7 @@ export function HabitsAnalyticsCharts({
               tickLine={false}
               axisLine={false}
               tickFormatter={(v: number) => `${v}%`}
-              tick={{ fontSize: 10 }}
+              tick={{ fontSize: 10, fill: "var(--muted-foreground)" }}
             />
             <ChartTooltip
               cursor={{ fill: "var(--accent)", opacity: 0.45 }}

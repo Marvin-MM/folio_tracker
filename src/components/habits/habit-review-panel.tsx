@@ -19,6 +19,7 @@ import {
   deleteHabitCommentAction,
   toggleHabitReactionAction,
 } from "@/actions/habits-social";
+import { useInvalidateWorkspace } from "@/hooks/use-workspace-queries";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -94,6 +95,7 @@ export function HabitReviewPanel({
   const [replyingToId, setReplyingToId] = useState<string | null>(null);
   const [replyBody, setReplyBody] = useState("");
   const [isPending, startTransition] = useTransition();
+  const invalidate = useInvalidateWorkspace();
 
   const canComment = isOwner || Boolean(windowState?.isOpen);
   const canReact = isOwner || Boolean(windowState?.canReact);
@@ -125,6 +127,7 @@ export function HabitReviewPanel({
       setBody("");
       setTargetHabitId("none");
       setTargetDateKey("");
+      await invalidate(["circle"], { ownerId });
       toast.success("Review note posted.");
     });
   };
@@ -144,6 +147,7 @@ export function HabitReviewPanel({
       }
       setReplyBody("");
       setReplyingToId(null);
+      await invalidate(["circle"], { ownerId });
       toast.success("Reply posted.");
     });
   };
@@ -155,6 +159,7 @@ export function HabitReviewPanel({
         toast.error(result.error.message);
         return;
       }
+      await invalidate(["circle"], { ownerId });
       toast.success("Comment removed.");
     });
   };
@@ -170,7 +175,9 @@ export function HabitReviewPanel({
       });
       if (!result.ok) {
         toast.error(result.error.message);
+        return;
       }
+      await invalidate(["circle"], { ownerId });
     });
   };
 
@@ -196,9 +203,17 @@ export function HabitReviewPanel({
 
         <div className="flex flex-wrap items-center gap-2">
           {availableCycleKeys.length > 1 && onSelectCycle ? (
-            <Select value={activeCycleKey} onValueChange={onSelectCycle}>
-              <SelectTrigger className="mono-tabular mira-row w-[180px] bg-background text-xs">
-                <SelectValue />
+            <Select
+              name="reviewCycle"
+              value={activeCycleKey}
+              onValueChange={onSelectCycle}
+            >
+              <SelectTrigger
+                id="review-cycle-select"
+                aria-label="Select review cycle"
+                className="mono-tabular mira-row w-[180px] bg-background text-xs"
+              >
+                <SelectValue>{formatCycleDisplayLabel(activeCycleKey)}</SelectValue>
               </SelectTrigger>
               <SelectContent>
                 {availableCycleKeys.map((key) => (
@@ -426,6 +441,9 @@ export function HabitReviewPanel({
                 {replyingToId === comment.id && canComment ? (
                   <div className="space-y-2 border-l-2 border-border pl-3.5">
                     <Textarea
+                      id={`reply-comment-${comment.id}`}
+                      name="replyBody"
+                      aria-label={`Reply to ${comment.authorName}`}
                       rows={2}
                       maxLength={1000}
                       placeholder={`Reply to ${comment.authorName}…`}
@@ -470,11 +488,20 @@ export function HabitReviewPanel({
           <div className="space-y-2.5">
             <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
               <Select
+                name="reviewTargetHabit"
                 value={targetHabitId}
                 onValueChange={setTargetHabitId}
               >
-                <SelectTrigger className="mira-row bg-background text-xs">
-                  <SelectValue placeholder="Anchor to habit (optional)" />
+                <SelectTrigger
+                  id="review-target-habit"
+                  aria-label="Anchor review note to habit"
+                  className="mira-row bg-background text-xs"
+                >
+                  <SelectValue placeholder="Anchor to habit (optional)">
+                    {targetHabitId === "none"
+                      ? "General cycle note"
+                      : `Habit: ${scopedHabits.find((h) => h.id === targetHabitId)?.title ?? "Selected"}`}
+                  </SelectValue>
                 </SelectTrigger>
                 <SelectContent>
                   <SelectItem value="none" className="text-xs">
@@ -489,6 +516,8 @@ export function HabitReviewPanel({
               </Select>
 
               <Input
+                id="review-target-date"
+                name="reviewTargetDate"
                 type="date"
                 aria-label="Optional date cell anchor"
                 value={targetDateKey}
@@ -498,6 +527,9 @@ export function HabitReviewPanel({
             </div>
 
             <Textarea
+              id="review-note-body"
+              name="reviewBody"
+              aria-label={isOwner ? "Personal cycle reflection" : `Review note for ${ownerName}`}
               rows={3}
               maxLength={1000}
               placeholder={

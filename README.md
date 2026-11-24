@@ -17,7 +17,9 @@ Designed around a tactile **Warm Paper (Light)** and **Carbon Ink (Dark)** aesth
 - **Real-Calendar Habit Tracking & Honest Analytics:** Full 28–31 day monthly calendar matrix with optimistic cell cycling (`done` / `skipped` / `missed`), elapsed-to-date scoring, mid-month `startDate` support, weekly-target habits, rest passes that protect streaks, bulk newline/CSV import, monochrome Recharts trend visualizations, bidirectional ACID Task ↔ Habit sync, and 15-minute timezone-aware habit nudges.
 - **Accountability Circle & Dynamic Review Windows:** Invite accountability monitors via Quick-Pick collaborators or anti-enumeration email/token links (`/invite/habit/[token]`), share all or strictly selected habits (zero-leak DAL projection), enforce global or per-monitor commenting cadences (`weekly_window`, `interval_days`, or `anytime`) evaluated in the owner's IANA timezone, exchange threaded cycle reviews and monochrome reactions (`ack`, `solid`, `push`), and send automated hourly review-open digests.
 - **Shared Projects & RBAC:** Direct-Turso `owner` / `editor` / `viewer` authorization (viewers remain read-only on shared items while still attaching private personal reminders), chronological activity feed, and SHA-256 single-use 7-day email invitations (`/invite/[token]`).
-- **Production Hardening:** Sliding-window rate limiting (`429` + `Retry-After`), delivery-time zero-leak authorization re-checks, shared-device push cleanup on sign-out, safe account offboarding, strict CSP/security headers, and `/api/health`.
+- **Instant Cached Navigation & State Management:** Hybrid TanStack React Query v5 (user-scoped server cache + hover/focus prefetching across 8 authenticated `/api/workspace/*` read routes + Next.js 16 `staleTimes`) and Zustand v5 (strictly non-PII UI layout preferences), with 0ms client-side Habits scoring toggles, lazy-loaded `⌘K` Quick Capture & Recharts chunks, and full cache/session wipe on sign-out.
+- **SEO & Installable PWA Experience:** Editorial Mira landing page at `/` with interactive 3-tab preview, `WebApplication` JSON-LD, dynamic Open Graph/Twitter cards, `robots.txt`/`sitemap.xml`, `noindex` guards on private routes, 12 Light/Dark iOS launch splash images + standalone launch curtain, dedicated `/offline` fallback (never caching private data), and automatic standalone PWA bypass straight to `/login` or `/app/inbox`.
+- **Production Hardening:** Sliding-window rate limiting (`429` + `Retry-After`), delivery-time zero-leak authorization re-checks, shared-device push & client-cache cleanup on sign-out, safe account offboarding, global error boundary, strict CSP/security headers, and `/api/health`.
 
 ---
 
@@ -26,7 +28,8 @@ Designed around a tactile **Warm Paper (Light)** and **Carbon Ink (Dark)** aesth
 | Layer | Technology |
 | :--- | :--- |
 | **Framework & Language** | Next.js 16 (App Router, Turbopack), React 19, TypeScript (`strict`) |
-| **UI & Visualization** | Tailwind CSS v4, `shadcn/ui` (Mira preset), Recharts |
+| **Client State & Caching** | TanStack React Query v5 (server state), Zustand v5 (non-PII UI prefs), Next.js `staleTimes` |
+| **UI & Visualization** | Tailwind CSS v4, `shadcn/ui` (Mira preset), Recharts (lazy-loaded) |
 | **Database & ORM** | Turso / libSQL (SQLite locally), Drizzle ORM |
 | **Authentication** | Better Auth (Google OAuth in production; Email/Password + Google OAuth in local dev) |
 | **Durable Workflows** | Inngest v4 (reminders, outbox reconciliation, habit nudges, review digests, async emails) |
@@ -125,6 +128,7 @@ All variables are documented in [`.env.example`](.env.example).
 | `TURSO_AUTH_TOKEN` | Production | Turso database auth token |
 | `BETTER_AUTH_SECRET` | Required | Session signing secret (`openssl rand -base64 32`) |
 | `BETTER_AUTH_URL` | Required | Canonical app URL (`http://localhost:3000` or `https://<domain>`) |
+| `NEXT_PUBLIC_SITE_URL` | Optional | Public canonical origin override for SEO metadata, sitemap, and Open Graph URLs (falls back to `BETTER_AUTH_URL` or `https://folio.renult.xyz`) |
 | `GOOGLE_CLIENT_ID` / `GOOGLE_CLIENT_SECRET` | Production (optional locally) | Powers Google OAuth sign-in (sole sign-in method in production; local dev supports both Google and Email/Password) |
 | `RESEND_API_KEY` / `EMAIL_FROM` | Optional | Transactional emails (falls back to redacted console logs when unset) |
 | `INNGEST_DEV` | Local Dev | Set `"1"` locally; omit in production |
@@ -144,7 +148,7 @@ pnpm build        # Create optimized production build
 pnpm start        # Serve production build
 pnpm typecheck    # Run TypeScript strict typecheck (tsc --noEmit)
 pnpm lint         # Run ESLint
-pnpm test         # Run all 17 Vitest suites (73 tests, ephemeral SQLite DBs)
+pnpm test         # Run all 20 Vitest suites (84 tests, ephemeral SQLite DBs)
 pnpm db:generate  # Generate Drizzle SQL migrations after schema changes
 pnpm db:migrate   # Apply Drizzle migrations to TURSO_DATABASE_URL
 pnpm db:studio    # Launch Drizzle Studio
@@ -159,13 +163,15 @@ pnpm db:studio    # Launch Drizzle Studio
 ```text
 ├── docs/ARCHITECTURE.md      # Unified visual system architecture & production invariants
 ├── drizzle/                  # Versioned Drizzle SQL migrations & snapshots
-├── public/                   # PWA icons and Service Worker (sw.js)
+├── public/                   # PWA icons, 12 Light/Dark iOS splash PNGs, and Service Worker (sw.js)
 └── src/
     ├── proxy.ts              # Next.js 16 edge boundary & cache isolation
     ├── actions/              # Validated Server Actions (Zod -> Auth -> Service)
-    ├── app/                  # App Router pages (/app/*, /app/habits*, /invite/*, /api/*)
-    ├── components/           # Warm Paper / Carbon Ink Mira UI primitives & views
-    ├── lib/                  # Pure helpers (chrono NLP, fractional index, sign-out)
+    ├── app/                  # App Router pages (/, /login, /offline, /app/*, /invite/*, /api/workspace/*)
+    ├── components/           # Warm Paper / Carbon Ink Mira UI primitives, landing, PWA & views
+    ├── hooks/                # TanStack Query workspace hooks, prefetchers & targeted invalidation
+    ├── stores/               # Zustand v5 client-only UI store (non-PII preferences)
+    ├── lib/                  # Pure helpers (query keys/client, site SEO config, chrono NLP, sign-out)
     └── server/
         ├── auth.ts           # Better Auth config & unverified-link policy
         ├── db/               # 22 Drizzle tables, relations, WAL client, withDbRetry

@@ -2,6 +2,8 @@
 
 import { removePushSubscriptionAction } from "@/actions/notifications";
 import { authClient } from "@/lib/auth-client";
+import { clearBrowserQueryClient } from "@/lib/query/query-client";
+import { useWorkspaceUIStore } from "@/stores/workspace-ui-store";
 
 const SW_READY_TIMEOUT_MS = 2_000;
 
@@ -51,11 +53,25 @@ async function cleanupBrowserPushSubscription(
  * Shared-device safe sign-out:
  * 1. Deletes the active browser push endpoint from `push_subscriptions` while still authenticated.
  * 2. Unsubscribes the local browser PushManager subscription.
- * 3. Completes Better Auth sign-out.
+ * 3. Clears ALL in-memory TanStack Query caches and ephemeral Zustand UI state.
+ * 4. Completes Better Auth sign-out.
  */
 export async function performSecureSignOut(
   options: { revokePushOnServer?: boolean } = {}
 ): Promise<void> {
   await cleanupBrowserPushSubscription(options.revokePushOnServer ?? true);
+  clearBrowserQueryClient();
+  useWorkspaceUIStore.getState().resetSessionState();
   await authClient.signOut();
+  clearBrowserQueryClient();
+}
+
+/**
+ * Forces a full document navigation after sign-out so Next.js's in-memory
+ * client Router Cache is purged alongside TanStack Query and Zustand state.
+ */
+export function hardNavigateAfterSignOut(path = "/login"): void {
+  if (typeof window === "undefined") return;
+  const target = new URL(path, window.location.origin);
+  window.location.href = target.href;
 }

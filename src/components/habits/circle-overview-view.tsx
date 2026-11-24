@@ -28,6 +28,7 @@ import { InviteMonitorDialog } from "@/components/habits/invite-monitor-dialog";
 import { MonitorPolicySheet } from "@/components/habits/monitor-policy-sheet";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
+import { useWorkspaceInvalidation } from "@/hooks/use-workspace-queries";
 import { cn } from "@/lib/utils";
 import type { MonitorWithUser } from "@/server/dal/habits-social";
 import type { OwnerReviewsData } from "@/server/services/habit-comment-service";
@@ -39,6 +40,7 @@ interface CircleOverviewViewProps {
   timezone: string;
   overview: CircleOverviewData;
   ownerReviews: OwnerReviewsData;
+  onSelectCycle?: (nextCycle: string) => void;
 }
 
 export function CircleOverviewView({
@@ -47,8 +49,10 @@ export function CircleOverviewView({
   timezone,
   overview,
   ownerReviews,
+  onSelectCycle,
 }: CircleOverviewViewProps) {
   const router = useRouter();
+  const invalidate = useWorkspaceInvalidation(currentUserId);
   const [inviteOpen, setInviteOpen] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [editingMonitor, setEditingMonitor] = useState<MonitorWithUser | null>(
@@ -64,6 +68,7 @@ export function CircleOverviewView({
         toast.error(result.error.message);
         return;
       }
+      await invalidate(["circle", "habits", "notifications"]);
       toast.success("Monitor request accepted.");
     });
   };
@@ -75,6 +80,7 @@ export function CircleOverviewView({
         toast.error(result.error.message);
         return;
       }
+      await invalidate(["circle", "habits", "notifications"]);
       toast.success("Request declined.");
     });
   };
@@ -86,6 +92,7 @@ export function CircleOverviewView({
         toast.error(result.error.message);
         return;
       }
+      await invalidate(["circle"]);
       toast.success("Invitation cancelled.");
     });
   };
@@ -98,6 +105,7 @@ export function CircleOverviewView({
         return;
       }
       setConfirmRevokeId(null);
+      await invalidate(["circle", "habits"]);
       toast.success("Monitor access revoked immediately.");
     });
   };
@@ -462,11 +470,15 @@ export function CircleOverviewView({
         windowState={null}
         activeCycleKey={ownerReviews.activeCycleKey}
         availableCycleKeys={ownerReviews.availableCycleKeys}
-        onSelectCycle={(nextCycle) =>
+        onSelectCycle={(nextCycle) => {
+          if (onSelectCycle) {
+            onSelectCycle(nextCycle);
+            return;
+          }
           router.push(
             `/app/habits/circle?cycle=${encodeURIComponent(nextCycle)}`
-          )
-        }
+          );
+        }}
         scopedHabits={overview.myHabits}
         comments={ownerReviews.comments}
         reactions={ownerReviews.reactions}

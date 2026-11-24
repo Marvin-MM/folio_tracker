@@ -1,7 +1,6 @@
 import type { Metadata } from "next";
-import { CircleOverviewView } from "@/components/habits/circle-overview-view";
-import { HabitsSubnav } from "@/components/habits/habits-subnav";
-import { ViewHeader } from "@/components/workspace/view-header";
+import { HabitsCircleClient } from "@/components/habits/habits-query-views";
+import { getServerTimestampMs } from "@/lib/query/clock";
 import { requireSession } from "@/server/dal/auth-guard";
 import { habitCommentService } from "@/server/services/habit-comment-service";
 import { habitMonitorService } from "@/server/services/habit-monitor-service";
@@ -25,28 +24,21 @@ export default async function HabitsCirclePage({
   ]);
 
   const timezone = user.timezone || "UTC";
+  const initialFetchedAtMs = getServerTimestampMs();
+  const initialCycleKey = params.cycle?.trim() || null;
+
   const [overview, ownerReviews] = await Promise.all([
     habitMonitorService.getCircleOverview(user.id),
-    habitCommentService.listOwnerReviews(user.id, params.cycle),
+    habitCommentService.listOwnerReviews(user.id, initialCycleKey ?? undefined),
   ]);
 
   return (
-    <div className="flex flex-1 flex-col">
-      <ViewHeader
-        title="Habits"
-        subtitle="Accountability Circle, commenting cadence, and cycle reviews"
-        meta={`${overview.monitoringOthers.length} following · ${overview.myMonitors.length} monitors`}
-      />
-      <HabitsSubnav circleBadgeCount={overview.badgeCount} />
-      <div className="mx-auto w-full max-w-4xl min-w-0 p-4 md:p-6">
-        <CircleOverviewView
-          currentUserId={user.id}
-          currentUserName={user.name}
-          timezone={timezone}
-          overview={overview}
-          ownerReviews={ownerReviews}
-        />
-      </div>
-    </div>
+    <HabitsCircleClient
+      userId={user.id}
+      currentUserName={user.name}
+      initialCycleKey={initialCycleKey}
+      initialData={{ overview, ownerReviews, timezone }}
+      initialFetchedAtMs={initialFetchedAtMs}
+    />
   );
 }

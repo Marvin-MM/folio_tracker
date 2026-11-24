@@ -4,6 +4,7 @@ import { useState, useTransition } from "react";
 import { Loader2, RotateCcw } from "lucide-react";
 import { toast } from "sonner";
 import { updateMonitorConfigAction } from "@/actions/habits-social";
+import { useInvalidateWorkspace } from "@/hooks/use-workspace-queries";
 import { Button } from "@/components/ui/button";
 import { Checkbox } from "@/components/ui/checkbox";
 import { Input } from "@/components/ui/input";
@@ -104,6 +105,7 @@ function MonitorPolicyForm({
       globalSettings.allowReactionsWhenLocked
   );
   const [isPending, startTransition] = useTransition();
+  const invalidate = useInvalidateWorkspace();
 
   const toggleHabit = (habitId: string) => {
     setSelectedHabitIds((prev) =>
@@ -157,6 +159,8 @@ function MonitorPolicyForm({
         toast.error(result.error.message);
         return;
       }
+
+      await invalidate(["circle"]);
 
       toast.success(`Updated policy for ${monitor.monitorName}.`);
       onClose();
