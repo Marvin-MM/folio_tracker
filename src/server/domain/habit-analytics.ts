@@ -781,15 +781,22 @@ export function computeHabitMonthAnalytics(params: {
     }
   }
 
+  const habitRates = habits
+    .map((habit) => byHabitId[habit.id]?.completionRate)
+    .filter((rate): rate is number => rate !== null);
+  const monthlyRate =
+    habitRates.length > 0
+      ? habitRates.reduce((sum, rate) => sum + rate, 0) / habitRates.length
+      : null;
+
   return {
     calendar,
     scoringMode,
     todayDateKey,
     monthlyProgress: {
-      rate:
-        overallTargetUnits > 0
-          ? Math.min(overallCompletedUnits / overallTargetUnits, 1)
-          : null,
+      // Unweighted average of per-habit completion rates, matching
+      // =AVERAGE(per-habit %) spreadsheet semantics.
+      rate: monthlyRate,
       completedUnits: overallCompletedUnits,
       targetUnits: overallTargetUnits,
     },

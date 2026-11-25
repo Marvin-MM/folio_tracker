@@ -179,6 +179,9 @@ export function FriendHabitsView({
     analytics.monthlyProgress.rate !== null
       ? Math.round(analytics.monthlyProgress.rate * 100)
       : null;
+  const monthlyHabitCount = Object.values(analytics.byHabitId).filter(
+    (h) => h.completionRate !== null
+  ).length;
 
   return (
     <div className="min-w-0 space-y-4">
@@ -336,8 +339,7 @@ export function FriendHabitsView({
               {monthlyPct !== null ? `${monthlyPct}%` : "—"}
             </span>
             <span className="mono-tabular text-xs text-muted-foreground">
-              {analytics.monthlyProgress.completedUnits}/
-              {analytics.monthlyProgress.targetUnits} done
+              avg across {monthlyHabitCount} habit{monthlyHabitCount === 1 ? "" : "s"}
             </span>
           </div>
           <div className="mt-2 h-1.5 w-full overflow-hidden rounded-full bg-muted">

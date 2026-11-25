@@ -119,6 +119,52 @@ describe("habit-analytics pure domain engine", () => {
       expect(fullMonth.byHabitId.h1?.completionRate).toBeCloseTo(4 / 16, 6);
     });
 
+    it("computes monthly progress as unweighted average of per-habit completion rates", () => {
+      // h1: 9/10 = 90%, h2: 1/4 scheduled days = 25%
+      // Weighted would be 10/14 = 71.43%; unweighted average should be 57.5%.
+      const habits: AnalyticsHabitInput[] = [
+        {
+          id: "h1",
+          title: "High volume",
+          cadenceType: "daily",
+          scheduledDays: [],
+          weeklyTargetCount: null,
+          startDate: "2026-11-01",
+        },
+        {
+          id: "h2",
+          title: "Low volume",
+          cadenceType: "specific_days",
+          scheduledDays: [1, 2], // Mon/Tue only
+          weeklyTargetCount: null,
+          startDate: "2026-11-01",
+        },
+      ];
+      const logs: AnalyticsHabitLogInput[] = [];
+      for (let d = 1; d <= 9; d++) logs.push({ habitId: "h1", dateKey: `2026-11-${String(d).padStart(2, "0")}`, status: "done" });
+      logs.push({ habitId: "h1", dateKey: "2026-11-10", status: "missed" });
+      // 2026-11-02 is Mon, 2026-11-03 is Tue, 2026-11-09 Mon, 2026-11-10 Tue in range
+      logs.push({ habitId: "h2", dateKey: "2026-11-02", status: "done" });
+      logs.push({ habitId: "h2", dateKey: "2026-11-03", status: "missed" });
+      logs.push({ habitId: "h2", dateKey: "2026-11-09", status: "missed" });
+      logs.push({ habitId: "h2", dateKey: "2026-11-10", status: "missed" });
+
+      const analytics = computeHabitMonthAnalytics({
+        yearMonth: "2026-11",
+        todayDateKey: "2026-11-10",
+        weekStartsOn: 1,
+        scoringMode: "elapsed",
+        habits,
+        logs,
+      });
+
+      // h1: 9/10 = 90%, h2: 1/4 = 25%
+      // Weighted = 10/14 = 71.43%; unweighted average = 57.5%
+      expect(analytics.byHabitId.h1?.completionRate).toBeCloseTo(0.9, 6);
+      expect(analytics.byHabitId.h2?.completionRate).toBeCloseTo(0.25, 6);
+      expect(analytics.monthlyProgress.rate).toBeCloseTo(0.575, 6);
+    });
+
     it("excludes 'skipped' rest days from denominators and preserves active streaks", () => {
       const habit: AnalyticsHabitInput = {
         id: "h1",
