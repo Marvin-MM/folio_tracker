@@ -339,7 +339,9 @@ export function FriendHabitsView({
               {monthlyPct !== null ? `${monthlyPct}%` : "—"}
             </span>
             <span className="mono-tabular text-xs text-muted-foreground">
-              avg across {monthlyHabitCount} habit{monthlyHabitCount === 1 ? "" : "s"}
+              {monthlyHabitCount > 0
+                ? `avg across ${monthlyHabitCount} habit${monthlyHabitCount === 1 ? "" : "s"}`
+                : "No scored habits yet"}
             </span>
           </div>
           <div className="mt-2 h-1.5 w-full overflow-hidden rounded-full bg-muted">

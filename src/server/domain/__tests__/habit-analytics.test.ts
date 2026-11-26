@@ -165,6 +165,67 @@ describe("habit-analytics pure domain engine", () => {
       expect(analytics.monthlyProgress.rate).toBeCloseTo(0.575, 6);
     });
 
+    it("excludes unscored (null-rate) habits from monthly average and returns null when none are scored", () => {
+      const habits: AnalyticsHabitInput[] = [
+        {
+          id: "h1",
+          title: "Scored habit",
+          cadenceType: "daily",
+          scheduledDays: [],
+          weeklyTargetCount: null,
+          startDate: "2026-11-01",
+        },
+        {
+          id: "h2",
+          title: "All-skipped habit",
+          cadenceType: "daily",
+          scheduledDays: [],
+          weeklyTargetCount: null,
+          startDate: "2026-11-01",
+        },
+        {
+          id: "h3",
+          title: "Starts later in month",
+          cadenceType: "daily",
+          scheduledDays: [],
+          weeklyTargetCount: null,
+          startDate: "2026-11-20",
+        },
+      ];
+      const logs: AnalyticsHabitLogInput[] = [
+        { habitId: "h1", dateKey: "2026-11-01", status: "done" },
+        { habitId: "h1", dateKey: "2026-11-02", status: "missed" },
+        { habitId: "h2", dateKey: "2026-11-01", status: "skipped" },
+        { habitId: "h2", dateKey: "2026-11-02", status: "skipped" },
+      ];
+
+      const mixed = computeHabitMonthAnalytics({
+        yearMonth: "2026-11",
+        todayDateKey: "2026-11-02",
+        weekStartsOn: 1,
+        scoringMode: "elapsed",
+        habits,
+        logs,
+      });
+
+      expect(mixed.byHabitId.h1?.completionRate).toBeCloseTo(0.5, 6);
+      expect(mixed.byHabitId.h2?.completionRate).toBeNull();
+      expect(mixed.byHabitId.h3?.completionRate).toBeNull();
+      // Only h1 is scored -> average is 50%, not 50%/3
+      expect(mixed.monthlyProgress.rate).toBeCloseTo(0.5, 6);
+
+      const allUnscored = computeHabitMonthAnalytics({
+        yearMonth: "2026-11",
+        todayDateKey: "2026-11-02",
+        weekStartsOn: 1,
+        scoringMode: "elapsed",
+        habits: [habits[1]!, habits[2]!],
+        logs: logs.filter((l) => l.habitId !== "h1"),
+      });
+
+      expect(allUnscored.monthlyProgress.rate).toBeNull();
+    });
+
     it("excludes 'skipped' rest days from denominators and preserves active streaks", () => {
       const habit: AnalyticsHabitInput = {
         id: "h1",

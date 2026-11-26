@@ -783,10 +783,19 @@ export function computeHabitMonthAnalytics(params: {
 
   const habitRates = habits
     .map((habit) => byHabitId[habit.id]?.completionRate)
-    .filter((rate): rate is number => rate !== null);
+    .filter(
+      (rate): rate is number =>
+        typeof rate === "number" && Number.isFinite(rate)
+    );
   const monthlyRate =
     habitRates.length > 0
-      ? habitRates.reduce((sum, rate) => sum + rate, 0) / habitRates.length
+      ? Math.min(
+          Math.max(
+            habitRates.reduce((sum, rate) => sum + rate, 0) / habitRates.length,
+            0
+          ),
+          1
+        )
       : null;
 
   return {
