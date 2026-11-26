@@ -242,6 +242,31 @@ describe("AdminService KPIs, diagnostics, user controls & audited actions", () =
     ]);
     expect(overview.usersPage.items).toHaveLength(3);
 
+    // Verify SQL GROUP BY daily series captured today's UTC metrics accurately
+    const latestPoint = overview.dailySeries[overview.dailySeries.length - 1];
+    expect(latestPoint?.newUsers).toBe(3);
+    expect(latestPoint?.tasksCreated).toBe(1);
+    expect(latestPoint?.tasksCompleted).toBe(1);
+    expect(latestPoint?.habitLogs).toBe(1);
+
+    // Verify health schema count reflects all 26 tables
+    const dbSub = overview.health.subsystems.find((s) => s.key === "database");
+    expect(
+      dbSub?.details.some((d) => d.label === "Schema" && d.value.includes("26 tables"))
+    ).toBe(true);
+
+    // Verify section-scoped endpoints return accurate independent payloads
+    const [summarySection, usersSection, timelineSection] = await Promise.all([
+      service.getOverviewSummary(14),
+      service.getUsersDirectorySection({ query: "jordan" }),
+      service.getTimelineSection("user", 10),
+    ]);
+    expect(summarySection.kpis.users.total).toBe(3);
+    expect(summarySection.dailySeries).toHaveLength(14);
+    expect(usersSection.usersPage.total).toBe(1);
+    expect(usersSection.usersPage.items[0]?.email).toBe("jordan@folio.test");
+    expect(timelineSection.timeline.length).toBeGreaterThanOrEqual(3);
+
     // Search filter scopes directory accurately
     const filtered = await service.getOverview({ query: "jordan" });
     expect(filtered.usersPage.total).toBe(1);

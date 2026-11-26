@@ -59,7 +59,10 @@ import {
 } from "@/components/workspace/activity-timeline";
 import { ViewHeader } from "@/components/workspace/view-header";
 import {
-  useAdminOverviewQuery,
+  useAdminSummaryQuery,
+  useAdminTimelineQuery,
+  useAdminUsersQuery,
+  usePrefetchWorkspaceView,
   useWorkspaceInvalidation,
 } from "@/hooks/use-workspace-queries";
 import { cn } from "@/lib/utils";
@@ -68,7 +71,7 @@ import type {
   PlatformTimelineCategory,
 } from "@/server/dal/admin-repository";
 import type {
-  AdminOverviewPayload,
+  AdminOverviewSummaryPayload,
   HealthProbeStatus,
 } from "@/server/services/admin-service";
 
@@ -96,8 +99,8 @@ type AdminPortalTab = "overview" | "health" | "users" | "timeline";
 interface AdminPortalViewProps {
   currentUserId: string;
   timezone: string;
-  initialData: AdminOverviewPayload;
-  initialFetchedAtMs: number;
+  initialData?: AdminOverviewSummaryPayload;
+  initialFetchedAtMs?: number;
 }
 
 const STATUS_BADGE_CLASSES: Record<HealthProbeStatus, string> = {
@@ -127,6 +130,7 @@ export function AdminPortalView({
   initialFetchedAtMs,
 }: AdminPortalViewProps) {
   const invalidate = useWorkspaceInvalidation(currentUserId);
+  const prefetch = usePrefetchWorkspaceView(currentUserId);
   const [activeTab, setActiveTab] = useState<AdminPortalTab>("overview");
   const [searchQuery, setSearchQuery] = useState("");
   const [roleFilter, setRoleFilter] = useState<"all" | "admin" | "user">("all");
@@ -141,53 +145,68 @@ export function AdminPortalView({
   const [suspendDialogOpen, setSuspendDialogOpen] = useState(false);
   const [isPending, startTransition] = useTransition();
 
-  const isDefaultQuery =
-    !searchQuery.trim() &&
-    roleFilter === "all" &&
-    statusFilter === "all" &&
-    timelineCategory === "all" &&
-    page === 1;
+  const summaryQuery = useAdminSummaryQuery(
+    currentUserId,
+    initialData,
+    initialFetchedAtMs
+  );
 
-  const query = useAdminOverviewQuery(
+  const usersQuery = useAdminUsersQuery(
     currentUserId,
     {
       query: searchQuery.trim() || undefined,
       roleFilter,
       statusFilter,
-      timelineCategory,
       page,
     },
-    isDefaultQuery ? initialData : undefined,
-    isDefaultQuery ? initialFetchedAtMs : undefined
+    activeTab === "users"
   );
 
-  const data = query.data ?? initialData;
-  const { kpis, dailySeries, health, usersPage, timeline } = data;
-
-  const totalPages = Math.max(
-    1,
-    Math.ceil(usersPage.total / Math.max(1, usersPage.pageSize))
+  const timelineQuery = useAdminTimelineQuery(
+    currentUserId,
+    timelineCategory,
+    activeTab === "timeline"
   );
+
+  const summaryData = summaryQuery.data ?? initialData ?? null;
+  const kpis = summaryData?.kpis ?? null;
+  const dailySeries = summaryData?.dailySeries ?? [];
+  const health = summaryData?.health ?? null;
+  const usersPage = usersQuery.data?.usersPage ?? null;
+  const timeline = useMemo(
+    () => timelineQuery.data?.timeline ?? [],
+    [timelineQuery.data]
+  );
+  const isAnyFetching =
+    summaryQuery.isFetching ||
+    (activeTab === "users" && usersQuery.isFetching) ||
+    (activeTab === "timeline" && timelineQuery.isFetching);
+
+  const totalPages = usersPage
+    ? Math.max(1, Math.ceil(usersPage.total / Math.max(1, usersPage.pageSize)))
+    : 1;
 
   const taskCompletionPct =
-    kpis.workspace.tasksTotal > 0
+    kpis && kpis.workspace.tasksTotal > 0
       ? Math.round(
           (kpis.workspace.tasksCompleted / kpis.workspace.tasksTotal) * 100
         )
       : 0;
 
   const verifiedPct =
-    kpis.users.total > 0
+    kpis && kpis.users.total > 0
       ? Math.round((kpis.users.verified / kpis.users.total) * 100)
       : 0;
 
   const backfillPct =
-    kpis.habits.logs7d > 0
+    kpis && kpis.habits.logs7d > 0
       ? Math.round((kpis.habits.lateBackfills7d / kpis.habits.logs7d) * 100)
       : 0;
 
   const handleRefresh = () => {
-    void query.refetch();
+    void summaryQuery.refetch();
+    if (activeTab === "users") void usersQuery.refetch();
+    if (activeTab === "timeline") void timelineQuery.refetch();
   };
 
   const handleReconcileOutbox = () => {
@@ -315,28 +334,36 @@ export function AdminPortalView({
       <ViewHeader
         title="Admin Portal"
         subtitle="Platform KPIs, live subsystem health, env-synced access, and operational audit timeline"
-        meta={`${kpis.users.admins} admin${kpis.users.admins === 1 ? "" : "s"} · ${data.configuredAdminCount} env allowlisted`}
+        meta={
+          summaryData && kpis
+            ? `${kpis.users.admins} admin${kpis.users.admins === 1 ? "" : "s"} · ${summaryData.configuredAdminCount} env allowlisted`
+            : "Loading platform metrics…"
+        }
         actions={
           <div className="flex items-center gap-1.5">
-            <Badge
-              variant="outline"
-              className={cn(
-                "mono-tabular h-6 px-2 text-[10px] font-medium",
-                STATUS_BADGE_CLASSES[health.overallStatus]
-              )}
-            >
-              {STATUS_LABEL[health.overallStatus]}
-            </Badge>
+            {health ? (
+              <Badge
+                variant="outline"
+                className={cn(
+                  "mono-tabular h-6 px-2 text-[10px] font-medium",
+                  STATUS_BADGE_CLASSES[health.overallStatus]
+                )}
+              >
+                {STATUS_LABEL[health.overallStatus]}
+              </Badge>
+            ) : (
+              <Skeleton className="h-6 w-16 rounded" />
+            )}
             <Button
               type="button"
               variant="outline"
               size="sm"
-              disabled={query.isFetching}
+              disabled={isAnyFetching}
               onClick={handleRefresh}
               className="mira-row gap-1.5 border-border bg-card px-2.5 text-xs"
             >
               <RefreshCw
-                className={cn("size-3", query.isFetching && "animate-spin")}
+                className={cn("size-3", isAnyFetching && "animate-spin")}
                 aria-hidden="true"
               />
               <span>Refresh</span>
@@ -355,12 +382,17 @@ export function AdminPortalView({
           [
             { id: "overview", label: "Overview", icon: Activity },
             { id: "health", label: "Health & Ops", icon: HeartPulse },
-            { id: "users", label: "Users", icon: Users, badge: kpis.users.total },
+            {
+              id: "users",
+              label: "Users",
+              icon: Users,
+              badge: kpis?.users.total,
+            },
             {
               id: "timeline",
               label: "Activity Timeline",
               icon: ShieldCheck,
-              badge: timeline.length,
+              badge: timelineQuery.data ? timeline.length : undefined,
             },
           ] as const
         ).map((tab) => {
@@ -374,6 +406,14 @@ export function AdminPortalView({
               role="tab"
               aria-selected={selected}
               aria-controls={`admin-panel-${tab.id}`}
+              onMouseEnter={() => {
+                if (tab.id === "users") prefetch.prefetchAdminUsers();
+                if (tab.id === "timeline") prefetch.prefetchAdminTimeline();
+              }}
+              onFocus={() => {
+                if (tab.id === "users") prefetch.prefetchAdminUsers();
+                if (tab.id === "timeline") prefetch.prefetchAdminTimeline();
+              }}
               onClick={() => setActiveTab(tab.id)}
               className={cn(
                 "inline-flex min-h-10 shrink-0 items-center gap-1.5 border-b-2 px-2.5 text-xs font-medium transition-colors md:min-h-9",
@@ -403,6 +443,27 @@ export function AdminPortalView({
             aria-labelledby="admin-tab-overview"
             className="space-y-4"
           >
+            {!kpis ? (
+              <div className="space-y-4">
+                <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-4">
+                  {Array.from({ length: 4 }).map((_, idx) => (
+                    <div
+                      key={idx}
+                      className="space-y-2.5 rounded-md border border-border bg-card p-3.5"
+                    >
+                      <Skeleton className="h-3 w-24" />
+                      <Skeleton className="h-7 w-16" />
+                      <Skeleton className="h-3 w-44" />
+                    </div>
+                  ))}
+                </div>
+                <div className="grid grid-cols-1 gap-3 lg:grid-cols-12">
+                  <Skeleton className="h-[290px] rounded-md border border-border lg:col-span-7" />
+                  <Skeleton className="h-[290px] rounded-md border border-border lg:col-span-5" />
+                </div>
+              </div>
+            ) : (
+            <>
             {/* 4 Executive KPI Cards */}
             <section
               aria-label="Platform executive metrics"
@@ -599,6 +660,8 @@ export function AdminPortalView({
                 </dl>
               </div>
             </section>
+            </>
+            )}
           </div>
         ) : null}
 
@@ -610,6 +673,17 @@ export function AdminPortalView({
             aria-labelledby="admin-tab-health"
             className="space-y-4"
           >
+            {!health || !kpis || !summaryData ? (
+              <div className="grid grid-cols-1 gap-3 md:grid-cols-2 lg:grid-cols-3">
+                {Array.from({ length: 5 }).map((_, idx) => (
+                  <Skeleton
+                    key={idx}
+                    className="h-[146px] rounded-md border border-border"
+                  />
+                ))}
+              </div>
+            ) : (
+            <>
             <section
               aria-label="Subsystem health diagnostics"
               className="grid grid-cols-1 gap-3 md:grid-cols-2 lg:grid-cols-3"
@@ -749,7 +823,7 @@ export function AdminPortalView({
                       Promote verified allowlisted emails and demote any removed
                       admins immediately. Currently{" "}
                       <span className="mono-tabular font-medium text-foreground">
-                        {data.configuredAdminCount}
+                        {summaryData.configuredAdminCount}
                       </span>{" "}
                       allowlisted.
                     </p>
@@ -772,6 +846,8 @@ export function AdminPortalView({
                 </div>
               </div>
             </section>
+            </>
+            )}
           </div>
         ) : null}
 
@@ -895,7 +971,13 @@ export function AdminPortalView({
 
             {/* Responsive User Cards / Rows */}
             <div className="divide-y divide-border overflow-hidden rounded-md border border-border bg-card">
-              {usersPage.items.length === 0 ? (
+              {!usersPage ? (
+                <div className="space-y-2.5 p-4">
+                  {Array.from({ length: 4 }).map((_, idx) => (
+                    <Skeleton key={idx} className="h-14 w-full rounded" />
+                  ))}
+                </div>
+              ) : usersPage.items.length === 0 ? (
                 <div className="px-5 py-8 text-center text-xs text-muted-foreground">
                   No users match the current filter.
                 </div>
@@ -1023,7 +1105,7 @@ export function AdminPortalView({
               )}
             </div>
 
-            {totalPages > 1 ? (
+            {usersPage && totalPages > 1 ? (
               <div className="flex items-center justify-between text-xs text-muted-foreground">
                 <span className="mono-tabular">
                   Page {usersPage.page} of {totalPages} ({usersPage.total} total)
@@ -1062,19 +1144,31 @@ export function AdminPortalView({
             id="admin-panel-timeline"
             aria-labelledby="admin-tab-timeline"
           >
-            <ActivityTimeline
-              items={timelineItems}
-              timezone={timezone}
-              referenceUtcMs={data.generatedAtMs}
-              filters={timelineFilterOptions}
-              activeFilter={timelineCategory}
-              onFilterChange={(val) =>
-                setTimelineCategory(val as PlatformTimelineCategory)
-              }
-              emptyTitle="No platform activity recorded yet"
-              emptyDescription="Admin audits, signups, project milestones, and reminder deliveries appear chronologically here."
-              ariaLabel="Platform and admin audit timeline"
-            />
+            {timelineQuery.isLoading && !timelineQuery.data ? (
+              <div className="space-y-2.5 rounded-md border border-border bg-card p-4">
+                {Array.from({ length: 5 }).map((_, idx) => (
+                  <Skeleton key={idx} className="h-12 w-full rounded" />
+                ))}
+              </div>
+            ) : (
+              <ActivityTimeline
+                items={timelineItems}
+                timezone={timezone}
+                referenceUtcMs={
+                  timelineQuery.data?.generatedAtMs ??
+                  summaryData?.generatedAtMs ??
+                  0
+                }
+                filters={timelineFilterOptions}
+                activeFilter={timelineCategory}
+                onFilterChange={(val) =>
+                  setTimelineCategory(val as PlatformTimelineCategory)
+                }
+                emptyTitle="No platform activity recorded yet"
+                emptyDescription="Admin audits, signups, project milestones, and reminder deliveries appear chronologically here."
+                ariaLabel="Platform and admin audit timeline"
+              />
+            )}
           </div>
         ) : null}
       </div>

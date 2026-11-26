@@ -4,6 +4,7 @@ import {
   CommentWindowClosedError,
   ConflictError,
   ForbiddenError,
+  MonthLockedError,
   NotFoundError,
   RateLimitError,
   UnauthorizedError,
@@ -55,6 +56,9 @@ export async function withWorkspaceAuth(
       return workspaceErrorJson(error.code, error.message, 401);
     }
     if (error instanceof CommentWindowClosedError) {
+      return workspaceErrorJson(error.code, error.message, 403);
+    }
+    if (error instanceof MonthLockedError) {
       return workspaceErrorJson(error.code, error.message, 403);
     }
     if (error instanceof ForbiddenError) {

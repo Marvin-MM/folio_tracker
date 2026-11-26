@@ -24,8 +24,11 @@ import type {
   HabitMonitorRequestRecord,
   HabitMonitorScope,
   HabitRecord,
-  HabitTrackerSettingsRecord,
 } from "@/server/db/schema";
+import {
+  sanitizeHabitTrackerSettings,
+  type ClientHabitTrackerSettings,
+} from "@/server/domain/habit-month-lock";
 import {
   evaluateCommentWindow,
   formatPolicyBadge,
@@ -110,7 +113,7 @@ export interface CircleOverviewData {
   myMonitors: MyMonitorListItem[];
   knownCollaborators: KnownCollaborator[];
   myHabits: HabitRecord[];
-  globalSettings: HabitTrackerSettingsRecord;
+  globalSettings: ClientHabitTrackerSettings;
   badgeCount: number;
 }
 
@@ -511,7 +514,7 @@ export class HabitMonitorService {
       myMonitors,
       knownCollaborators,
       myHabits,
-      globalSettings,
+      globalSettings: sanitizeHabitTrackerSettings(globalSettings),
       badgeCount: incomingRequests.length + openReviewCount,
     };
   }

@@ -8,11 +8,14 @@ import {
   HABIT_LOG_STATUSES,
   type HabitLogRecord,
   type HabitRecord,
-  type HabitTrackerSettingsRecord,
   type TaskRecord,
 } from "@/server/db/schema";
 import { parseHabitHistoryImport } from "@/server/domain/habit-import";
 import { getLocalDateKey } from "@/server/domain/habit-analytics";
+import type {
+  ClientHabitTrackerSettings,
+  MonthLockState,
+} from "@/server/domain/habit-month-lock";
 import { habitService } from "@/server/services/habit-service";
 import {
   actionErr,
@@ -98,6 +101,32 @@ const updateHabitSettingsSchema = z.object({
   defaultIntervalOpenHours: z.number().int().min(1).max(168).optional(),
   allowReactionsWhenLocked: z.boolean().optional(),
   eveningCheckinTime: optionalTimeSchema,
+  monthLockEnabled: z.boolean().optional(),
+  monthLockGraceDays: z.number().int().min(0).max(14).optional(),
+});
+
+const pinSchema = z
+  .string()
+  .trim()
+  .regex(/^\d{4,6}$/, "Accountability PIN must be 4 to 6 digits.");
+
+const lockHabitMonthSchema = z.object({
+  yearMonth: yearMonthSchema,
+});
+
+const unlockHabitMonthSchema = z.object({
+  yearMonth: yearMonthSchema,
+  pin: z.string().trim().max(12).optional(),
+  reason: z.string().trim().max(200).optional(),
+});
+
+const setMonthLockPinSchema = z.object({
+  currentPin: z.string().trim().max(12).optional(),
+  newPin: pinSchema,
+});
+
+const removeMonthLockPinSchema = z.object({
+  currentPin: pinSchema,
 });
 
 const promoteTaskToHabitSchema = z.object({
@@ -159,6 +188,7 @@ const bulkImportHistorySchema = z.object({
     .optional(),
   createMissing: z.boolean().default(true),
   archiveRemoved: z.boolean().default(true),
+  allowAutoLockedBackfill: z.boolean().default(true),
   monthRosters: z.array(monthRosterSchema).max(240).default([]),
   aliasOverrides: z.array(aliasOverrideSchema).max(500).default([]),
 });
@@ -283,7 +313,7 @@ export async function logHabitDayAction(
 
 export async function updateHabitSettingsAction(
   input: z.input<typeof updateHabitSettingsSchema>
-): Promise<ActionResult<HabitTrackerSettingsRecord>> {
+): Promise<ActionResult<ClientHabitTrackerSettings>> {
   const parsed = updateHabitSettingsSchema.safeParse(input);
   if (!parsed.success) {
     return actionErr(
@@ -483,6 +513,7 @@ export async function bulkImportHabitHistoryAction(
         rows: source.rows,
         createMissing: parsed.data.createMissing,
         archiveRemoved: parsed.data.archiveRemoved,
+        allowAutoLockedBackfill: parsed.data.allowAutoLockedBackfill,
         monthRosters: parsed.data.monthRosters,
         aliasOverrides: parsed.data.aliasOverrides,
       }
@@ -493,6 +524,98 @@ export async function bulkImportHabitHistoryAction(
       ...result,
       warnings: [...source.warnings, ...result.warnings],
     });
+  } catch (error) {
+    return mapErrorToActionResult(error);
+  }
+}
+
+export async function lockHabitMonthAction(
+  input: z.input<typeof lockHabitMonthSchema>
+): Promise<ActionResult<MonthLockState>> {
+  const parsed = lockHabitMonthSchema.safeParse(input);
+  if (!parsed.success) {
+    return actionErr(
+      "VALIDATION_ERROR",
+      parsed.error.issues[0]?.message ?? "Invalid month."
+    );
+  }
+
+  try {
+    const { user } = await requireSession();
+    const state = await habitService.lockMonth(
+      user.id,
+      user.timezone || "UTC",
+      parsed.data.yearMonth
+    );
+    revalidateHabitPaths();
+    return actionOk(state);
+  } catch (error) {
+    return mapErrorToActionResult(error);
+  }
+}
+
+export async function unlockHabitMonthAction(
+  input: z.input<typeof unlockHabitMonthSchema>
+): Promise<ActionResult<MonthLockState>> {
+  const parsed = unlockHabitMonthSchema.safeParse(input);
+  if (!parsed.success) {
+    return actionErr(
+      "VALIDATION_ERROR",
+      parsed.error.issues[0]?.message ?? "Invalid unlock request."
+    );
+  }
+
+  try {
+    const { user } = await requireSession();
+    const state = await habitService.unlockMonth(
+      user.id,
+      user.timezone || "UTC",
+      parsed.data
+    );
+    revalidateHabitPaths();
+    return actionOk(state);
+  } catch (error) {
+    return mapErrorToActionResult(error);
+  }
+}
+
+export async function setHabitMonthLockPinAction(
+  input: z.input<typeof setMonthLockPinSchema>
+): Promise<ActionResult<ClientHabitTrackerSettings>> {
+  const parsed = setMonthLockPinSchema.safeParse(input);
+  if (!parsed.success) {
+    return actionErr(
+      "VALIDATION_ERROR",
+      parsed.error.issues[0]?.message ?? "Invalid PIN."
+    );
+  }
+
+  try {
+    const { user } = await requireSession();
+    const updated = await habitService.setMonthLockPin(user.id, parsed.data);
+    revalidateHabitPaths();
+    return actionOk(updated);
+  } catch (error) {
+    return mapErrorToActionResult(error);
+  }
+}
+
+export async function removeHabitMonthLockPinAction(
+  input: z.input<typeof removeMonthLockPinSchema>
+): Promise<ActionResult<ClientHabitTrackerSettings>> {
+  const parsed = removeMonthLockPinSchema.safeParse(input);
+  if (!parsed.success) {
+    return actionErr(
+      "VALIDATION_ERROR",
+      parsed.error.issues[0]?.message ?? "Enter your current PIN."
+    );
+  }
+
+  try {
+    const { user } = await requireSession();
+    const updated = await habitService.removeMonthLockPin(user.id, parsed.data);
+    revalidateHabitPaths();
+    return actionOk(updated);
   } catch (error) {
     return mapErrorToActionResult(error);
   }

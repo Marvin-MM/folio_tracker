@@ -18,7 +18,7 @@ describe("Drizzle migrations integrity", () => {
     const journalPath = path.resolve(process.cwd(), "drizzle/meta/_journal.json");
     const journal = JSON.parse(readFileSync(journalPath, "utf8")) as DrizzleJournal;
 
-    expect(journal.entries.length).toBeGreaterThanOrEqual(7);
+    expect(journal.entries.length).toBeGreaterThanOrEqual(8);
 
     for (let i = 1; i < journal.entries.length; i += 1) {
       const prev = journal.entries[i - 1]!;
@@ -30,7 +30,7 @@ describe("Drizzle migrations integrity", () => {
     }
   });
 
-  it("applies every migration cleanly to a fresh database including habit_month_rosters", async () => {
+  it("applies every migration cleanly to a fresh database including habit_month_rosters and habit_month_locks", async () => {
     const client = createClient({ url: ":memory:" });
     try {
       const db = drizzle(client);
@@ -46,7 +46,8 @@ describe("Drizzle migrations integrity", () => {
       expect(tableNames).toContain("habit_import_aliases");
       expect(tableNames).toContain("admin_audit_logs");
       expect(tableNames).toContain("habit_month_rosters");
-      expect(tableNames).toHaveLength(25);
+      expect(tableNames).toContain("habit_month_locks");
+      expect(tableNames).toHaveLength(26);
     } finally {
       client.close();
     }

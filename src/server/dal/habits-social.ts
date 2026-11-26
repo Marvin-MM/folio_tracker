@@ -47,6 +47,10 @@ import {
   type EffectiveCommentPolicy,
 } from "@/server/domain/comment-window-policy";
 import {
+  evaluateMonthLockState,
+  type MonthLockIntegritySummary,
+} from "@/server/domain/habit-month-lock";
+import {
   addDaysToDateKey,
   buildMonthCalendar,
   computeHabitMonthAnalytics,
@@ -193,6 +197,7 @@ export interface ScopedFriendWorkspace {
   todayDateKey: string;
   yearMonth: string;
   scoringMode: ScoringMode;
+  monthLockIntegrity: MonthLockIntegritySummary;
 }
 
 export interface HabitSocialRepository {
@@ -616,6 +621,12 @@ export class DrizzleHabitSocialRepository implements HabitSocialRepository {
           defaultIntervalOpenHours: 24,
           allowReactionsWhenLocked: true,
           eveningCheckinTime: null,
+          monthLockEnabled: true,
+          monthLockGraceDays: 3,
+          monthLockPinHash: null,
+          monthLockPinSalt: null,
+          monthLockPinFailedAttempts: 0,
+          monthLockPinLockedUntil: null,
           updatedAt: nowMs,
         };
 
@@ -842,6 +853,12 @@ export class DrizzleHabitSocialRepository implements HabitSocialRepository {
             defaultIntervalOpenHours: 24,
             allowReactionsWhenLocked: true,
             eveningCheckinTime: null,
+            monthLockEnabled: true,
+            monthLockGraceDays: 3,
+            monthLockPinHash: null,
+            monthLockPinSalt: null,
+            monthLockPinFailedAttempts: 0,
+            monthLockPinLockedUntil: null,
             updatedAt: nowMs,
           };
 
@@ -1390,14 +1407,29 @@ export class DrizzleHabitMonitorReadDal implements HabitMonitorReadDal {
     const fetchEnd =
       todayDateKey > calendar.monthEndKey ? todayDateKey : calendar.monthEndKey;
 
-    const rawLogs =
+    const [rawLogs, monthLockRow] = await Promise.all([
       scopedHabits.length > 0
-        ? await this.habitRepo.listLogsForRange(
+        ? this.habitRepo.listLogsForRange(
             params.ownerId,
             earliestStart,
             fetchEnd
           )
-        : [];
+        : Promise.resolve([]),
+      this.habitRepo.getMonthLock(params.ownerId, yearMonth),
+    ]);
+    const monthLockState = evaluateMonthLockState({
+      yearMonth,
+      todayDateKey,
+      nowMs,
+      settings: globalSettings,
+      lockRow: monthLockRow,
+    });
+    const monthLockIntegrity: MonthLockIntegritySummary = {
+      phase: monthLockState.phase,
+      isLocked: monthLockState.isLocked,
+      unlockCount: monthLockState.unlockCount,
+      hasBeenUnlocked: monthLockState.hasBeenUnlocked,
+    };
     // ZERO-LEAK: drop every log row whose habitId is not in the monitor's allowed set
     const scopedLogs = rawLogs.filter((log) =>
       scopedHabitIdSet.has(log.habitId)
@@ -1484,6 +1516,7 @@ export class DrizzleHabitMonitorReadDal implements HabitMonitorReadDal {
       todayDateKey,
       yearMonth,
       scoringMode,
+      monthLockIntegrity,
     };
   }
 }

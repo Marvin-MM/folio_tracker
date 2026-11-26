@@ -313,6 +313,8 @@ describe("HabitService ACID sync, tenant isolation, bulk import, and habit nudge
       createHabit: habitRepo.createHabit.bind(habitRepo),
       createHabitsBatch: habitRepo.createHabitsBatch.bind(habitRepo),
       updateHabitForUser: habitRepo.updateHabitForUser.bind(habitRepo),
+      updateHabitsMetadataBatch:
+        habitRepo.updateHabitsMetadataBatch.bind(habitRepo),
       listAliasesForUser: habitRepo.listAliasesForUser.bind(habitRepo),
       upsertAliasesBatch: habitRepo.upsertAliasesBatch.bind(habitRepo),
       listMonthRosterHabitIds:
@@ -327,10 +329,19 @@ describe("HabitService ACID sync, tenant isolation, bulk import, and habit nudge
       removeHabitFromMonthRoster:
         habitRepo.removeHabitFromMonthRoster.bind(habitRepo),
       upsertLogsBatch: habitRepo.upsertLogsBatch.bind(habitRepo),
+      upsertLogsAndRostersPipelined:
+        habitRepo.upsertLogsAndRostersPipelined.bind(habitRepo),
+      getMonthLock: habitRepo.getMonthLock.bind(habitRepo),
+      listMonthLocksForMonths:
+        habitRepo.listMonthLocksForMonths.bind(habitRepo),
+      upsertMonthLock: habitRepo.upsertMonthLock.bind(habitRepo),
+      updateMonthLockPin: habitRepo.updateMonthLockPin.bind(habitRepo),
+      updatePinFailureState: habitRepo.updatePinFailureState.bind(habitRepo),
       deleteHabitForUser: habitRepo.deleteHabitForUser.bind(habitRepo),
       rebalanceHabitPositions:
         habitRepo.rebalanceHabitPositions.bind(habitRepo),
       listLogsForRange: habitRepo.listLogsForRange.bind(habitRepo),
+      listLogNotesForRange: habitRepo.listLogNotesForRange.bind(habitRepo),
       getLogForHabitDay: habitRepo.getLogForHabitDay.bind(habitRepo),
       deleteLogForUser: habitRepo.deleteLogForUser.bind(habitRepo),
       listLinkedTasksForRange:

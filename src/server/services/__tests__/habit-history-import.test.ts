@@ -12,7 +12,7 @@ import {
   worksheetSheetsToHistoryImport,
   worksheetToHabitCsv,
 } from "@/lib/spreadsheet-import";
-import { ValidationError } from "@/server/dal/errors";
+import { ForbiddenError, ValidationError } from "@/server/dal/errors";
 import { DrizzleHabitRepository } from "@/server/dal/habits";
 import { DrizzleProjectRepository } from "@/server/dal/project-repository";
 import { DrizzleTaskRepository } from "@/server/dal/task-repository";
@@ -21,6 +21,7 @@ import {
   habitImportAliases,
   habitLogs,
   habits,
+  tasks,
   users,
 } from "@/server/db/schema";
 import {
@@ -619,5 +620,112 @@ Early Bird,Routine,daily,06:00,2026-01-10`
     expect(
       novAfterRemove.logsByKey[`${removedFromNov.id}::2026-11-01`]?.status
     ).toBe("done");
+  });
+
+  it("executes 2-phase pipelined chunk import idempotently, preserves micro-notes, syncs linked tasks, and blocks cross-tenant IDOR", async () => {
+    const prepared = await habitService.prepareBulkHistoryImport(
+      userAId,
+      "UTC",
+      {
+        habits: [
+          {
+            canonicalTitle: "Chunked Reading",
+            firstDate: "2026-01-01",
+            lastDate: "2026-03-10",
+            lastMonth: "2026-03",
+            sourceTitles: ["Chunked Reading"],
+          },
+        ],
+        months: ["2026-01", "2026-02", "2026-03"],
+        firstMonth: "2026-01",
+        lastMonth: "2026-03",
+        createMissing: true,
+        archiveRemoved: false,
+        allowAutoLockedBackfill: true,
+        aliasEntries: [],
+      }
+    );
+
+    const habitId = prepared.habitIdByCanonicalKey["chunked reading"];
+    expect(habitId).toBeDefined();
+
+    // Seed a micro-note on 2026-03-05 AND a linked task on 2026-03-06
+    await habitService.logHabitDay(userAId, "UTC", {
+      habitId: habitId!,
+      dateKey: "2026-03-05",
+      status: "missed",
+      note: "Keep this micro-note intact",
+    });
+    const [linkedTask] = await conn.db
+      .insert(tasks)
+      .values({
+        userId: userAId,
+        habitId: habitId!,
+        habitDateKey: "2026-03-06",
+        title: "Chunked Reading linked task",
+        status: "todo",
+        priority: "medium",
+        position: "a0",
+        createdAt: FIXED_NOW,
+        updatedAt: FIXED_NOW,
+      })
+      .returning();
+
+    // Chunk 1: Jan-Feb (0 linked tasks -> short-circuit path)
+    const chunk1 = await habitService.importBulkHistoryChunk(userAId, "UTC", {
+      entries: [
+        { habitId: habitId!, dateKey: "2026-01-10", status: "done" },
+        { habitId: habitId!, dateKey: "2026-02-10", status: "done" },
+      ],
+      allowAutoLockedBackfill: true,
+    });
+    expect(chunk1.importedCount).toBe(2);
+    expect(chunk1.syncedTaskCount).toBe(0);
+
+    // Chunk 2: March (preserves existing micro-note & updates linked task)
+    const chunk2Payload = {
+      entries: [
+        { habitId: habitId!, dateKey: "2026-03-05", status: "done" as const },
+        { habitId: habitId!, dateKey: "2026-03-06", status: "done" as const },
+      ],
+      allowAutoLockedBackfill: true,
+    };
+    const chunk2 = await habitService.importBulkHistoryChunk(
+      userAId,
+      "UTC",
+      chunk2Payload
+    );
+    expect(chunk2.importedCount).toBe(2);
+    expect(chunk2.syncedTaskCount).toBe(1);
+
+    // Idempotent replay of chunk 2 succeeds with zero duplicate rows
+    const chunk2Replay = await habitService.importBulkHistoryChunk(
+      userAId,
+      "UTC",
+      chunk2Payload
+    );
+    expect(chunk2Replay.importedCount).toBe(2);
+
+    const savedLogs = await conn.db
+      .select()
+      .from(habitLogs)
+      .where(eq(habitLogs.habitId, habitId!));
+    expect(savedLogs).toHaveLength(4);
+    expect(savedLogs.find((l) => l.dateKey === "2026-03-05")?.note).toBe(
+      "Keep this micro-note intact"
+    );
+
+    const [updatedTask] = await conn.db
+      .select()
+      .from(tasks)
+      .where(eq(tasks.id, linkedTask!.id));
+    expect(updatedTask?.status).toBe("done");
+
+    // Cross-tenant IDOR: User B cannot write chunks into User A's habitId
+    await expect(
+      habitService.importBulkHistoryChunk(userBId, "UTC", {
+        entries: [{ habitId: habitId!, dateKey: "2026-03-07", status: "done" }],
+      })
+    ).rejects.toBeInstanceOf(ForbiddenError);
   });
 });

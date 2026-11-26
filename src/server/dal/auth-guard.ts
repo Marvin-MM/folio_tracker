@@ -1,3 +1,4 @@
+import { cache } from "react";
 import { and, eq } from "drizzle-orm";
 import { headers } from "next/headers";
 import { isAdminEmail } from "@/server/admin-policy";
@@ -32,10 +33,16 @@ export interface ProjectMembershipLookup {
   ): Promise<Pick<ProjectMemberRecord, "projectId" | "userId" | "role"> | null>;
 }
 
-const defaultSessionResolver: SessionResolver = {
-  async getSession() {
+const getCachedDefaultSession = cache(
+  async (): Promise<BetterAuthSession | null> => {
     const requestHeaders = await headers();
     return auth.api.getSession({ headers: requestHeaders });
+  }
+);
+
+const defaultSessionResolver: SessionResolver = {
+  getSession() {
+    return getCachedDefaultSession();
   },
 };
 
@@ -105,21 +112,29 @@ export async function requireSession(
   return result;
 }
 
-/**
- * Evaluates live platform admin status directly against Turso AND `ADMIN_EMAILS`.
- * Auto-promotes/demotes the caller's DB row if `ADMIN_EMAILS` changed without restart.
- */
-export async function resolveLiveAdminStatus(
-  userId: string,
-  database: AppDatabase = db,
-  rawAdminEnv: string | undefined = process.env.ADMIN_EMAILS
-): Promise<{
+export interface LiveUserShellStatus {
   isAdmin: boolean;
   isSuspended: boolean;
   email: string | null;
-}> {
+  name: string | null;
+  timezone: string | null;
+  emailRemindersEnabled: boolean | null;
+}
+
+async function queryLiveUserShellStatus(
+  userId: string,
+  database: AppDatabase,
+  rawAdminEnv: string | undefined
+): Promise<LiveUserShellStatus> {
   if (!userId) {
-    return { isAdmin: false, isSuspended: false, email: null };
+    return {
+      isAdmin: false,
+      isSuspended: false,
+      email: null,
+      name: null,
+      timezone: null,
+      emailRemindersEnabled: null,
+    };
   }
 
   if (database === db) {
@@ -129,21 +144,38 @@ export async function resolveLiveAdminStatus(
   const [row] = await database
     .select({
       id: users.id,
+      name: users.name,
       email: users.email,
       emailVerified: users.emailVerified,
       role: users.role,
       isSuspended: users.isSuspended,
+      timezone: users.timezone,
+      emailRemindersEnabled: users.emailRemindersEnabled,
     })
     .from(users)
     .where(eq(users.id, userId))
     .limit(1);
 
   if (!row) {
-    return { isAdmin: false, isSuspended: false, email: null };
+    return {
+      isAdmin: false,
+      isSuspended: false,
+      email: null,
+      name: null,
+      timezone: null,
+      emailRemindersEnabled: null,
+    };
   }
 
   if (row.isSuspended) {
-    return { isAdmin: false, isSuspended: true, email: row.email };
+    return {
+      isAdmin: false,
+      isSuspended: true,
+      email: row.email,
+      name: row.name,
+      timezone: row.timezone,
+      emailRemindersEnabled: row.emailRemindersEnabled,
+    };
   }
 
   const allowedByEnv = row.emailVerified && isAdminEmail(row.email, rawAdminEnv);
@@ -164,6 +196,51 @@ export async function resolveLiveAdminStatus(
     isAdmin: allowedByEnv,
     isSuspended: row.isSuspended,
     email: row.email,
+    name: row.name,
+    timezone: row.timezone,
+    emailRemindersEnabled: row.emailRemindersEnabled,
+  };
+}
+
+/**
+ * Per-request memoized live Turso user + admin status lookup so `AppShellLayout`
+ * and child RSC pages (`AdminPortalPage`, etc.) share ONE database read per request
+ * without ever caching RBAC state across requests.
+ */
+const getCachedDefaultUserShellStatus = cache(
+  (userId: string): Promise<LiveUserShellStatus> =>
+    queryLiveUserShellStatus(userId, db, process.env.ADMIN_EMAILS)
+);
+
+export async function resolveLiveUserShellStatus(
+  userId: string,
+  database: AppDatabase = db,
+  rawAdminEnv: string | undefined = process.env.ADMIN_EMAILS
+): Promise<LiveUserShellStatus> {
+  if (database === db && rawAdminEnv === process.env.ADMIN_EMAILS) {
+    return getCachedDefaultUserShellStatus(userId);
+  }
+  return queryLiveUserShellStatus(userId, database, rawAdminEnv);
+}
+
+/**
+ * Evaluates live platform admin status directly against Turso AND `ADMIN_EMAILS`.
+ * Auto-promotes/demotes the caller's DB row if `ADMIN_EMAILS` changed without restart.
+ */
+export async function resolveLiveAdminStatus(
+  userId: string,
+  database: AppDatabase = db,
+  rawAdminEnv: string | undefined = process.env.ADMIN_EMAILS
+): Promise<{
+  isAdmin: boolean;
+  isSuspended: boolean;
+  email: string | null;
+}> {
+  const status = await resolveLiveUserShellStatus(userId, database, rawAdminEnv);
+  return {
+    isAdmin: status.isAdmin,
+    isSuspended: status.isSuspended,
+    email: status.email,
   };
 }
 

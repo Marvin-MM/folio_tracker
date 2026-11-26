@@ -4,6 +4,7 @@ import { accounts, sessions, users } from "./auth";
 import {
   habitImportAliases,
   habitLogs,
+  habitMonthLocks,
   habitMonthRosters,
   habits,
   habitTrackerSettings,
@@ -47,6 +48,7 @@ export const usersRelations = relations(users, ({ one, many }) => ({
   habits: many(habits),
   habitImportAliases: many(habitImportAliases),
   habitMonthRosters: many(habitMonthRosters),
+  habitMonthLocks: many(habitMonthLocks),
   habitLogs: many(habitLogs),
   habitMonitorsAsOwner: many(habitMonitors, {
     relationName: "habitMonitorOwner",
@@ -252,6 +254,16 @@ export const habitMonthRostersRelations = relations(
     habit: one(habits, {
       fields: [habitMonthRosters.habitId],
       references: [habits.id],
+    }),
+  })
+);
+
+export const habitMonthLocksRelations = relations(
+  habitMonthLocks,
+  ({ one }) => ({
+    user: one(users, {
+      fields: [habitMonthLocks.userId],
+      references: [users.id],
     }),
   })
 );

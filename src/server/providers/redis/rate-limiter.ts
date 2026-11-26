@@ -7,6 +7,8 @@ export type RateLimitBucket =
   | "auth"
   | "project_invite"
   | "habit_monitor_invite"
+  | "habit_history_import"
+  | "habit_month_pin"
   | "test_push";
 
 export interface RateLimitPolicy {
@@ -30,6 +32,16 @@ export const RATE_LIMIT_POLICIES: Record<RateLimitBucket, RateLimitPolicy> = {
     maxRequests: 20,
     windowMs: 60 * 60 * 1000,
     upstashWindow: "1 h",
+  },
+  habit_history_import: {
+    maxRequests: 150,
+    windowMs: 10 * 60 * 1000,
+    upstashWindow: "10 m",
+  },
+  habit_month_pin: {
+    maxRequests: 10,
+    windowMs: 15 * 60 * 1000,
+    upstashWindow: "15 m",
   },
   test_push: {
     maxRequests: 5,
@@ -243,6 +255,22 @@ export class UpstashRateLimiter implements RateLimiter {
           RATE_LIMIT_POLICIES.habit_monitor_invite.upstashWindow
         ),
         prefix: "folio:rl:habit_monitor_invite",
+      }),
+      habit_history_import: new Ratelimit({
+        redis,
+        limiter: Ratelimit.slidingWindow(
+          RATE_LIMIT_POLICIES.habit_history_import.maxRequests,
+          RATE_LIMIT_POLICIES.habit_history_import.upstashWindow
+        ),
+        prefix: "folio:rl:habit_history_import",
+      }),
+      habit_month_pin: new Ratelimit({
+        redis,
+        limiter: Ratelimit.slidingWindow(
+          RATE_LIMIT_POLICIES.habit_month_pin.maxRequests,
+          RATE_LIMIT_POLICIES.habit_month_pin.upstashWindow
+        ),
+        prefix: "folio:rl:habit_month_pin",
       }),
       test_push: new Ratelimit({
         redis,

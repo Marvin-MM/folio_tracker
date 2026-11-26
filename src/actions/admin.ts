@@ -1,6 +1,5 @@
 "use server";
 
-import { revalidatePath } from "next/cache";
 import { z } from "zod";
 import {
   actionErr,
@@ -28,7 +27,8 @@ export async function adminReconcileOutboxAction(): Promise<
   try {
     const { user } = await requireAdmin();
     const result = await adminService.reconcileOutboxNow(user.id);
-    revalidatePath("/app/admin");
+    // Client freshness is driven by TanStack Query `invalidate(["admin"])` so
+    // Next.js 16's client Router Cache stays warm for instant exit navigation.
     return actionOk(result);
   } catch (error) {
     return mapErrorToActionResult(error);
@@ -41,7 +41,6 @@ export async function adminSweepExpiredAction(): Promise<
   try {
     const { user } = await requireAdmin();
     const result = await adminService.sweepExpiredRecordsNow(user.id);
-    revalidatePath("/app/admin");
     return actionOk(result);
   } catch (error) {
     return mapErrorToActionResult(error);
@@ -54,7 +53,6 @@ export async function adminSyncRolesAction(): Promise<
   try {
     const { user } = await requireAdmin();
     const result = await adminService.syncAdminRolesNow(user.id);
-    revalidatePath("/app/admin");
     return actionOk(result);
   } catch (error) {
     return mapErrorToActionResult(error);
@@ -78,7 +76,6 @@ export async function adminRevokeUserSessionsAction(
       user.id,
       parsed.data.userId
     );
-    revalidatePath("/app/admin");
     return actionOk(result);
   } catch (error) {
     return mapErrorToActionResult(error);
@@ -110,7 +107,6 @@ export async function adminToggleUserSuspensionAction(
       parsed.data.userId,
       parsed.data.suspended
     );
-    revalidatePath("/app/admin");
     return actionOk(result);
   } catch (error) {
     return mapErrorToActionResult(error);

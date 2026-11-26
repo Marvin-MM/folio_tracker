@@ -3,10 +3,12 @@ import { redirect } from "next/navigation";
 import { WorkspaceQueryProvider } from "@/components/providers/query-provider";
 import { WorkspaceShell } from "@/components/shell/workspace-shell";
 import { getServerTimestampMs } from "@/lib/query/clock";
-import { requireSession, resolveLiveAdminStatus } from "@/server/dal/auth-guard";
+import {
+  requireSession,
+  resolveLiveUserShellStatus,
+} from "@/server/dal/auth-guard";
 import { ForbiddenError, UnauthorizedError } from "@/server/dal/errors";
 import { notificationRepository } from "@/server/dal/notification-repository";
-import { userRepository } from "@/server/dal/user-repository";
 import { workspaceRepository } from "@/server/dal/workspace-repository";
 
 export const dynamic = "force-dynamic";
@@ -35,19 +37,17 @@ export default async function AppShellLayout({
     throw error;
   }
 
-  const [profile, adminStatus] = await Promise.all([
-    userRepository.getById(user.id),
-    resolveLiveAdminStatus(user.id),
-  ]);
+  // Single per-request cached Turso lookup shared with child pages (e.g. AdminPortalPage)
+  const shellUser = await resolveLiveUserShellStatus(user.id);
 
-  if (profile?.isSuspended || adminStatus.isSuspended) {
+  if (shellUser.isSuspended) {
     redirect("/login");
   }
 
-  const timezone = profile?.timezone || user.timezone || "UTC";
-  const resolvedName = profile?.name || user.name;
+  const timezone = shellUser.timezone || user.timezone || "UTC";
+  const resolvedName = shellUser.name || user.name;
   const resolvedEmailReminders =
-    profile?.emailRemindersEnabled ?? user.emailRemindersEnabled ?? true;
+    shellUser.emailRemindersEnabled ?? user.emailRemindersEnabled ?? true;
   const initialFetchedAtMs = getServerTimestampMs();
   const [summary, initialNotifications] = await Promise.all([
     workspaceRepository.getSidebarSummary(user.id, timezone),
@@ -63,7 +63,7 @@ export default async function AppShellLayout({
           email: user.email,
           timezone,
           emailRemindersEnabled: resolvedEmailReminders,
-          isAdmin: adminStatus.isAdmin,
+          isAdmin: shellUser.isAdmin,
         }}
         summary={summary}
         initialNotifications={initialNotifications}

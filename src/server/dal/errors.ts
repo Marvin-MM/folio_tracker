@@ -49,6 +49,26 @@ export class CommentWindowClosedError extends DalError {
   }
 }
 
+export class MonthLockedError extends DalError {
+  readonly yearMonth: string;
+  readonly reason: "locked_manual" | "locked_auto";
+
+  constructor(params: {
+    yearMonth: string;
+    reason: "locked_manual" | "locked_auto";
+    message?: string;
+  }) {
+    super(
+      params.message ??
+        `${params.yearMonth} is locked and read-only. Unlock the month first to make edits.`,
+      "MONTH_LOCKED",
+      403
+    );
+    this.yearMonth = params.yearMonth;
+    this.reason = params.reason;
+  }
+}
+
 export class NotFoundError extends DalError {
   constructor(message = "Requested resource was not found.") {
     super(message, "NOT_FOUND", 404);

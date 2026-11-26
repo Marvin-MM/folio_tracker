@@ -7,6 +7,7 @@ import { habitMonitorService } from "@/server/services/habit-monitor-service";
 import { habitService } from "@/server/services/habit-service";
 
 export const dynamic = "force-dynamic";
+export const maxDuration = 60;
 
 export const metadata: Metadata = {
   title: "Habits",

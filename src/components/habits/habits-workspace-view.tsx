@@ -15,8 +15,11 @@ import {
   ArrowRightCircle,
   ChevronLeft,
   ChevronRight,
+  Clock,
   FileSpreadsheet,
   ListChecks,
+  Lock,
+  LockOpen,
   Plus,
   Repeat2,
   Settings2,
@@ -27,6 +30,7 @@ import { toast } from "sonner";
 import {
   archiveHabitAction,
   carryOverHabitMonthRosterAction,
+  lockHabitMonthAction,
   logHabitDayAction,
 } from "@/actions/habits";
 import { BulkImportHabitsDialog } from "@/components/habits/bulk-import-habits-dialog";
@@ -35,6 +39,7 @@ import { CreateHabitDialog } from "@/components/habits/create-habit-dialog";
 import { HabitSettingsSheet } from "@/components/habits/habit-settings-sheet";
 import { HabitsMatrix } from "@/components/habits/habits-matrix";
 import { ManageMonthRosterDialog } from "@/components/habits/manage-month-roster-dialog";
+import { MonthLockDialog } from "@/components/habits/month-lock-dialog";
 import { useDetailSheet } from "@/components/shell/detail-sheet-context";
 import { useWorkspaceChrome } from "@/components/shell/workspace-chrome-context";
 import { Badge } from "@/components/ui/badge";
@@ -166,6 +171,8 @@ export function HabitsWorkspaceView({
   const [rosterSession, setRosterSession] = useState(0);
   const [rosterInitialIds, setRosterInitialIds] = useState<string[]>([]);
   const [settingsOpen, setSettingsOpen] = useState(false);
+  const [unlockOpen, setUnlockOpen] = useState(false);
+  const [isLockPending, startLockTransition] = useTransition();
   const showArchived = useWorkspaceUIStore((s) => s.habitsShowArchived);
   const setShowArchived = useWorkspaceUIStore((s) => s.setHabitsShowArchived);
   const storedScoringMode = useWorkspaceUIStore((s) => s.habitsScoringMode);
@@ -378,6 +385,25 @@ export function HabitsWorkspaceView({
     });
   };
 
+  const handleLockMonth = () => {
+    startLockTransition(async () => {
+      const result = await lockHabitMonthAction({
+        yearMonth: workspace.yearMonth,
+      });
+      if (!result.ok) {
+        toast.error(result.error.message);
+        return;
+      }
+      await invalidate(["habits", "circle"]);
+      toast.success(
+        `${analytics.calendar.monthLabel} is now locked and view-only.`
+      );
+    });
+  };
+
+  const monthLock = workspace.monthLock;
+  const isMonthLocked = monthLock.isLocked;
+
   const monthlyPct =
     analytics.monthlyProgress.rate !== null
       ? Math.round(analytics.monthlyProgress.rate * 100)
@@ -421,6 +447,14 @@ export function HabitsWorkspaceView({
         onOpenChange={setSettingsOpen}
         settings={workspace.settings}
         timezone={timezone}
+      />
+      <MonthLockDialog
+        open={unlockOpen}
+        onOpenChange={setUnlockOpen}
+        yearMonth={workspace.yearMonth}
+        monthLabel={analytics.calendar.monthLabel}
+        hasPin={workspace.settings.hasMonthLockPin}
+        isAutoLocked={monthLock.phase === "locked_auto"}
       />
 
       {/* Toolbar: Month Switcher, Scoring Mode Toggle, Actions */}
@@ -545,6 +579,12 @@ export function HabitsWorkspaceView({
               type="button"
               variant="outline"
               size="sm"
+              disabled={isMonthLocked}
+              title={
+                isMonthLocked
+                  ? "Unlock this month to edit its tracked habits"
+                  : undefined
+              }
               onClick={() => openManageMonthRoster()}
               className="mira-row gap-1.5 border-border bg-card px-2.5 text-xs"
             >
@@ -559,6 +599,12 @@ export function HabitsWorkspaceView({
             type="button"
             variant="outline"
             size="sm"
+            disabled={isMonthLocked}
+            title={
+              isMonthLocked
+                ? "Unlock this month to bulk import habits into it"
+                : undefined
+            }
             onClick={() => setBulkOpen(true)}
             className="mira-row gap-1.5 border-border bg-card px-2.5 text-xs"
           >
@@ -588,6 +634,12 @@ export function HabitsWorkspaceView({
           <Button
             type="button"
             size="sm"
+            disabled={isMonthLocked}
+            title={
+              isMonthLocked
+                ? "Unlock this month to add new habits into it"
+                : undefined
+            }
             onClick={() => setCreateOpen(true)}
             className="mira-row gap-1.5 px-3 text-xs"
           >
@@ -596,6 +648,96 @@ export function HabitsWorkspaceView({
           </Button>
         </div>
       </div>
+
+      {/* Month Lock Status Strip (closing_today / grace_open / locked / unlocked_temp / open past) */}
+      {monthLock.phase !== "open" || monthLock.canLockNow ? (
+        <div
+          role="status"
+          className={cn(
+            "flex flex-wrap items-center justify-between gap-2.5 rounded-md border px-3.5 py-2 text-xs",
+            monthLock.isLocked
+              ? "border-border bg-muted/45 text-foreground"
+              : monthLock.phase === "unlocked_temp"
+                ? "border-reminder/40 bg-reminder/10 text-foreground"
+                : "border-border bg-card text-foreground"
+          )}
+        >
+          <div className="flex min-w-0 flex-wrap items-center gap-2">
+            {monthLock.isLocked ? (
+              <Lock className="size-3.5 shrink-0 text-muted-foreground" aria-hidden="true" />
+            ) : monthLock.phase === "unlocked_temp" ? (
+              <LockOpen className="size-3.5 shrink-0 text-reminder" aria-hidden="true" />
+            ) : (
+              <Clock className="size-3.5 shrink-0 text-muted-foreground" aria-hidden="true" />
+            )}
+
+            <span className="font-medium">
+              {monthLock.phase === "locked_manual"
+                ? `${analytics.calendar.monthLabel} is locked (view-only)`
+                : monthLock.phase === "locked_auto"
+                  ? `${analytics.calendar.monthLabel} auto-locked (view-only)`
+                  : monthLock.phase === "unlocked_temp"
+                    ? `${analytics.calendar.monthLabel} temporarily unlocked · auto-relocks in ~${monthLock.remainingUnlockMinutes ?? 30}m`
+                    : monthLock.phase === "grace_open"
+                      ? `Grace window open · auto-locks in ${monthLock.graceDaysRemaining} day${monthLock.graceDaysRemaining === 1 ? "" : "s"}`
+                      : monthLock.phase === "closing_today"
+                        ? `${analytics.calendar.monthLabel} ends today — ready to close out`
+                        : `${analytics.calendar.monthLabel} is completed and open`}
+            </span>
+
+            {monthLock.phase === "locked_auto" && monthLock.graceEndDateKey ? (
+              <span className="mono-tabular text-[11px] text-muted-foreground">
+                · Closed after {monthLock.graceEndDateKey}
+              </span>
+            ) : null}
+
+            {monthLock.phase === "grace_open" && monthLock.graceEndDateKey ? (
+              <span className="mono-tabular text-[11px] text-muted-foreground">
+                · Editable through {monthLock.graceEndDateKey}
+              </span>
+            ) : null}
+
+            {monthLock.hasBeenUnlocked ? (
+              <Badge
+                variant="outline"
+                className="mono-tabular h-5 border-border bg-background px-1.5 text-[10px] font-normal text-muted-foreground"
+              >
+                Unlocked {monthLock.unlockCount}×
+              </Badge>
+            ) : null}
+          </div>
+
+          <div className="flex items-center gap-1.5">
+            {monthLock.canUnlock ? (
+              <Button
+                type="button"
+                variant="outline"
+                size="xs"
+                onClick={() => setUnlockOpen(true)}
+                className="h-7 gap-1.5 border-border bg-card px-2.5 text-xs"
+              >
+                <LockOpen className="size-3" aria-hidden="true" />
+                Unlock
+              </Button>
+            ) : null}
+            {monthLock.canLockNow ? (
+              <Button
+                type="button"
+                variant="outline"
+                size="xs"
+                disabled={isLockPending}
+                onClick={handleLockMonth}
+                className="h-7 gap-1.5 border-border bg-card px-2.5 text-xs"
+              >
+                <Lock className="size-3" aria-hidden="true" />
+                {monthLock.phase === "unlocked_temp"
+                  ? "Re-lock now"
+                  : "Lock month"}
+              </Button>
+            ) : null}
+          </div>
+        </div>
+      ) : null}
 
       {/* 3 Compact Mira KPI Cards */}
       <section
@@ -715,6 +857,7 @@ export function HabitsWorkspaceView({
               <Button
                 type="button"
                 size="sm"
+                disabled={isMonthLocked}
                 onClick={handleCarryOverPreviousMonth}
                 className="mira-row gap-1.5 px-3.5 text-xs"
               >
@@ -726,6 +869,7 @@ export function HabitsWorkspaceView({
                 type="button"
                 variant="outline"
                 size="sm"
+                disabled={isMonthLocked}
                 onClick={() =>
                   openManageMonthRoster(
                     workspace.previousRosterSource!.habitIds
@@ -740,6 +884,7 @@ export function HabitsWorkspaceView({
                 type="button"
                 variant="outline"
                 size="sm"
+                disabled={isMonthLocked}
                 onClick={() => setCreateOpen(true)}
                 className="mira-row gap-1.5 px-3 text-xs"
               >
@@ -813,6 +958,7 @@ export function HabitsWorkspaceView({
             logsByKey={optimisticLogsByKey}
             linkedTaskByKey={workspace.linkedTaskByKey}
             summaryByHabitId={analytics.byHabitId}
+            readOnly={isMonthLocked}
             onCycleLog={handleCycleLog}
             onSaveCellDetail={handleSaveCellDetail}
             onInspectHabit={(habit) =>

@@ -1,25 +1,19 @@
 import type { Metadata } from "next";
 import { notFound, redirect } from "next/navigation";
 import { AdminPortalView } from "@/components/admin/admin-portal-view";
-import { getServerTimestampMs } from "@/lib/query/clock";
 import { requireAdmin } from "@/server/dal/auth-guard";
 import { ForbiddenError, UnauthorizedError } from "@/server/dal/errors";
-import { adminService } from "@/server/services/admin-service";
 
 export const dynamic = "force-dynamic";
 
-export async function generateMetadata(): Promise<Metadata> {
-  try {
-    await requireAdmin();
-    return { title: "Admin" };
-  } catch {
-    return { title: "Not Found" };
-  }
-}
+export const metadata: Metadata = {
+  title: "Admin",
+};
 
 export default async function AdminPortalPage() {
   let user;
   try {
+    // Reuses AppShellLayout's per-request React.cache() Turso lookup (~0ms)
     const authContext = await requireAdmin();
     user = authContext.user;
   } catch (error) {
@@ -33,15 +27,10 @@ export default async function AdminPortalPage() {
     throw error;
   }
 
-  const initialFetchedAtMs = getServerTimestampMs();
-  const initialData = await adminService.getOverview();
-
   return (
     <AdminPortalView
       currentUserId={user.id}
       timezone={user.timezone || "UTC"}
-      initialData={initialData}
-      initialFetchedAtMs={initialFetchedAtMs}
     />
   );
 }

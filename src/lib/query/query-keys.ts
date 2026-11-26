@@ -63,6 +63,12 @@ export const workspaceQueryKeys = {
   adminRoot: (userId: string) => ["workspace", userId, "admin"] as const,
   adminOverview: (userId: string, filterKey: string) =>
     ["workspace", userId, "admin", "overview", filterKey] as const,
+  adminSummary: (userId: string) =>
+    ["workspace", userId, "admin", "summary"] as const,
+  adminUsers: (userId: string, filterKey: string) =>
+    ["workspace", userId, "admin", "users", filterKey] as const,
+  adminTimeline: (userId: string, category: string) =>
+    ["workspace", userId, "admin", "timeline", category] as const,
 };
 
 /**

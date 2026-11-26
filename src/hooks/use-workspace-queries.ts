@@ -23,7 +23,12 @@ import type {
   TodayHabitsStripData,
 } from "@/server/services/habit-service";
 import type { ProjectWorkspaceData } from "@/server/services/project-service";
-import type { AdminOverviewPayload } from "@/server/services/admin-service";
+import type {
+  AdminOverviewPayload,
+  AdminOverviewSummaryPayload,
+  AdminTimelineSectionPayload,
+  AdminUsersSectionPayload,
+} from "@/server/services/admin-service";
 
 export interface WorkspaceBootstrapPayload {
   summary: SidebarSummary;
@@ -286,6 +291,87 @@ export function useAdminOverviewQuery(
   });
 }
 
+export function useAdminSummaryQuery(
+  userId: string,
+  initialData?: AdminOverviewSummaryPayload,
+  initialDataUpdatedAt?: number
+) {
+  return useQuery({
+    queryKey: workspaceQueryKeys.adminSummary(userId),
+    queryFn: ({ signal }) =>
+      fetchWorkspaceJson<AdminOverviewSummaryPayload>(
+        "/api/admin/overview?section=overview",
+        signal
+      ),
+    staleTime: 30_000,
+    ...(initialData ? { initialData, initialDataUpdatedAt } : {}),
+  });
+}
+
+export function useAdminUsersQuery(
+  userId: string,
+  params: {
+    query?: string;
+    roleFilter?: string;
+    statusFilter?: string;
+    page?: number;
+  },
+  enabled = true
+) {
+  const search = new URLSearchParams();
+  search.set("section", "users");
+  if (params.query) search.set("q", params.query);
+  if (params.roleFilter && params.roleFilter !== "all") {
+    search.set("role", params.roleFilter);
+  }
+  if (params.statusFilter && params.statusFilter !== "all") {
+    search.set("status", params.statusFilter);
+  }
+  if (params.page && params.page > 1) {
+    search.set("page", String(params.page));
+  }
+  const filterKey = search.toString();
+
+  return useQuery({
+    queryKey: workspaceQueryKeys.adminUsers(userId, filterKey),
+    queryFn: ({ signal }) =>
+      fetchWorkspaceJson<AdminUsersSectionPayload>(
+        `/api/admin/overview?${filterKey}`,
+        signal
+      ),
+    enabled,
+    staleTime: 30_000,
+    placeholderData: (prev) => prev,
+  });
+}
+
+export function useAdminTimelineQuery(
+  userId: string,
+  timelineCategory: string,
+  enabled = true
+) {
+  const search = new URLSearchParams();
+  search.set("section", "timeline");
+  if (timelineCategory && timelineCategory !== "all") {
+    search.set("timelineCategory", timelineCategory);
+  }
+
+  return useQuery({
+    queryKey: workspaceQueryKeys.adminTimeline(
+      userId,
+      timelineCategory || "all"
+    ),
+    queryFn: ({ signal }) =>
+      fetchWorkspaceJson<AdminTimelineSectionPayload>(
+        `/api/admin/overview?${search.toString()}`,
+        signal
+      ),
+    enabled,
+    staleTime: 30_000,
+    placeholderData: (prev) => prev,
+  });
+}
+
 export function usePrefetchWorkspaceView(userId: string) {
   const queryClient = useQueryClient();
 
@@ -298,6 +384,7 @@ export function usePrefetchWorkspaceView(userId: string) {
             `/api/workspace/tasks?view=${encodeURIComponent(view)}`,
             signal
           ),
+        staleTime: 30_000,
       });
     },
     [queryClient, userId]
@@ -308,6 +395,7 @@ export function usePrefetchWorkspaceView(userId: string) {
       queryKey: workspaceQueryKeys.notes(userId),
       queryFn: ({ signal }) =>
         fetchWorkspaceJson<NotesViewPayload>("/api/workspace/notes", signal),
+      staleTime: 30_000,
     });
   }, [queryClient, userId]);
 
@@ -319,6 +407,7 @@ export function usePrefetchWorkspaceView(userId: string) {
           "/api/workspace/reminders",
           signal
         ),
+      staleTime: 30_000,
     });
   }, [queryClient, userId]);
 
@@ -331,6 +420,7 @@ export function usePrefetchWorkspaceView(userId: string) {
             `/api/workspace/projects/${encodeURIComponent(projectId)}`,
             signal
           ),
+        staleTime: 30_000,
       });
     },
     [queryClient, userId]
@@ -345,6 +435,7 @@ export function usePrefetchWorkspaceView(userId: string) {
             `/api/workspace/habits?month=${encodeURIComponent(yearMonth)}`,
             signal
           ),
+        staleTime: 30_000,
       });
     },
     [queryClient, userId]
@@ -361,6 +452,7 @@ export function usePrefetchWorkspaceView(userId: string) {
               : "/api/workspace/habits/circle",
             signal
           ),
+        staleTime: 30_000,
       });
     },
     [queryClient, userId]
@@ -384,6 +476,7 @@ export function usePrefetchWorkspaceView(userId: string) {
             signal
           );
         },
+        staleTime: 30_000,
       });
     },
     [queryClient, userId]
@@ -391,9 +484,38 @@ export function usePrefetchWorkspaceView(userId: string) {
 
   const prefetchAdminOverview = useCallback(() => {
     void queryClient.prefetchQuery({
-      queryKey: workspaceQueryKeys.adminOverview(userId, "default"),
+      queryKey: workspaceQueryKeys.adminSummary(userId),
       queryFn: ({ signal }) =>
-        fetchWorkspaceJson<AdminOverviewPayload>("/api/admin/overview", signal),
+        fetchWorkspaceJson<AdminOverviewSummaryPayload>(
+          "/api/admin/overview?section=overview",
+          signal
+        ),
+      staleTime: 30_000,
+    });
+  }, [queryClient, userId]);
+
+  const prefetchAdminUsers = useCallback(() => {
+    const filterKey = "section=users";
+    void queryClient.prefetchQuery({
+      queryKey: workspaceQueryKeys.adminUsers(userId, filterKey),
+      queryFn: ({ signal }) =>
+        fetchWorkspaceJson<AdminUsersSectionPayload>(
+          "/api/admin/overview?section=users",
+          signal
+        ),
+      staleTime: 30_000,
+    });
+  }, [queryClient, userId]);
+
+  const prefetchAdminTimeline = useCallback(() => {
+    void queryClient.prefetchQuery({
+      queryKey: workspaceQueryKeys.adminTimeline(userId, "all"),
+      queryFn: ({ signal }) =>
+        fetchWorkspaceJson<AdminTimelineSectionPayload>(
+          "/api/admin/overview?section=timeline",
+          signal
+        ),
+      staleTime: 30_000,
     });
   }, [queryClient, userId]);
 
@@ -406,5 +528,7 @@ export function usePrefetchWorkspaceView(userId: string) {
     prefetchHabitsCircle,
     prefetchFriendHabits,
     prefetchAdminOverview,
+    prefetchAdminUsers,
+    prefetchAdminTimeline,
   };
 }

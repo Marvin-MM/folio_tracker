@@ -6,6 +6,7 @@ import {
   desc,
   eq,
   gt,
+  gte,
   inArray,
   isNotNull,
   isNull,
@@ -424,41 +425,81 @@ export class DrizzleTaskRepository implements TaskRepository {
   ): Promise<number> {
     if (params.entries.length === 0) return 0;
 
-    let updatedCount = 0;
-    const chunkSize = 200;
+    let minDate = params.entries[0]!.dateKey;
+    let maxDate = params.entries[0]!.dateKey;
+    const desiredByKey = new Map<string, boolean>();
+    for (const entry of params.entries) {
+      if (entry.dateKey < minDate) minDate = entry.dateKey;
+      if (entry.dateKey > maxDate) maxDate = entry.dateKey;
+      desiredByKey.set(`${entry.habitId}|${entry.dateKey}`, entry.completed);
+    }
 
-    for (let i = 0; i < params.entries.length; i += chunkSize) {
-      const chunk = params.entries.slice(i, i + chunkSize);
-      for (const completed of [true, false]) {
-        const matchers = chunk
-          .filter((entry) => entry.completed === completed)
-          .map((entry) =>
-            and(
-              eq(tasks.habitId, entry.habitId),
-              eq(tasks.habitDateKey, entry.dateKey)
-            )
-          );
-        if (matchers.length === 0) continue;
+    // 1 indexed range read short-circuits 99.9% of historical backfills (0 linked tasks)
+    // instead of firing hundreds of OR-clause UPDATE scans over remote Turso.
+    const linkedTasks = await executor
+      .select({
+        id: tasks.id,
+        habitId: tasks.habitId,
+        habitDateKey: tasks.habitDateKey,
+        status: tasks.status,
+      })
+      .from(tasks)
+      .where(
+        and(
+          eq(tasks.userId, params.userId),
+          isNotNull(tasks.habitId),
+          isNotNull(tasks.habitDateKey),
+          gte(tasks.habitDateKey, minDate),
+          lte(tasks.habitDateKey, maxDate),
+          ne(tasks.status, "archived")
+        )
+      );
 
-        const updated = await executor
-          .update(tasks)
-          .set({
-            status: completed ? "done" : "todo",
-            completedAt: completed ? params.nowMs : null,
-            updatedAt: params.nowMs,
-          })
-          .where(
-            and(
-              eq(tasks.userId, params.userId),
-              isNotNull(tasks.habitId),
-              isNotNull(tasks.habitDateKey),
-              ne(tasks.status, "archived"),
-              or(...matchers)
-            )
-          )
-          .returning({ id: tasks.id });
-        updatedCount += updated.length;
+    if (linkedTasks.length === 0) return 0;
+
+    const toCompleteIds: string[] = [];
+    const toReopenIds: string[] = [];
+
+    for (const task of linkedTasks) {
+      if (!task.habitId || !task.habitDateKey) continue;
+      const desired = desiredByKey.get(`${task.habitId}|${task.habitDateKey}`);
+      if (desired === undefined) continue;
+      if (desired) {
+        toCompleteIds.push(task.id);
+      } else {
+        toReopenIds.push(task.id);
       }
+    }
+
+    let updatedCount = 0;
+    const idChunkSize = 500;
+
+    for (let i = 0; i < toCompleteIds.length; i += idChunkSize) {
+      const ids = toCompleteIds.slice(i, i + idChunkSize);
+      const updated = await executor
+        .update(tasks)
+        .set({
+          status: "done",
+          completedAt: params.nowMs,
+          updatedAt: params.nowMs,
+        })
+        .where(and(eq(tasks.userId, params.userId), inArray(tasks.id, ids)))
+        .returning({ id: tasks.id });
+      updatedCount += updated.length;
+    }
+
+    for (let i = 0; i < toReopenIds.length; i += idChunkSize) {
+      const ids = toReopenIds.slice(i, i + idChunkSize);
+      const updated = await executor
+        .update(tasks)
+        .set({
+          status: "todo",
+          completedAt: null,
+          updatedAt: params.nowMs,
+        })
+        .where(and(eq(tasks.userId, params.userId), inArray(tasks.id, ids)))
+        .returning({ id: tasks.id });
+      updatedCount += updated.length;
     }
 
     return updatedCount;

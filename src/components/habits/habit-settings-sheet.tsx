@@ -1,10 +1,15 @@
 "use client";
 
 import { useState, useTransition } from "react";
-import { Loader2 } from "lucide-react";
+import { KeyRound, Loader2, Lock, ShieldCheck } from "lucide-react";
 import { toast } from "sonner";
-import { updateHabitSettingsAction } from "@/actions/habits";
+import {
+  removeHabitMonthLockPinAction,
+  setHabitMonthLockPinAction,
+  updateHabitSettingsAction,
+} from "@/actions/habits";
 import { useInvalidateWorkspace } from "@/hooks/use-workspace-queries";
+import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -25,17 +30,25 @@ import {
 } from "@/components/ui/sheet";
 import { Switch } from "@/components/ui/switch";
 import { cn } from "@/lib/utils";
-import type {
-  HabitCommentMode,
-  HabitTrackerSettingsRecord,
-} from "@/server/db/schema";
+import type { HabitCommentMode } from "@/server/db/schema";
+import type { ClientHabitTrackerSettings } from "@/server/domain/habit-month-lock";
 
 interface HabitSettingsSheetProps {
   open: boolean;
   onOpenChange: (open: boolean) => void;
-  settings: HabitTrackerSettingsRecord;
+  settings: ClientHabitTrackerSettings;
   timezone: string;
 }
+
+const GRACE_DAY_OPTIONS = [
+  { value: 0, label: "Immediate (end of month)" },
+  { value: 1, label: "1 day into new month" },
+  { value: 2, label: "2 days into new month" },
+  { value: 3, label: "3 days (Recommended)" },
+  { value: 5, label: "5 days into new month" },
+  { value: 7, label: "7 days into new month" },
+  { value: 14, label: "14 days into new month" },
+] as const;
 
 const DAY_OPTIONS = [
   { value: 0, label: "Sunday" },
@@ -85,8 +98,28 @@ export function HabitSettingsSheet({
   const [allowReactionsWhenLocked, setAllowReactionsWhenLocked] = useState(
     settings.allowReactionsWhenLocked
   );
+  const [monthLockEnabled, setMonthLockEnabled] = useState(
+    settings.monthLockEnabled
+  );
+  const [monthLockGraceDays, setMonthLockGraceDays] = useState(
+    settings.monthLockGraceDays
+  );
+  const [pinPanelMode, setPinPanelMode] = useState<
+    "closed" | "set" | "remove"
+  >("closed");
+  const [currentPin, setCurrentPin] = useState("");
+  const [newPin, setNewPin] = useState("");
+  const [confirmPin, setConfirmPin] = useState("");
   const [isPending, startTransition] = useTransition();
+  const [isPinPending, startPinTransition] = useTransition();
   const invalidate = useInvalidateWorkspace();
+
+  const resetPinForm = () => {
+    setPinPanelMode("closed");
+    setCurrentPin("");
+    setNewPin("");
+    setConfirmPin("");
+  };
 
   const handleOpenChange = (nextOpen: boolean) => {
     if (nextOpen) {
@@ -105,8 +138,61 @@ export function HabitSettingsSheet({
       );
       setDefaultIntervalOpenHours(String(settings.defaultIntervalOpenHours));
       setAllowReactionsWhenLocked(settings.allowReactionsWhenLocked);
+      setMonthLockEnabled(settings.monthLockEnabled);
+      setMonthLockGraceDays(settings.monthLockGraceDays);
+      resetPinForm();
     }
     onOpenChange(nextOpen);
+  };
+
+  const handleSavePin = () => {
+    if (!/^\d{4,6}$/.test(newPin)) {
+      toast.error("Accountability PIN must be 4 to 6 digits.");
+      return;
+    }
+    if (newPin !== confirmPin) {
+      toast.error("PIN confirmation does not match.");
+      return;
+    }
+    if (settings.hasMonthLockPin && !/^\d{4,6}$/.test(currentPin)) {
+      toast.error("Enter your current PIN to change it.");
+      return;
+    }
+
+    startPinTransition(async () => {
+      const res = await setHabitMonthLockPinAction({
+        ...(settings.hasMonthLockPin ? { currentPin } : {}),
+        newPin,
+      });
+      if (!res.ok) {
+        toast.error(res.error.message);
+        return;
+      }
+      await invalidate(["habits", "circle"]);
+      toast.success(
+        settings.hasMonthLockPin
+          ? "Accountability PIN updated."
+          : "Accountability PIN enabled."
+      );
+      resetPinForm();
+    });
+  };
+
+  const handleRemovePin = () => {
+    if (!/^\d{4,6}$/.test(currentPin)) {
+      toast.error("Enter your current PIN to remove it.");
+      return;
+    }
+    startPinTransition(async () => {
+      const res = await removeHabitMonthLockPinAction({ currentPin });
+      if (!res.ok) {
+        toast.error(res.error.message);
+        return;
+      }
+      await invalidate(["habits", "circle"]);
+      toast.success("Accountability PIN removed.");
+      resetPinForm();
+    });
   };
 
   const handleSave = () => {
@@ -135,6 +221,8 @@ export function HabitSettingsSheet({
             : null,
         defaultIntervalOpenHours: openHoursNum,
         allowReactionsWhenLocked,
+        monthLockEnabled,
+        monthLockGraceDays,
       });
 
       if (!result.ok) {
@@ -221,6 +309,272 @@ export function HabitSettingsSheet({
               Sends one reminder at this local time if any scheduled habits are
               still unlogged today.
             </p>
+          </div>
+
+          <Separator />
+
+          {/* Dynamic Month Locking & Accountability PIN */}
+          <div className="space-y-3">
+            <div>
+              <p className="flex items-center gap-1.5 text-xs font-medium text-foreground">
+                <Lock className="size-3.5 text-muted-foreground" aria-hidden="true" />
+                Month locking &amp; consistency
+              </p>
+              <p className="mt-0.5 text-[11px] text-muted-foreground">
+                Lock finished months automatically after a short grace window so
+                past records stay honest and view-only.
+              </p>
+            </div>
+
+            <div className="flex items-center justify-between rounded-md border border-border bg-background px-3 py-2">
+              <div className="space-y-0.5 pr-3">
+                <Label
+                  htmlFor="settings-month-lock-enabled"
+                  className="text-xs font-medium"
+                >
+                  Auto-lock completed months
+                </Label>
+                <p className="text-[11px] text-muted-foreground">
+                  Manual locking remains available at month-end anytime.
+                </p>
+              </div>
+              <Switch
+                id="settings-month-lock-enabled"
+                checked={monthLockEnabled}
+                onCheckedChange={setMonthLockEnabled}
+              />
+            </div>
+
+            {monthLockEnabled ? (
+              <div className="space-y-1.5">
+                <Label htmlFor="settings-month-lock-grace" className="text-xs">
+                  Grace window before auto-lock
+                </Label>
+                <Select
+                  value={String(monthLockGraceDays)}
+                  onValueChange={(val) => setMonthLockGraceDays(Number(val))}
+                >
+                  <SelectTrigger
+                    id="settings-month-lock-grace"
+                    className="mira-row bg-background text-xs"
+                  >
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {GRACE_DAY_OPTIONS.map((opt) => (
+                      <SelectItem
+                        key={opt.value}
+                        value={String(opt.value)}
+                        className="text-xs"
+                      >
+                        {opt.label}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+                <p className="text-[11px] text-muted-foreground">
+                  {monthLockGraceDays === 0
+                    ? "Previous months lock automatically on day 1 of the new month."
+                    : `Previous months stay editable through day ${monthLockGraceDays} of the new month, then auto-lock on day ${monthLockGraceDays + 1}.`}
+                </p>
+              </div>
+            ) : null}
+
+            {/* Optional 4-6 Digit Accountability PIN */}
+            <div className="space-y-2.5 rounded-md border border-border bg-background p-3">
+              <div className="flex items-center justify-between gap-2">
+                <div className="flex items-center gap-1.5">
+                  <KeyRound
+                    className="size-3.5 text-muted-foreground"
+                    aria-hidden="true"
+                  />
+                  <span className="text-xs font-medium text-foreground">
+                    Accountability PIN
+                  </span>
+                </div>
+                <Badge
+                  variant="outline"
+                  className={cn(
+                    "h-5 px-1.5 text-[10px] font-medium",
+                    settings.hasMonthLockPin
+                      ? "border-done/40 bg-done/10 text-done"
+                      : "border-border text-muted-foreground"
+                  )}
+                >
+                  {settings.hasMonthLockPin ? (
+                    <span className="inline-flex items-center gap-1">
+                      <ShieldCheck className="size-2.5" aria-hidden="true" />
+                      PIN set
+                    </span>
+                  ) : (
+                    "Optional"
+                  )}
+                </Badge>
+              </div>
+
+              <p className="text-[11px] text-muted-foreground">
+                Require a 4–6 digit PIN to temporarily unlock a locked month
+                (30-minute edit window).
+              </p>
+
+              {pinPanelMode === "closed" ? (
+                <div className="flex flex-wrap gap-1.5">
+                  <Button
+                    type="button"
+                    variant="outline"
+                    size="xs"
+                    onClick={() => setPinPanelMode("set")}
+                    className="h-7 px-2.5 text-xs"
+                  >
+                    {settings.hasMonthLockPin ? "Change PIN" : "Set PIN"}
+                  </Button>
+                  {settings.hasMonthLockPin ? (
+                    <Button
+                      type="button"
+                      variant="ghost"
+                      size="xs"
+                      onClick={() => setPinPanelMode("remove")}
+                      className="h-7 px-2.5 text-xs text-overdue hover:text-overdue"
+                    >
+                      Remove PIN
+                    </Button>
+                  ) : null}
+                </div>
+              ) : pinPanelMode === "set" ? (
+                <div className="space-y-2 border-t border-border pt-2.5">
+                  {settings.hasMonthLockPin ? (
+                    <div className="space-y-1">
+                      <Label
+                        htmlFor="settings-pin-current"
+                        className="text-[11px] text-muted-foreground"
+                      >
+                        Current PIN
+                      </Label>
+                      <Input
+                        id="settings-pin-current"
+                        type="password"
+                        inputMode="numeric"
+                        maxLength={6}
+                        placeholder="4–6 digits"
+                        value={currentPin}
+                        onChange={(e) =>
+                          setCurrentPin(e.target.value.replace(/\D/g, "").slice(0, 6))
+                        }
+                        className="mono-tabular mira-row bg-card text-xs tracking-widest"
+                      />
+                    </div>
+                  ) : null}
+                  <div className="grid grid-cols-2 gap-2">
+                    <div className="space-y-1">
+                      <Label
+                        htmlFor="settings-pin-new"
+                        className="text-[11px] text-muted-foreground"
+                      >
+                        New PIN (4–6 digits)
+                      </Label>
+                      <Input
+                        id="settings-pin-new"
+                        type="password"
+                        inputMode="numeric"
+                        maxLength={6}
+                        placeholder="••••"
+                        value={newPin}
+                        onChange={(e) =>
+                          setNewPin(e.target.value.replace(/\D/g, "").slice(0, 6))
+                        }
+                        className="mono-tabular mira-row bg-card text-xs tracking-widest"
+                      />
+                    </div>
+                    <div className="space-y-1">
+                      <Label
+                        htmlFor="settings-pin-confirm"
+                        className="text-[11px] text-muted-foreground"
+                      >
+                        Confirm PIN
+                      </Label>
+                      <Input
+                        id="settings-pin-confirm"
+                        type="password"
+                        inputMode="numeric"
+                        maxLength={6}
+                        placeholder="••••"
+                        value={confirmPin}
+                        onChange={(e) =>
+                          setConfirmPin(e.target.value.replace(/\D/g, "").slice(0, 6))
+                        }
+                        className="mono-tabular mira-row bg-card text-xs tracking-widest"
+                      />
+                    </div>
+                  </div>
+                  <div className="flex justify-end gap-1.5">
+                    <Button
+                      type="button"
+                      variant="ghost"
+                      size="xs"
+                      disabled={isPinPending}
+                      onClick={resetPinForm}
+                      className="h-7 px-2 text-xs"
+                    >
+                      Cancel
+                    </Button>
+                    <Button
+                      type="button"
+                      size="xs"
+                      disabled={isPinPending || newPin.length < 4}
+                      onClick={handleSavePin}
+                      className="h-7 px-3 text-xs"
+                    >
+                      {isPinPending ? "Saving…" : "Save PIN"}
+                    </Button>
+                  </div>
+                </div>
+              ) : (
+                <div className="space-y-2 border-t border-border pt-2.5">
+                  <div className="space-y-1">
+                    <Label
+                      htmlFor="settings-pin-remove-current"
+                      className="text-[11px] text-muted-foreground"
+                    >
+                      Enter current PIN to remove
+                    </Label>
+                    <Input
+                      id="settings-pin-remove-current"
+                      type="password"
+                      inputMode="numeric"
+                      maxLength={6}
+                      placeholder="4–6 digits"
+                      value={currentPin}
+                      onChange={(e) =>
+                        setCurrentPin(e.target.value.replace(/\D/g, "").slice(0, 6))
+                      }
+                      className="mono-tabular mira-row bg-card text-xs tracking-widest"
+                    />
+                  </div>
+                  <div className="flex justify-end gap-1.5">
+                    <Button
+                      type="button"
+                      variant="ghost"
+                      size="xs"
+                      disabled={isPinPending}
+                      onClick={resetPinForm}
+                      className="h-7 px-2 text-xs"
+                    >
+                      Cancel
+                    </Button>
+                    <Button
+                      type="button"
+                      variant="destructive"
+                      size="xs"
+                      disabled={isPinPending || currentPin.length < 4}
+                      onClick={handleRemovePin}
+                      className="h-7 px-3 text-xs"
+                    >
+                      {isPinPending ? "Removing…" : "Remove PIN"}
+                    </Button>
+                  </div>
+                </div>
+              )}
+            </div>
           </div>
 
           <Separator />

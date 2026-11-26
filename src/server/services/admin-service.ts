@@ -51,19 +51,57 @@ export interface PlatformHealthReport {
   subsystems: HealthSubsystemCheck[];
 }
 
-export interface AdminOverviewPayload {
+export interface AdminOverviewSummaryPayload {
   generatedAtMs: number;
   kpis: PlatformKpis;
   dailySeries: DailyPlatformMetricPoint[];
   health: PlatformHealthReport;
+  configuredAdminCount: number;
+}
+
+export interface AdminUsersSectionPayload {
+  generatedAtMs: number;
+  usersPage: AdminUsersDirectoryPage;
+}
+
+export interface AdminTimelineSectionPayload {
+  generatedAtMs: number;
+  timeline: PlatformTimelineEvent[];
+}
+
+export interface AdminOverviewPayload extends AdminOverviewSummaryPayload {
   usersPage: AdminUsersDirectoryPage;
   timeline: PlatformTimelineEvent[];
-  configuredAdminCount: number;
 }
 
 export interface AdminOverviewQueryOptions extends AdminUserDirectoryFilter {
   timelineCategory?: PlatformTimelineCategory;
   days?: number;
+}
+
+const PROBE_TIMEOUT_MS = 1_500;
+
+async function withTimeout<T>(promise: Promise<T>, ms: number): Promise<T> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    return await Promise.race([
+      promise,
+      new Promise<never>((_, reject) => {
+        timer = setTimeout(() => reject(new Error("Probe timed out")), ms);
+      }),
+    ]);
+  } finally {
+    if (timer) clearTimeout(timer);
+  }
+}
+
+interface LiveSubsystemProbes {
+  dbStatus: HealthProbeStatus;
+  dbLatencyMs: number | null;
+  redisStatus: HealthProbeStatus;
+  redisLatencyMs: number | null;
+  redisLabel: string;
+  redisTier: string;
 }
 
 export class AdminService {
@@ -76,58 +114,95 @@ export class AdminService {
     > = reminderService
   ) {}
 
-  async runHealthDiagnostics(
+  private async probeLiveSubsystems(): Promise<LiveSubsystemProbes> {
+    const redisBackend = getRedisBackend();
+
+    const [dbProbe, redisProbe] = await Promise.all([
+      (async (): Promise<{
+        status: HealthProbeStatus;
+        latencyMs: number | null;
+      }> => {
+        try {
+          const t0 = performance.now();
+          await withTimeout(libsqlClient.execute("SELECT 1"), PROBE_TIMEOUT_MS);
+          return {
+            status: "healthy",
+            latencyMs: Math.max(0, Math.round(performance.now() - t0)),
+          };
+        } catch {
+          return { status: "degraded", latencyMs: null };
+        }
+      })(),
+      (async (): Promise<{
+        status: HealthProbeStatus;
+        latencyMs: number | null;
+        label: string;
+      }> => {
+        if (redisBackend.kind === "upstash") {
+          try {
+            const t0 = performance.now();
+            await withTimeout(redisBackend.client.ping(), PROBE_TIMEOUT_MS);
+            return {
+              status: "healthy",
+              latencyMs: Math.max(0, Math.round(performance.now() - t0)),
+              label: "Upstash Redis REST",
+            };
+          } catch {
+            return {
+              status: "degraded",
+              latencyMs: null,
+              label: "Upstash Redis REST (unreachable / timed out)",
+            };
+          }
+        }
+        if (redisBackend.kind === "local_redis") {
+          try {
+            const t0 = performance.now();
+            await withTimeout(redisBackend.client.ping(), PROBE_TIMEOUT_MS);
+            return {
+              status: "healthy",
+              latencyMs: Math.max(0, Math.round(performance.now() - t0)),
+              label: "Local Redis (ioredis)",
+            };
+          } catch {
+            return {
+              status: "fallback",
+              latencyMs: null,
+              label: "Local Redis unreachable (Memory fallback active)",
+            };
+          }
+        }
+        return {
+          status: "fallback",
+          latencyMs: null,
+          label: "In-Memory Fallback",
+        };
+      })(),
+    ]);
+
+    return {
+      dbStatus: dbProbe.status,
+      dbLatencyMs: dbProbe.latencyMs,
+      redisStatus: redisProbe.status,
+      redisLatencyMs: redisProbe.latencyMs,
+      redisLabel: redisProbe.label,
+      redisTier: redisBackend.kind,
+    };
+  }
+
+  private buildHealthReport(
     outboxBacklogCount: number,
-    pushSubscriptionsCount: number
-  ): Promise<PlatformHealthReport> {
+    pushSubscriptionsCount: number,
+    probes: LiveSubsystemProbes
+  ): PlatformHealthReport {
     const checkedAtMs = Date.now();
 
-    // 1. Database probe (Turso / libSQL)
-    let dbStatus: HealthProbeStatus = "healthy";
-    let dbLatencyMs: number | null = null;
-    try {
-      const t0 = performance.now();
-      await libsqlClient.execute("SELECT 1");
-      dbLatencyMs = Math.max(0, Math.round(performance.now() - t0));
-    } catch {
-      dbStatus = "degraded";
-    }
-
     const dbUrl = process.env.TURSO_DATABASE_URL?.trim() || "file:local.db";
-    const dbMode = dbUrl.startsWith("libsql://") || dbUrl.startsWith("https://")
-      ? "Turso Remote"
-      : "Local SQLite (WAL)";
+    const dbMode =
+      dbUrl.startsWith("libsql://") || dbUrl.startsWith("https://")
+        ? "Turso Remote"
+        : "Local SQLite (WAL)";
 
-    // 2. Redis probe (3-tier: Upstash -> local ioredis -> Memory fallback)
-    const redisBackend = getRedisBackend();
-    let redisStatus: HealthProbeStatus = "fallback";
-    let redisLatencyMs: number | null = null;
-    let redisLabel = "In-Memory Fallback";
-
-    if (redisBackend.kind === "upstash") {
-      redisLabel = "Upstash Redis REST";
-      try {
-        const t0 = performance.now();
-        await redisBackend.client.ping();
-        redisLatencyMs = Math.max(0, Math.round(performance.now() - t0));
-        redisStatus = "healthy";
-      } catch {
-        redisStatus = "degraded";
-      }
-    } else if (redisBackend.kind === "local_redis") {
-      redisLabel = "Local Redis (ioredis)";
-      try {
-        const t0 = performance.now();
-        await redisBackend.client.ping();
-        redisLatencyMs = Math.max(0, Math.round(performance.now() - t0));
-        redisStatus = "healthy";
-      } catch {
-        redisStatus = "fallback";
-        redisLabel = "Local Redis unreachable (Memory fallback active)";
-      }
-    }
-
-    // 3. Inngest engine status
     const inngestDev = process.env.INNGEST_DEV === "1";
     const inngestCloudConfigured = Boolean(
       process.env.INNGEST_EVENT_KEY?.trim() &&
@@ -145,7 +220,6 @@ export class AdminService {
           ? "healthy"
           : "fallback";
 
-    // 4. Auth & Admin Policy
     const googleConfigured = isGoogleOAuthConfigured();
     const emailPasswordEnabled = isEmailPasswordAuthEnabled();
     const configuredAdmins = getConfiguredAdminEmails();
@@ -155,39 +229,37 @@ export class AdminService {
     const authStatus: HealthProbeStatus =
       !emailPasswordEnabled && !googleConfigured ? "degraded" : "healthy";
 
-    // 5. Notification Delivery Channels (VAPID Web Push + Resend Email)
     const vapidReady = Boolean(
       process.env.NEXT_PUBLIC_VAPID_PUBLIC_KEY?.trim() &&
         process.env.VAPID_PRIVATE_KEY?.trim()
     );
     const resendReady = Boolean(process.env.RESEND_API_KEY?.trim());
     const channelsStatus: HealthProbeStatus =
-      vapidReady && resendReady
-        ? "healthy"
-        : vapidReady || resendReady
-          ? "fallback"
-          : "fallback";
+      vapidReady && resendReady ? "healthy" : "fallback";
 
     const subsystems: HealthSubsystemCheck[] = [
       {
         key: "database",
         label: "Turso / libSQL",
-        status: dbStatus,
-        summary: dbStatus === "healthy" ? `${dbMode} connected` : "Database unreachable",
-        latencyMs: dbLatencyMs,
+        status: probes.dbStatus,
+        summary:
+          probes.dbStatus === "healthy"
+            ? `${dbMode} connected`
+            : "Database unreachable",
+        latencyMs: probes.dbLatencyMs,
         details: [
           { label: "Mode", value: dbMode },
-          { label: "Schema", value: "23 tables · ULID · FKs ON" },
+          { label: "Schema", value: "26 tables · ULID · FKs ON" },
         ],
       },
       {
         key: "redis",
         label: "Rate Limit & Counter Cache",
-        status: redisStatus,
-        summary: redisLabel,
-        latencyMs: redisLatencyMs,
+        status: probes.redisStatus,
+        summary: probes.redisLabel,
+        latencyMs: probes.redisLatencyMs,
         details: [
-          { label: "Tier", value: redisBackend.kind },
+          { label: "Tier", value: probes.redisTier },
           { label: "Security", value: "RBAC bypasses Redis (Turso direct)" },
         ],
       },
@@ -215,8 +287,14 @@ export class AdminService {
         summary: authMode,
         latencyMs: null,
         details: [
-          { label: "Google OAuth", value: googleConfigured ? "Configured" : "Not set" },
-          { label: "ADMIN_EMAILS", value: `${configuredAdmins.length} allowlisted` },
+          {
+            label: "Google OAuth",
+            value: googleConfigured ? "Configured" : "Not set",
+          },
+          {
+            label: "ADMIN_EMAILS",
+            value: `${configuredAdmins.length} allowlisted`,
+          },
         ],
       },
       {
@@ -227,7 +305,10 @@ export class AdminService {
         latencyMs: null,
         details: [
           { label: "Push Devices", value: `${pushSubscriptionsCount}` },
-          { label: "Email Transport", value: resendReady ? "Resend API" : "Dev Console" },
+          {
+            label: "Email Transport",
+            value: resendReady ? "Resend API" : "Dev Console",
+          },
         ],
       },
     ];
@@ -247,20 +328,80 @@ export class AdminService {
     };
   }
 
+  async runHealthDiagnostics(
+    outboxBacklogCount: number,
+    pushSubscriptionsCount: number
+  ): Promise<PlatformHealthReport> {
+    const probes = await this.probeLiveSubsystems();
+    return this.buildHealthReport(
+      outboxBacklogCount,
+      pushSubscriptionsCount,
+      probes
+    );
+  }
+
+  async getOverviewSummary(days = 14): Promise<AdminOverviewSummaryPayload> {
+    const nowMs = Date.now();
+    const [kpis, dailySeries, probes] = await Promise.all([
+      this.repo.getPlatformKpis(nowMs),
+      this.repo.getDailyPlatformSeries(days, nowMs),
+      this.probeLiveSubsystems(),
+    ]);
+
+    const health = this.buildHealthReport(
+      kpis.delivery.undispatchedOutboxBacklog,
+      kpis.delivery.pushSubscriptions,
+      probes
+    );
+
+    return {
+      generatedAtMs: nowMs,
+      kpis,
+      dailySeries,
+      health,
+      configuredAdminCount: getConfiguredAdminEmails().length,
+    };
+  }
+
+  async getUsersDirectorySection(
+    options: AdminUserDirectoryFilter = {}
+  ): Promise<AdminUsersSectionPayload> {
+    const nowMs = Date.now();
+    const usersPage = await this.repo.listUsersDirectory(options, nowMs);
+    return {
+      generatedAtMs: nowMs,
+      usersPage,
+    };
+  }
+
+  async getTimelineSection(
+    category: PlatformTimelineCategory = "all",
+    limit = 60
+  ): Promise<AdminTimelineSectionPayload> {
+    const nowMs = Date.now();
+    const timeline = await this.repo.listPlatformTimeline(category, limit);
+    return {
+      generatedAtMs: nowMs,
+      timeline,
+    };
+  }
+
   async getOverview(
     options: AdminOverviewQueryOptions = {}
   ): Promise<AdminOverviewPayload> {
     const nowMs = Date.now();
-    const [kpis, dailySeries, usersPage, timeline] = await Promise.all([
+    const [kpis, dailySeries, usersPage, timeline, probes] = await Promise.all([
       this.repo.getPlatformKpis(nowMs),
       this.repo.getDailyPlatformSeries(options.days ?? 14, nowMs),
       this.repo.listUsersDirectory(options, nowMs),
       this.repo.listPlatformTimeline(options.timelineCategory ?? "all", 60),
+      this.probeLiveSubsystems(),
     ]);
 
-    const health = await this.runHealthDiagnostics(
+    const health = this.buildHealthReport(
       kpis.delivery.undispatchedOutboxBacklog,
-      kpis.delivery.pushSubscriptions
+      kpis.delivery.pushSubscriptions,
+      probes
     );
 
     return {

@@ -214,6 +214,24 @@ export function FriendHabitsView({
                   ? "All habits"
                   : `${workspace.habits.length} shared`}
               </Badge>
+              {workspace.monthLockIntegrity.isLocked ? (
+                <Badge
+                  variant="outline"
+                  className="h-5 gap-1 border-border bg-muted/50 px-1.5 text-[10px] font-normal text-muted-foreground"
+                >
+                  <Lock className="size-2.5" aria-hidden="true" />
+                  {workspace.monthLockIntegrity.hasBeenUnlocked
+                    ? `Month locked · edited (${workspace.monthLockIntegrity.unlockCount}×)`
+                    : "Month locked"}
+                </Badge>
+              ) : workspace.monthLockIntegrity.phase === "unlocked_temp" ? (
+                <Badge
+                  variant="outline"
+                  className="h-5 gap-1 border-reminder/40 bg-reminder/10 px-1.5 text-[10px] font-normal text-reminder"
+                >
+                  Unlocked (edited)
+                </Badge>
+              ) : null}
             </div>
             <p className="mono-tabular mt-0.5 text-[11px] text-muted-foreground">
               Owner timezone: {owner.timezone}

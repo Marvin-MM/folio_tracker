@@ -50,6 +50,13 @@
       "when": 1795550002000,
       "tag": "0006_habit_month_rosters",
       "breakpoints": true
+    },
+    {
+      "idx": 7,
+      "version": "6",
+      "when": 1795731258413,
+      "tag": "0007_habit_month_locks",
+      "breakpoints": true
     }
   ]
 }

@@ -24,18 +24,18 @@ flowchart TB
   subgraph App["Next.js App Router (force-dynamic)"]
     RSC["RSC Pages & Layouts (/, /login, /offline, /app/*, /app/admin, /app/habits*, /invite/*)"]
     ACT["Server Actions (src/actions/*) — Zod -> Auth -> Service -> Targeted Query Invalidation"]
-    API["Route Handlers (/api/workspace/* x8, /api/admin/overview, /api/auth, /api/inngest, /api/health, /api/reminders, /api/notifications)"]
+    API["Route Handlers (/api/workspace/* x9 incl. chunked import-history, /api/admin/overview?section=..., /api/auth, /api/inngest, /api/health, /api/reminders, /api/notifications)"]
   end
 
   subgraph Core["SOLID Domain Core (src/server/)"]
-    DOM["Pure Domain Engines (src/server/domain/) — Habit Analytics & Comment-Window Policy"]
+    DOM["Pure Domain Engines (src/server/domain/) — Habit Analytics, Month-Lock Policy, Import & Comment Windows"]
     SVC["12 Domain Services — Task, Note, Reminder, Project, Invite, Habit, Monitor, Comment, Account, Notification, Preferences, Admin"]
-    DAL["Scoped DAL & Direct-Turso Guards (requireSession, requireAdmin, assertProjectRole, canUserReadEntity, HabitMonitorReadDal, withDbRetry)"]
-    PRV["Provider Ports (EventBus, NotificationChannel x3, RateLimiter x4, UnreadCounterCache, AuthEmailDispatcher)"]
+    DAL["Scoped DAL & Direct-Turso Guards (React.cache requireSession/requireAdmin, assertProjectRole, canUserReadEntity, HabitMonitorReadDal, withDbRetry)"]
+    PRV["Provider Ports (EventBus, NotificationChannel x3, RateLimiter x6, UnreadCounterCache, AuthEmailDispatcher)"]
   end
 
   subgraph Infra["Persistence & External Services"]
-    DB[("Turso / libSQL (SQLite WAL) — 25 Tables, ULID PKs, Cascading FKs, CHECK & Partial Unique Indexes")]
+    DB[("Turso / libSQL (SQLite WAL) — 26 Tables, ULID PKs, Cascading FKs, CHECK & Partial Unique Indexes")]
     RDS[("Redis 3-Tier (Upstash -> ioredis -> Memory) — RateLimiter & UnreadCounter ONLY")]
     ING["Inngest v4 Durable Engine — 13 Functions, Plan-Safe Concurrency (default 5, crons 1) & LIMIT 200 Crons"]
     EXT["External Delivery & Identity (Resend, VAPID Web Push, Google OAuth)"]
@@ -70,7 +70,7 @@ flowchart TB
 
 ## 2. SOLID Clean Layering & Dependency Direction
 
-Dependencies point strictly inward toward `src/server/db/` and `src/server/domain/`. Pure domain calculations (`habit-analytics.ts`, `comment-window-policy.ts`, `habit-import.ts`, `habit-evolution.ts`) have zero DB or network imports, while every service accepts repositories and providers via constructor injection (DIP) so all 26 Vitest suites (112 tests) execute offline against ephemeral SQLite databases.
+Dependencies point strictly inward toward `src/server/db/` and `src/server/domain/`. Pure domain calculations (`habit-analytics.ts`, `habit-month-lock.ts`, `comment-window-policy.ts`, `habit-import.ts`, `habit-evolution.ts`) have zero DB or network imports, while every service accepts repositories and providers via constructor injection (DIP) so all 28 Vitest suites (117 tests) execute offline against ephemeral SQLite databases.
 
 ```mermaid
 flowchart LR
@@ -95,7 +95,7 @@ flowchart LR
   end
 
   subgraph Foundations["Schema & Concrete Adapters"]
-    SCHEMA["src/server/db/ (25 Drizzle Tables, Relations, WAL Client, withDbRetry)"]
+    SCHEMA["src/server/db/ (26 Drizzle Tables, Relations, WAL Client, withDbRetry)"]
     ADAPT["External Adapters (Inngest v4, Resend, web-push, Upstash / ioredis / InMemory)"]
   end
 
@@ -117,13 +117,13 @@ flowchart LR
 | :--- | :--- | :--- |
 | `EventBus` | `InngestEventBus`, `InMemoryEventBus` | Post-commit durable event emission with deterministic deduplication `id` |
 | `NotificationChannel` (OCP) | `InAppNotificationChannel`, `WebPushNotificationChannel`, `EmailNotificationChannel` | Isolated per-channel delivery (`Promise.allSettled`, `404`/`410` auto-prune, email fallback) |
-| `RateLimiter` (ISP) | `UpstashRateLimiter`, `IoRedisRateLimiter` (Lua), `InMemoryRateLimiter` | Sliding-window protection (`auth` 10/10m, `project_invite` 20/1h, `habit_monitor_invite` 20/1h, `test_push` 5/5m) |
+| `RateLimiter` (ISP) | `UpstashRateLimiter`, `IoRedisRateLimiter` (Lua), `InMemoryRateLimiter` | Sliding-window protection (`auth` 10/10m, `project_invite` 20/1h, `habit_monitor_invite` 20/1h, `habit_history_import` 150/10m, `habit_month_pin` 10/15m, `test_push` 5/5m) |
 | `UnreadCounterCache` (ISP) | `UpstashUnreadCounterCache`, `IoRedisUnreadCounterCache`, `InMemoryUnreadCounterCache` | `300s` TTL unread badge cache only (**never** used for security, RBAC, or monitor access) |
 | `AuthEmailDispatcher` | `InngestAuthEmailDispatcher`, `ResendAuthEmailDispatcher`, `ConsoleAuthEmailDispatcher` | Verification & password-reset emails without logging raw tokens |
 
 ---
 
-## 3. Unified Entity-Relationship Model (25 Tables)
+## 3. Unified Entity-Relationship Model (26 Tables)
 
 All primary keys are sortable ULIDs (`ulidx`), all timestamps are UTC Unix epoch milliseconds (`integer`) paired with explicit IANA timezone strings and calendar date keys (`YYYY-MM-DD`), and referential integrity is enforced by SQLite/Turso (`PRAGMA foreign_keys = ON`, `CHECK` constraints, partial unique indexes, and cascading deletes).
 
@@ -337,6 +337,17 @@ erDiagram
     text habit_id PK "FK CASCADE -> habits"
     text year_month PK "YYYY-MM"
     integer created_at
+  }
+  habit_month_locks {
+    text user_id PK "FK CASCADE -> users"
+    text year_month PK "YYYY-MM"
+    text status "CHECK locked, unlocked_override"
+    integer locked_at "nullable"
+    integer unlocked_at "nullable"
+    integer unlocked_until "nullable 30m window"
+    text unlock_reason "nullable"
+    integer unlock_count "CHECK >= 0"
+    integer updated_at
   }
   habit_monitors {
     text id PK "ULID"
@@ -641,8 +652,8 @@ flowchart TB
 
 **Honest Analytics, Per-Month Rosters & History Import Invariants (`habit-analytics.ts`, `habit-import.ts`, `habit-evolution.ts`):**
 - Real calendar lengths (28–31 days with leap-year Feb 29), **elapsed-to-date denominators** (future days excluded), mid-month `startDate` clamping, `'skipped'` rest passes excluded from denominators without breaking streaks, and `'weekly_target'` habits capped at `weeklyTargetCount` per calendar week.
-- **Per-Month Curated Rosters (`habit_month_rosters`) & Future-Month Lock:** Each month (`YYYY-MM`) maintains its own enrolled habit roster so switching between months displays and scores ONLY that month's habits; entering a new month offers 1-click carry-over or customization from the previous month without altering prior months' history; and future months (`> currentMonth`) are strictly clamped/rejected across UI, API, and Service layers until they begin.
-- **Excel/CSV History Migration (`habit_import_aliases`):** Strictly restricted to validated `.xlsx` (OOXML ZIP magic-byte checked, lazy-loaded `read-excel-file/browser`, CSP `worker-src 'self' blob:`), `.csv`, and `.txt` files (max 10 MB), supporting 1-sheet or multi-sheet workbooks up to 20,000 marks in chunked ACID transactions, rename/merge identity resolution, true first-appearance `startDate` backfill, and automatic per-month roster population.
+- **Per-Month Curated Rosters (`habit_month_rosters`), Dynamic Month Locking (`habit_month_locks`) & Future-Month Lock:** Each month (`YYYY-MM`) maintains its own enrolled habit roster so switching between months displays and scores ONLY that month's habits; entering a new month offers 1-click carry-over or customization from the previous month without altering prior months' history; and future months (`> currentMonth`) are strictly clamped/rejected across UI, API, and Service layers until they begin. Completed months can be locked manually on their final day (`closing_today`) or during the configurable grace window (`month_lock_grace_days`, default `3` days, `0–14`), and deterministically auto-lock once the grace window expires (`evaluateMonthLockState`, zero cron drift). Optional 4–6 digit Accountability PINs are hashed server-side with Node `crypto.scryptSync` + per-user CSPRNG salt + 5-attempt / 15-minute lockout (`sanitizeHabitTrackerSettings` never serializes hashes/salts to clients) and gate a timed 30-minute temporary unlock window (`unlocked_temp`) with integrity counters surfaced in Accountability Circle views.
+- **Timeout-Proof Chunked Excel/CSV History Migration (`POST /api/workspace/habits/import-history`, `habit_import_aliases`):** Strictly restricted to validated `.xlsx` (OOXML ZIP magic-byte checked, lazy-loaded `read-excel-file/browser`, CSP `worker-src 'self' blob:`), `.csv`, and `.txt` files (max 10 MB), supporting 1-sheet or multi-year workbooks up to 50,000 marks via a 2-phase pipeline (`phase: "prepare"` reconciles habits, `startDate` backfill, archival & aliases + verifies month locks; `phase: "chunk"` streams ≤ 1,500 compact `[habitId, dateKey, status]` tuples per sub-second Turso `db.batch()` request with non-null micro-note preservation, 1-query linked-task short-circuit, live progress bar, and idempotent resume on failure). Manually locked months always block imports; calendar-age auto-locked months support initial backfill with explicit user confirmation.
 
 ---
 
@@ -650,7 +661,7 @@ flowchart TB
 
 Folio enforces a strict client-state split so navigating across Inbox, Today, Upcoming, Notes, Reminders, Projects, Habits, and Circle feels instantaneous (`0` redundant refetches inside the 60s stale window) without leaking tenant data across sessions:
 
-- **Server State (TanStack React Query v5 — `src/hooks/use-workspace-queries.ts`):** Every workspace view hydrates on initial SSR (`initialData` + `initialDataUpdatedAt`) and reads through authenticated `GET /api/workspace/*` routes (`bootstrap`, `tasks`, `notes`, `reminders`, `projects/[projectId]`, `habits`, `habits/circle`, `habits/circle/[ownerId]`) plus admin-only `GET /api/admin/overview`, all guarded by `requireSession()` / `requireAdmin()` + `Cache-Control: private, no-store`. Keys are strictly user-scoped (`["workspace", userId, ...]`), hover/focus prefetching warms destination routes from `LeftRail` and `HabitsSubnav`, and mutations call targeted domain invalidation (`invalidateWorkspaceDomains()`) instead of shotgun `revalidatePath("/app", "layout")`. Switching Habits scoring modes (`Elapsed-to-Date` ↔ `Full Month`) recomputes purely on the client at `0ms` with `0` network calls.
+- **Server State (TanStack React Query v5 — `src/hooks/use-workspace-queries.ts`):** Every workspace view hydrates on initial SSR (`initialData` + `initialDataUpdatedAt`) and reads through authenticated `GET /api/workspace/*` routes (`bootstrap`, `tasks`, `notes`, `reminders`, `projects/[projectId]`, `habits`, `habits/circle`, `habits/circle/[ownerId]`), while `/app/admin` renders immediately behind `loading.tsx` + per-request `React.cache()` `requireAdmin()` deduplication and fetches section-scoped `GET /api/admin/overview?section=overview|users|timeline` (Turso `db.batch()` KPIs + SQL `GROUP BY` 14-day series + 1.5s-capped parallel health probes) without `revalidatePath` busting Next.js 16's 60s client Router Cache on exit. Keys are strictly user-scoped (`["workspace", userId, ...]`), hover/focus prefetching warms destination routes from `LeftRail` and `HabitsSubnav` (with `staleTime: 30_000` dedup), and mutations call targeted domain invalidation (`invalidateWorkspaceDomains()`) instead of shotgun `revalidatePath("/app", "layout")`. Switching Habits scoring modes (`Elapsed-to-Date` ↔ `Full Month`) recomputes purely on the client at `0ms` with `0` network calls.
 - **Unified Chronological Activity Timelines (`src/components/workspace/activity-timeline.tsx`):** A shared Warm Paper / Carbon Ink vertical day-grouped timeline component (`Today` / `Yesterday` / date headers, semantic tone nodes, actor initials, tabular/relative timestamps, category filter pills, and optional deep-link `Inspect` buttons) powers Project Detail (`Activity` tab with click-to-open `440px` Detail Sheet), the Admin Portal (`Activity Timeline` tab aggregating audits, signups, project milestones, and reminder deliveries), Reminders (`Recently triggered` newest-first day-grouped timeline), Accountability Circle (`Cycle Review` threaded spine), and the Notification Bell popover rail.
 - **Client UI State (Zustand v5 — `src/stores/workspace-ui-store.ts`):** Persists **only** harmless, non-PII layout preferences (`railCollapsed`, `habitsScoringMode`, `habitsShowArchived`) under `folio-ui-prefs` with `skipHydration: true` + post-mount rehydration. Ephemeral session state (`activeDetail`, `projectActiveTabs`, `quickCaptureOpen`, `mobileMenuOpen`, `isOnline`) stays in memory and resets on sign-out.
 - **SEO, Procedural 3D Editorial Landing & Installed-PWA Isolation:** Public `/` serves a full-viewport Warm Paper / Carbon Ink editorial landing page backed by a zero-dependency procedural 3D dot-matrix `<canvas>` engine (`src/components/landing/dot-matrix-3d-engine.ts`, lazy-loaded via `next/dynamic` with `IntersectionObserver` + `visibilitychange` + `prefers-reduced-motion` guards and an elliptical copy quiet zone), a flush anchored bottom editorial sheet whose 3 interactive pillars morph the 3D sculpture (`Stacked Ledger Sheets`, `Curved 31-Day Matrix`, `Accountability Orbit`), a GPU-composited 3D perspective workspace stage (`PerspectiveStageCard`), `WebApplication` JSON-LD, dynamic `opengraph-image` / `twitter-image`, `robots.ts`, `sitemap.ts`, and canonical URL resolution (`NEXT_PUBLIC_SITE_URL ?? BETTER_AUTH_URL ?? "https://folio.renult.xyz"`). Private `/app/*` and `/invite/*` routes emit `noindex, nofollow, nocache`. When launched as an installed PWA (`display-mode: standalone` or iOS `navigator.standalone`), `manifest.ts` launches at `/app/inbox` (redirecting signed-out users directly to `/login`), CSS hides `[data-folio-landing="true"]`, `StandaloneRootGuard` immediately redirects `/` → `/login`, and `PwaLaunchSplash` displays a calm once-per-session launch curtain paired with 12 Light/Dark iOS startup images (`public/splash/`).
@@ -676,7 +687,7 @@ flowchart TB
   subgraph Offboard["Safe Account Offboarding"]
     DelAcc["AccountService.deleteAccount(userId)"] --> Sole{"Sole owner of shared project with members?"}
     Sole -->|Yes| Block["400 ValidationError (transfer or delete shared project first)"]
-    Sole -->|No| Sweep["ACID tx: collect scheduled reminders -> DELETE user (cascades all 25 tables) -> reset UnreadCounterCache -> emit cancellations"]
+    Sole -->|No| Sweep["ACID tx: collect scheduled reminders -> DELETE user (cascades all 26 tables) -> reset UnreadCounterCache -> emit cancellations"]
   end
 ```
 

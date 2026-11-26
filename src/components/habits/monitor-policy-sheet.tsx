@@ -31,14 +31,14 @@ import type {
   HabitCommentMode,
   HabitMonitorScope,
   HabitRecord,
-  HabitTrackerSettingsRecord,
 } from "@/server/db/schema";
+import type { ClientHabitTrackerSettings } from "@/server/domain/habit-month-lock";
 
 interface MonitorPolicySheetProps {
   open: boolean;
   onOpenChange: (open: boolean) => void;
   monitor: MonitorWithUser | null;
-  globalSettings: HabitTrackerSettingsRecord;
+  globalSettings: ClientHabitTrackerSettings;
   habits: HabitRecord[];
 }
 
@@ -59,7 +59,7 @@ function MonitorPolicyForm({
   onClose,
 }: {
   monitor: MonitorWithUser;
-  globalSettings: HabitTrackerSettingsRecord;
+  globalSettings: ClientHabitTrackerSettings;
   habits: HabitRecord[];
   onClose: () => void;
 }) {

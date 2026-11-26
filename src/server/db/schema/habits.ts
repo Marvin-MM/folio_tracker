@@ -29,6 +29,12 @@ export type HabitCadenceType = (typeof HABIT_CADENCE_TYPES)[number];
 export const HABIT_LOG_STATUSES = ["done", "missed", "skipped"] as const;
 export type HabitLogStatus = (typeof HABIT_LOG_STATUSES)[number];
 
+export const HABIT_MONTH_LOCK_STATUSES = [
+  "locked",
+  "unlocked_override",
+] as const;
+export type HabitMonthLockStatus = (typeof HABIT_MONTH_LOCK_STATUSES)[number];
+
 export const habitTrackerSettings = sqliteTable(
   "habit_tracker_settings",
   {
@@ -70,6 +76,22 @@ export const habitTrackerSettings = sqliteTable(
       .notNull()
       .default(true),
     eveningCheckinTime: text("evening_checkin_time"),
+    monthLockEnabled: integer("month_lock_enabled", { mode: "boolean" })
+      .notNull()
+      .default(true),
+    monthLockGraceDays: integer("month_lock_grace_days", { mode: "number" })
+      .notNull()
+      .default(3),
+    monthLockPinHash: text("month_lock_pin_hash"),
+    monthLockPinSalt: text("month_lock_pin_salt"),
+    monthLockPinFailedAttempts: integer("month_lock_pin_failed_attempts", {
+      mode: "number",
+    })
+      .notNull()
+      .default(0),
+    monthLockPinLockedUntil: integer("month_lock_pin_locked_until", {
+      mode: "number",
+    }),
     updatedAt: integer("updated_at", { mode: "number" })
       .notNull()
       .$defaultFn(() => Date.now()),
@@ -98,6 +120,14 @@ export const habitTrackerSettings = sqliteTable(
     check(
       "habit_settings_interval_open_hours_check",
       sql`${table.defaultIntervalOpenHours} >= 1`
+    ),
+    check(
+      "habit_settings_month_lock_grace_days_check",
+      sql`${table.monthLockGraceDays} >= 0 AND ${table.monthLockGraceDays} <= 14`
+    ),
+    check(
+      "habit_settings_pin_failed_attempts_check",
+      sql`${table.monthLockPinFailedAttempts} >= 0`
     ),
   ]
 );
@@ -226,6 +256,50 @@ export const habitMonthRosters = sqliteTable(
 );
 
 export type HabitMonthRosterRecord = typeof habitMonthRosters.$inferSelect;
+
+/**
+ * Per-month lock override ledger: persists explicit manual locks, timed
+ * temporary unlock windows (`unlocked_until`), and audit unlock counts per
+ * `(user_id, year_month)` so historical consistency stays verifiable without
+ * relying on background cron jobs.
+ */
+export const habitMonthLocks = sqliteTable(
+  "habit_month_locks",
+  {
+    userId: text("user_id")
+      .notNull()
+      .references(() => users.id, { onDelete: "cascade" }),
+    yearMonth: text("year_month").notNull(),
+    status: text("status", { enum: HABIT_MONTH_LOCK_STATUSES })
+      .notNull()
+      .default("locked"),
+    lockedAt: integer("locked_at", { mode: "number" }),
+    unlockedAt: integer("unlocked_at", { mode: "number" }),
+    unlockedUntil: integer("unlocked_until", { mode: "number" }),
+    unlockReason: text("unlock_reason"),
+    unlockCount: integer("unlock_count", { mode: "number" })
+      .notNull()
+      .default(0),
+    updatedAt: integer("updated_at", { mode: "number" })
+      .notNull()
+      .$defaultFn(() => Date.now()),
+  },
+  (table) => [
+    primaryKey({ columns: [table.userId, table.yearMonth] }),
+    index("habit_month_locks_user_month_idx").on(table.userId, table.yearMonth),
+    check(
+      "habit_month_locks_status_check",
+      sql`${table.status} IN ('locked', 'unlocked_override')`
+    ),
+    check(
+      "habit_month_locks_unlock_count_check",
+      sql`${table.unlockCount} >= 0`
+    ),
+  ]
+);
+
+export type HabitMonthLockRecord = typeof habitMonthLocks.$inferSelect;
+export type NewHabitMonthLockRecord = typeof habitMonthLocks.$inferInsert;
 
 export const habitLogs = sqliteTable(
   "habit_logs",

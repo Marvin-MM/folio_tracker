@@ -359,6 +359,7 @@ export class DrizzleAdminRepository implements AdminRepository {
     const outboxCutoffMs = nowMs - 60_000;
     const nowDate = new Date(nowMs);
 
+    // Single pipelined HTTP batch to Turso (1 round-trip instead of 20!)
     const [
       userCounts,
       activeSessionsCount,
@@ -369,7 +370,10 @@ export class DrizzleAdminRepository implements AdminRepository {
       pendingInviteCount,
       habitCounts,
       habitLog7dCounts,
-      circleCounts,
+      activeCirclePairsRows,
+      pendingMonitorReqRows,
+      cycleCommentsRows,
+      cycleReactionsRows,
       reminderStatusRows,
       remindersSent7dCount,
       outboxBacklogCount,
@@ -377,7 +381,7 @@ export class DrizzleAdminRepository implements AdminRepository {
       unreadNotifCount,
       accountProviderRows,
       habitCadenceRows,
-    ] = await Promise.all([
+    ] = await this.database.batch([
       this.database
         .select({
           total: count(),
@@ -410,10 +414,10 @@ export class DrizzleAdminRepository implements AdminRepository {
       this.database
         .select({
           projectId: projectMembers.projectId,
-          members: count(),
         })
         .from(projectMembers)
-        .groupBy(projectMembers.projectId),
+        .groupBy(projectMembers.projectId)
+        .having(sql`count(*) > 1`),
       this.database
         .select({ value: count() })
         .from(projectInvitations)
@@ -436,23 +440,21 @@ export class DrizzleAdminRepository implements AdminRepository {
         })
         .from(habitLogs)
         .where(gte(habitLogs.loggedAt, sevenDaysAgoMs)),
-      Promise.all([
-        this.database
-          .select({ value: count() })
-          .from(habitMonitors)
-          .where(eq(habitMonitors.status, "active")),
-        this.database
-          .select({ value: count() })
-          .from(habitMonitorRequests)
-          .where(
-            and(
-              eq(habitMonitorRequests.status, "pending"),
-              gt(habitMonitorRequests.expiresAt, nowMs)
-            )
-          ),
-        this.database.select({ value: count() }).from(habitComments),
-        this.database.select({ value: count() }).from(habitReactions),
-      ]),
+      this.database
+        .select({ value: count() })
+        .from(habitMonitors)
+        .where(eq(habitMonitors.status, "active")),
+      this.database
+        .select({ value: count() })
+        .from(habitMonitorRequests)
+        .where(
+          and(
+            eq(habitMonitorRequests.status, "pending"),
+            gt(habitMonitorRequests.expiresAt, nowMs)
+          )
+        ),
+      this.database.select({ value: count() }).from(habitComments),
+      this.database.select({ value: count() }).from(habitReactions),
       this.database
         .select({
           status: reminders.status,
@@ -517,9 +519,7 @@ export class DrizzleAdminRepository implements AdminRepository {
       habitCadenceRows.map((row) => [row.cadenceType, Number(row.total)])
     );
 
-    const sharedProjects = sharedProjectRows.filter(
-      (row) => Number(row.members) > 1
-    ).length;
+    const sharedProjects = sharedProjectRows.length;
 
     return {
       users: {
@@ -547,10 +547,10 @@ export class DrizzleAdminRepository implements AdminRepository {
         archivedHabits: Number(h?.archived ?? 0),
         logs7d: Number(hl?.total7d ?? 0),
         lateBackfills7d: Number(hl?.lateBackfills7d ?? 0),
-        activeCirclePairs: Number(circleCounts[0][0]?.value ?? 0),
-        pendingMonitorRequests: Number(circleCounts[1][0]?.value ?? 0),
-        cycleCommentsTotal: Number(circleCounts[2][0]?.value ?? 0),
-        cycleReactionsTotal: Number(circleCounts[3][0]?.value ?? 0),
+        activeCirclePairs: Number(activeCirclePairsRows[0]?.value ?? 0),
+        pendingMonitorRequests: Number(pendingMonitorReqRows[0]?.value ?? 0),
+        cycleCommentsTotal: Number(cycleCommentsRows[0]?.value ?? 0),
+        cycleReactionsTotal: Number(cycleReactionsRows[0]?.value ?? 0),
       },
       delivery: {
         remindersScheduled: reminderByStatus.get("scheduled") ?? 0,
@@ -579,7 +579,8 @@ export class DrizzleAdminRepository implements AdminRepository {
   ): Promise<DailyPlatformMetricPoint[]> {
     const safeDays = Math.min(30, Math.max(7, days));
     const startMs = nowMs - (safeDays - 1) * DAY_MS;
-    const startDate = new Date(startMs - DAY_MS);
+    const lowerBoundMs = startMs - DAY_MS;
+    const startDate = new Date(lowerBoundMs);
 
     const bucketMap = new Map<string, DailyPlatformMetricPoint>();
     const orderedKeys: string[] = [];
@@ -598,61 +599,72 @@ export class DrizzleAdminRepository implements AdminRepository {
       });
     }
 
-    const [recentUsers, recentTasks, recentCompleted, recentLogs, recentSent] =
-      await Promise.all([
+    const userDayExpr = sql<string>`strftime('%Y-%m-%d', ${users.createdAt} / 1000, 'unixepoch')`;
+    const taskCreatedDayExpr = sql<string>`strftime('%Y-%m-%d', ${tasks.createdAt} / 1000, 'unixepoch')`;
+    const taskCompletedDayExpr = sql<string>`strftime('%Y-%m-%d', ${tasks.completedAt} / 1000, 'unixepoch')`;
+    const habitLogDayExpr = sql<string>`strftime('%Y-%m-%d', ${habitLogs.loggedAt} / 1000, 'unixepoch')`;
+    const reminderSentDayExpr = sql<string>`strftime('%Y-%m-%d', ${reminders.sentAt} / 1000, 'unixepoch')`;
+
+    // SQL GROUP BY + single db.batch() returns <= 16 tiny rows per metric
+    // instead of downloading 8,000+ raw habit_logs rows over HTTP!
+    const [userSeries, taskCreatedSeries, taskCompletedSeries, logSeries, sentSeries] =
+      await this.database.batch([
         this.database
-          .select({ createdAt: users.createdAt })
+          .select({ day: userDayExpr, total: count() })
           .from(users)
-          .where(gte(users.createdAt, startDate)),
+          .where(gte(users.createdAt, startDate))
+          .groupBy(userDayExpr),
         this.database
-          .select({ createdAt: tasks.createdAt })
+          .select({ day: taskCreatedDayExpr, total: count() })
           .from(tasks)
-          .where(gte(tasks.createdAt, startMs - DAY_MS)),
+          .where(gte(tasks.createdAt, lowerBoundMs))
+          .groupBy(taskCreatedDayExpr),
         this.database
-          .select({ completedAt: tasks.completedAt })
+          .select({ day: taskCompletedDayExpr, total: count() })
           .from(tasks)
           .where(
             and(
               eq(tasks.status, "done"),
-              gte(tasks.completedAt, startMs - DAY_MS)
+              gte(tasks.completedAt, lowerBoundMs)
             )
-          ),
+          )
+          .groupBy(taskCompletedDayExpr),
         this.database
-          .select({ loggedAt: habitLogs.loggedAt })
+          .select({ day: habitLogDayExpr, total: count() })
           .from(habitLogs)
-          .where(gte(habitLogs.loggedAt, startMs - DAY_MS)),
+          .where(gte(habitLogs.loggedAt, lowerBoundMs))
+          .groupBy(habitLogDayExpr),
         this.database
-          .select({ sentAt: reminders.sentAt })
+          .select({ day: reminderSentDayExpr, total: count() })
           .from(reminders)
           .where(
             and(
               eq(reminders.status, "sent"),
-              gte(reminders.sentAt, startMs - DAY_MS)
+              gte(reminders.sentAt, lowerBoundMs)
             )
-          ),
+          )
+          .groupBy(reminderSentDayExpr),
       ]);
 
-    for (const row of recentUsers) {
-      const bucket = bucketMap.get(formatUtcDateKey(row.createdAt.getTime()));
-      if (bucket) bucket.newUsers += 1;
+    for (const row of userSeries) {
+      const bucket = row.day ? bucketMap.get(row.day) : undefined;
+      if (bucket) bucket.newUsers += Number(row.total);
     }
-    for (const row of recentTasks) {
-      const bucket = bucketMap.get(formatUtcDateKey(row.createdAt));
-      if (bucket) bucket.tasksCreated += 1;
+    for (const row of taskCreatedSeries) {
+      const bucket = row.day ? bucketMap.get(row.day) : undefined;
+      if (bucket) bucket.tasksCreated += Number(row.total);
     }
-    for (const row of recentCompleted) {
-      if (!row.completedAt) continue;
-      const bucket = bucketMap.get(formatUtcDateKey(row.completedAt));
-      if (bucket) bucket.tasksCompleted += 1;
+    for (const row of taskCompletedSeries) {
+      const bucket = row.day ? bucketMap.get(row.day) : undefined;
+      if (bucket) bucket.tasksCompleted += Number(row.total);
     }
-    for (const row of recentLogs) {
-      const bucket = bucketMap.get(formatUtcDateKey(row.loggedAt));
-      if (bucket) bucket.habitLogs += 1;
+    for (const row of logSeries) {
+      const bucket = row.day ? bucketMap.get(row.day) : undefined;
+      if (bucket) bucket.habitLogs += Number(row.total);
     }
-    for (const row of recentSent) {
-      if (!row.sentAt) continue;
-      const bucket = bucketMap.get(formatUtcDateKey(row.sentAt));
-      if (bucket) bucket.remindersSent += 1;
+    for (const row of sentSeries) {
+      const bucket = row.day ? bucketMap.get(row.day) : undefined;
+      if (bucket) bucket.remindersSent += Number(row.total);
     }
 
     return orderedKeys.map((key) => bucketMap.get(key)!);
@@ -696,7 +708,7 @@ export class DrizzleAdminRepository implements AdminRepository {
 
     const whereClause = conditions.length > 0 ? and(...conditions) : undefined;
 
-    const [totalRow, pageRows] = await Promise.all([
+    const [totalRow, pageRows] = await this.database.batch([
       this.database
         .select({ value: count() })
         .from(users)
@@ -738,7 +750,7 @@ export class DrizzleAdminRepository implements AdminRepository {
       noteCounts,
       habitCounts,
       projectCounts,
-    ] = await Promise.all([
+    ] = await this.database.batch([
       this.database
         .select({ userId: accounts.userId, providerId: accounts.providerId })
         .from(accounts)

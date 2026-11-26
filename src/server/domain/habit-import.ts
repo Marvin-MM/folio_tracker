@@ -26,7 +26,8 @@ export interface ParseHistoryOptions {
   todayDateKey?: string;
 }
 
-export const MAX_HISTORY_LOG_ROWS = 20_000;
+export const MAX_HISTORY_LOG_ROWS = 50_000;
+export const MAX_HISTORY_IMPORT_CHUNK_SIZE = 1_500;
 export const MAX_HISTORY_HABIT_TITLES = 500;
 
 const WEEKDAY_HEADER_REGEX =

@@ -25,6 +25,7 @@ export async function GET(request: NextRequest) {
     await requireAdmin();
 
     const params = request.nextUrl.searchParams;
+    const section = params.get("section") ?? "all";
     const query = params.get("q")?.trim() || undefined;
     const rawRole = params.get("role") ?? "all";
     const rawStatus = params.get("status") ?? "all";
@@ -42,6 +43,39 @@ export async function GET(request: NextRequest) {
       ? rawCategory
       : "all";
     const page = Number.isFinite(rawPage) && rawPage >= 1 ? Math.floor(rawPage) : 1;
+
+    if (section === "overview") {
+      const summary = await adminService.getOverviewSummary(14);
+      return NextResponse.json(summary, {
+        status: 200,
+        headers: NO_STORE_HEADERS,
+      });
+    }
+
+    if (section === "users") {
+      const usersSection = await adminService.getUsersDirectorySection({
+        query,
+        roleFilter,
+        statusFilter,
+        page,
+        pageSize: 20,
+      });
+      return NextResponse.json(usersSection, {
+        status: 200,
+        headers: NO_STORE_HEADERS,
+      });
+    }
+
+    if (section === "timeline") {
+      const timelineSection = await adminService.getTimelineSection(
+        timelineCategory,
+        60
+      );
+      return NextResponse.json(timelineSection, {
+        status: 200,
+        headers: NO_STORE_HEADERS,
+      });
+    }
 
     const overview = await adminService.getOverview({
       query,

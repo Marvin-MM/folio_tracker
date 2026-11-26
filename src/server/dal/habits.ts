@@ -16,6 +16,7 @@ import { db, type AppDatabase, type DbExecutor } from "@/server/db";
 import {
   habitImportAliases,
   habitLogs,
+  habitMonthLocks,
   habitMonthRosters,
   habits,
   habitTrackerSettings,
@@ -26,6 +27,8 @@ import {
   type HabitLogRecord,
   type HabitImportAliasRecord,
   type HabitLogStatus,
+  type HabitMonthLockRecord,
+  type HabitMonthLockStatus,
   type HabitRecord,
   type HabitTrackerSettingsRecord,
   type TaskStatus,
@@ -82,6 +85,26 @@ export interface UpdateHabitSettingsRowInput {
   defaultIntervalOpenHours?: number;
   allowReactionsWhenLocked?: boolean;
   eveningCheckinTime?: string | null;
+  monthLockEnabled?: boolean;
+  monthLockGraceDays?: number;
+}
+
+export interface UpsertHabitMonthLockRowInput {
+  userId: string;
+  yearMonth: string;
+  status: HabitMonthLockStatus;
+  lockedAt: number | null;
+  unlockedAt: number | null;
+  unlockedUntil: number | null;
+  unlockReason: string | null;
+  unlockCount: number;
+  updatedAt: number;
+}
+
+export interface HabitMetadataPatch {
+  habitId: string;
+  startDate?: string;
+  isArchived?: boolean;
 }
 
 export interface UpsertHabitLogRowInput {
@@ -145,6 +168,11 @@ export interface HabitRepository {
     patch: UpdateHabitRowInput,
     executor?: DbExecutor
   ): Promise<HabitRecord | null>;
+  updateHabitsMetadataBatch(
+    userId: string,
+    patches: HabitMetadataPatch[],
+    executor?: DbExecutor
+  ): Promise<number>;
   listAliasesForUser(
     userId: string,
     executor?: DbExecutor
@@ -198,6 +226,12 @@ export interface HabitRepository {
     endDateKey: string,
     executor?: DbExecutor
   ): Promise<HabitLogRecord[]>;
+  listLogNotesForRange(
+    userId: string,
+    startDateKey: string,
+    endDateKey: string,
+    executor?: DbExecutor
+  ): Promise<Array<{ habitId: string; dateKey: string; note: string }>>;
   getLogForHabitDay(
     userId: string,
     habitId: string,
@@ -213,6 +247,48 @@ export interface HabitRepository {
     inputs: UpsertHabitLogRowInput[],
     executor?: DbExecutor
   ): Promise<HabitLogRecord[]>;
+  /**
+   * High-throughput pipelined upsert of logs + optional month roster entries
+   * using Drizzle `db.batch()` (1 atomic HTTP round-trip on remote Turso)
+   * without `.returning()` payload bloat.
+   */
+  upsertLogsAndRostersPipelined(
+    inputs: UpsertHabitLogRowInput[],
+    rosterEntries?: Array<{ userId: string; habitId: string; yearMonth: string }>,
+    executor?: DbExecutor
+  ): Promise<number>;
+  getMonthLock(
+    userId: string,
+    yearMonth: string,
+    executor?: DbExecutor
+  ): Promise<HabitMonthLockRecord | null>;
+  listMonthLocksForMonths(
+    userId: string,
+    yearMonths: string[],
+    executor?: DbExecutor
+  ): Promise<HabitMonthLockRecord[]>;
+  upsertMonthLock(
+    input: UpsertHabitMonthLockRowInput,
+    executor?: DbExecutor
+  ): Promise<HabitMonthLockRecord>;
+  updateMonthLockPin(
+    userId: string,
+    input: {
+      pinHash: string | null;
+      pinSalt: string | null;
+      nowMs: number;
+    },
+    executor?: DbExecutor
+  ): Promise<HabitTrackerSettingsRecord>;
+  updatePinFailureState(
+    userId: string,
+    input: {
+      failedAttempts: number;
+      lockedUntil: number | null;
+      nowMs: number;
+    },
+    executor?: DbExecutor
+  ): Promise<void>;
   deleteLogForUser(
     userId: string,
     habitId: string,
@@ -423,6 +499,46 @@ export class DrizzleHabitRepository implements HabitRepository {
       .returning();
 
     return updated ?? null;
+  }
+
+  async updateHabitsMetadataBatch(
+    userId: string,
+    patches: HabitMetadataPatch[],
+    executor: DbExecutor = this.database
+  ): Promise<number> {
+    const actionable = patches.filter(
+      (p) => p.startDate !== undefined || p.isArchived !== undefined
+    );
+    if (actionable.length === 0) return 0;
+
+    const now = Date.now();
+    const buildQuery = (patch: HabitMetadataPatch) =>
+      executor
+        .update(habits)
+        .set({
+          ...(patch.startDate !== undefined ? { startDate: patch.startDate } : {}),
+          ...(patch.isArchived !== undefined ? { isArchived: patch.isArchived } : {}),
+          updatedAt: now,
+        })
+        .where(and(eq(habits.id, patch.habitId), eq(habits.userId, userId)));
+
+    if (executor === this.database) {
+      const statements = actionable.map(buildQuery);
+      const batchChunk = 50;
+      for (let i = 0; i < statements.length; i += batchChunk) {
+        const slice = statements.slice(i, i + batchChunk);
+        const [first, ...rest] = slice;
+        if (first) {
+          await this.database.batch([first, ...rest]);
+        }
+      }
+      return actionable.length;
+    }
+
+    for (const patch of actionable) {
+      await buildQuery(patch);
+    }
+    return actionable.length;
   }
 
   async listAliasesForUser(
@@ -677,6 +793,34 @@ export class DrizzleHabitRepository implements HabitRepository {
       .orderBy(asc(habitLogs.dateKey), asc(habitLogs.id));
   }
 
+  async listLogNotesForRange(
+    userId: string,
+    startDateKey: string,
+    endDateKey: string,
+    executor: DbExecutor = this.database
+  ): Promise<Array<{ habitId: string; dateKey: string; note: string }>> {
+    const rows = await executor
+      .select({
+        habitId: habitLogs.habitId,
+        dateKey: habitLogs.dateKey,
+        note: habitLogs.note,
+      })
+      .from(habitLogs)
+      .where(
+        and(
+          eq(habitLogs.userId, userId),
+          gte(habitLogs.dateKey, startDateKey),
+          lte(habitLogs.dateKey, endDateKey),
+          isNotNull(habitLogs.note)
+        )
+      );
+
+    return rows.filter(
+      (r): r is { habitId: string; dateKey: string; note: string } =>
+        typeof r.note === "string" && r.note.length > 0
+    );
+  }
+
   async getLogForHabitDay(
     userId: string,
     habitId: string,
@@ -770,6 +914,229 @@ export class DrizzleHabitRepository implements HabitRepository {
     }
 
     return saved;
+  }
+
+  async upsertLogsAndRostersPipelined(
+    inputs: UpsertHabitLogRowInput[],
+    rosterEntries: Array<{
+      userId: string;
+      habitId: string;
+      yearMonth: string;
+    }> = [],
+    executor: DbExecutor = this.database
+  ): Promise<number> {
+    if (inputs.length === 0 && rosterEntries.length === 0) return 0;
+
+    // Keep bind variables safely under SQLite's 999 parameter ceiling:
+    // logs: 100 * 8 = 800 bind params; rosters: 200 * 4 = 800 bind params
+    const logChunkSize = 100;
+    const rosterChunkSize = 200;
+    const now = Date.now();
+
+    const uniqueRoster = new Map<
+      string,
+      { userId: string; habitId: string; yearMonth: string }
+    >();
+    for (const entry of rosterEntries) {
+      uniqueRoster.set(`${entry.userId}|${entry.habitId}|${entry.yearMonth}`, entry);
+    }
+    const dedupedRosters = Array.from(uniqueRoster.values());
+
+    const statements = [];
+
+    for (let i = 0; i < inputs.length; i += logChunkSize) {
+      const chunk = inputs.slice(i, i + logChunkSize);
+      statements.push(
+        executor
+          .insert(habitLogs)
+          .values(
+            chunk.map((input) => ({
+              habitId: input.habitId,
+              userId: input.userId,
+              dateKey: input.dateKey,
+              status: input.status,
+              note: input.note ?? null,
+              loggedAt: input.loggedAt,
+              isBackfilledLate: input.isBackfilledLate,
+            }))
+          )
+          .onConflictDoUpdate({
+            target: [habitLogs.habitId, habitLogs.dateKey],
+            set: {
+              status: sql`excluded.status`,
+              note: sql`excluded.note`,
+              loggedAt: sql`excluded.logged_at`,
+              isBackfilledLate: sql`excluded.is_backfilled_late`,
+            },
+            setWhere: eq(habitLogs.userId, chunk[0]!.userId),
+          })
+      );
+    }
+
+    for (let i = 0; i < dedupedRosters.length; i += rosterChunkSize) {
+      const chunk = dedupedRosters.slice(i, i + rosterChunkSize);
+      statements.push(
+        executor
+          .insert(habitMonthRosters)
+          .values(
+            chunk.map((entry) => ({
+              userId: entry.userId,
+              habitId: entry.habitId,
+              yearMonth: entry.yearMonth,
+              createdAt: now,
+            }))
+          )
+          .onConflictDoNothing({
+            target: [
+              habitMonthRosters.userId,
+              habitMonthRosters.habitId,
+              habitMonthRosters.yearMonth,
+            ],
+          })
+      );
+    }
+
+    if (statements.length === 0) return inputs.length;
+
+    if (executor === this.database) {
+      // Single atomic pipelined HTTP batch to Turso (max ~25 statements per batch)
+      const maxStmtsPerBatch = 25;
+      for (let i = 0; i < statements.length; i += maxStmtsPerBatch) {
+        const slice = statements.slice(i, i + maxStmtsPerBatch);
+        const [first, ...rest] = slice;
+        if (first) {
+          await this.database.batch([first, ...rest]);
+        }
+      }
+      return inputs.length;
+    }
+
+    for (const stmt of statements) {
+      await stmt;
+    }
+    return inputs.length;
+  }
+
+  async getMonthLock(
+    userId: string,
+    yearMonth: string,
+    executor: DbExecutor = this.database
+  ): Promise<HabitMonthLockRecord | null> {
+    const [row] = await executor
+      .select()
+      .from(habitMonthLocks)
+      .where(
+        and(
+          eq(habitMonthLocks.userId, userId),
+          eq(habitMonthLocks.yearMonth, yearMonth)
+        )
+      )
+      .limit(1);
+
+    return row ?? null;
+  }
+
+  async listMonthLocksForMonths(
+    userId: string,
+    yearMonths: string[],
+    executor: DbExecutor = this.database
+  ): Promise<HabitMonthLockRecord[]> {
+    const unique = Array.from(new Set(yearMonths.filter(Boolean)));
+    if (unique.length === 0) return [];
+
+    return executor
+      .select()
+      .from(habitMonthLocks)
+      .where(
+        and(
+          eq(habitMonthLocks.userId, userId),
+          inArray(habitMonthLocks.yearMonth, unique)
+        )
+      );
+  }
+
+  async upsertMonthLock(
+    input: UpsertHabitMonthLockRowInput,
+    executor: DbExecutor = this.database
+  ): Promise<HabitMonthLockRecord> {
+    const [saved] = await executor
+      .insert(habitMonthLocks)
+      .values({
+        userId: input.userId,
+        yearMonth: input.yearMonth,
+        status: input.status,
+        lockedAt: input.lockedAt,
+        unlockedAt: input.unlockedAt,
+        unlockedUntil: input.unlockedUntil,
+        unlockReason: input.unlockReason,
+        unlockCount: input.unlockCount,
+        updatedAt: input.updatedAt,
+      })
+      .onConflictDoUpdate({
+        target: [habitMonthLocks.userId, habitMonthLocks.yearMonth],
+        set: {
+          status: input.status,
+          lockedAt: input.lockedAt,
+          unlockedAt: input.unlockedAt,
+          unlockedUntil: input.unlockedUntil,
+          unlockReason: input.unlockReason,
+          unlockCount: input.unlockCount,
+          updatedAt: input.updatedAt,
+        },
+      })
+      .returning();
+
+    if (!saved) {
+      throw new Error("Failed to save habit month lock.");
+    }
+    return saved;
+  }
+
+  async updateMonthLockPin(
+    userId: string,
+    input: {
+      pinHash: string | null;
+      pinSalt: string | null;
+      nowMs: number;
+    },
+    executor: DbExecutor = this.database
+  ): Promise<HabitTrackerSettingsRecord> {
+    await this.getOrCreateSettings(userId, executor);
+    const [updated] = await executor
+      .update(habitTrackerSettings)
+      .set({
+        monthLockPinHash: input.pinHash,
+        monthLockPinSalt: input.pinSalt,
+        monthLockPinFailedAttempts: 0,
+        monthLockPinLockedUntil: null,
+        updatedAt: input.nowMs,
+      })
+      .where(eq(habitTrackerSettings.userId, userId))
+      .returning();
+
+    if (!updated) {
+      throw new Error("Failed to update habit month-lock PIN.");
+    }
+    return updated;
+  }
+
+  async updatePinFailureState(
+    userId: string,
+    input: {
+      failedAttempts: number;
+      lockedUntil: number | null;
+      nowMs: number;
+    },
+    executor: DbExecutor = this.database
+  ): Promise<void> {
+    await executor
+      .update(habitTrackerSettings)
+      .set({
+        monthLockPinFailedAttempts: input.failedAttempts,
+        monthLockPinLockedUntil: input.lockedUntil,
+        updatedAt: input.nowMs,
+      })
+      .where(eq(habitTrackerSettings.userId, userId));
   }
 
   async deleteLogForUser(
