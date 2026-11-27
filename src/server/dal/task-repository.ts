@@ -45,6 +45,8 @@ export interface TaskAuthMetadata {
   assigneeId: string | null;
   habitId: string | null;
   habitDateKey: string | null;
+  operationId: string | null;
+  operationRunId: string | null;
   title: string;
   status: TaskStatus;
   dueAt: number | null;
@@ -58,6 +60,8 @@ export interface CreateTaskRowInput {
   assigneeId?: string | null;
   habitId?: string | null;
   habitDateKey?: string | null;
+  operationId?: string | null;
+  operationRunId?: string | null;
   title: string;
   description?: string | null;
   status?: TaskStatus;
@@ -78,6 +82,8 @@ export interface UpdateTaskRowInput {
   assigneeId?: string | null;
   habitId?: string | null;
   habitDateKey?: string | null;
+  operationId?: string | null;
+  operationRunId?: string | null;
 }
 
 export type TaskScope =
@@ -188,6 +194,8 @@ export class DrizzleTaskRepository implements TaskRepository {
         assigneeId: input.assigneeId ?? null,
         habitId: input.habitId ?? null,
         habitDateKey: input.habitDateKey ?? null,
+        operationId: input.operationId ?? null,
+        operationRunId: input.operationRunId ?? null,
         title: input.title,
         description: input.description ?? null,
         status: input.status ?? "todo",
@@ -222,6 +230,8 @@ export class DrizzleTaskRepository implements TaskRepository {
         assigneeId: tasks.assigneeId,
         habitId: tasks.habitId,
         habitDateKey: tasks.habitDateKey,
+        operationId: tasks.operationId,
+        operationRunId: tasks.operationRunId,
         title: tasks.title,
         status: tasks.status,
         dueAt: tasks.dueAt,

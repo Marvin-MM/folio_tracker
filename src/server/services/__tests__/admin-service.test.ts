@@ -249,10 +249,10 @@ describe("AdminService KPIs, diagnostics, user controls & audited actions", () =
     expect(latestPoint?.tasksCompleted).toBe(1);
     expect(latestPoint?.habitLogs).toBe(1);
 
-    // Verify health schema count reflects all 26 tables
+    // Verify health schema count reflects all 31 tables
     const dbSub = overview.health.subsystems.find((s) => s.key === "database");
     expect(
-      dbSub?.details.some((d) => d.label === "Schema" && d.value.includes("26 tables"))
+      dbSub?.details.some((d) => d.label === "Schema" && d.value.includes("31 tables"))
     ).toBe(true);
 
     // Verify section-scoped endpoints return accurate independent payloads

@@ -11,6 +11,7 @@ import {
 import { ulid } from "ulidx";
 import { users } from "./auth";
 import { habits } from "./habits";
+import { operationRuns, operations } from "./operations";
 
 export const PROJECT_ROLES = ["owner", "editor", "viewer"] as const;
 export type ProjectRole = (typeof PROJECT_ROLES)[number];
@@ -148,6 +149,14 @@ export const tasks = sqliteTable(
       onDelete: "set null",
     }),
     habitDateKey: text("habit_date_key"),
+    operationId: text("operation_id").references(
+      (): AnySQLiteColumn => operations.id,
+      { onDelete: "set null" }
+    ),
+    operationRunId: text("operation_run_id").references(
+      (): AnySQLiteColumn => operationRuns.id,
+      { onDelete: "set null" }
+    ),
     title: text("title").notNull(),
     description: text("description"),
     status: text("status", { enum: TASK_STATUSES }).notNull().default("todo"),
@@ -177,6 +186,8 @@ export const tasks = sqliteTable(
     ),
     index("tasks_assignee_status_idx").on(table.assigneeId, table.status),
     index("tasks_habit_date_idx").on(table.habitId, table.habitDateKey),
+    index("tasks_operation_id_idx").on(table.operationId),
+    index("tasks_operation_run_id_idx").on(table.operationRunId),
     check(
       "tasks_status_check",
       sql`${table.status} IN ('todo', 'in_progress', 'done', 'archived')`

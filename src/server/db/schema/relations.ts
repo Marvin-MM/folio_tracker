@@ -18,6 +18,13 @@ import {
   habitWeeklySnapshots,
 } from "./habits-social";
 import { notifications, pushSubscriptions } from "./notifications";
+import {
+  operationReferenceNotes,
+  operationRuns,
+  operationRunSteps,
+  operations,
+  operationVersions,
+} from "./operations";
 import { reminders } from "./reminders";
 import {
   notes,
@@ -75,6 +82,9 @@ export const usersRelations = relations(users, ({ one, many }) => ({
   habitReactionsAuthored: many(habitReactions, {
     relationName: "habitReactionAuthor",
   }),
+  ownedOperations: many(operations),
+  createdOperationVersions: many(operationVersions),
+  operationRuns: many(operationRuns),
   adminAuditLogs: many(adminAuditLogs),
 }));
 
@@ -110,6 +120,7 @@ export const projectsRelations = relations(projects, ({ one, many }) => ({
   notes: many(notes),
   activities: many(projectActivities),
   linkedHabits: many(habits),
+  operations: many(operations),
 }));
 
 export const projectMembersRelations = relations(projectMembers, ({ one }) => ({
@@ -156,6 +167,14 @@ export const tasksRelations = relations(tasks, ({ one, many }) => ({
     fields: [tasks.habitId],
     references: [habits.id],
   }),
+  operation: one(operations, {
+    fields: [tasks.operationId],
+    references: [operations.id],
+  }),
+  operationRun: one(operationRuns, {
+    fields: [tasks.operationRunId],
+    references: [operationRuns.id],
+  }),
   reminders: many(reminders),
 }));
 
@@ -169,6 +188,7 @@ export const notesRelations = relations(notes, ({ one, many }) => ({
     references: [projects.id],
   }),
   reminders: many(reminders),
+  operationLinks: many(operationReferenceNotes),
 }));
 
 export const projectActivitiesRelations = relations(
@@ -240,6 +260,7 @@ export const habitsRelations = relations(habits, ({ one, many }) => ({
   importAliases: many(habitImportAliases),
   monthRosters: many(habitMonthRosters),
   linkedTasks: many(tasks),
+  linkedOperations: many(operations),
   monitorItems: many(habitMonitorItems),
   comments: many(habitComments),
 }));
@@ -390,3 +411,89 @@ export const habitReactionsRelations = relations(habitReactions, ({ one }) => ({
     relationName: "habitReactionAuthor",
   }),
 }));
+
+export const operationsRelations = relations(operations, ({ one, many }) => ({
+  owner: one(users, {
+    fields: [operations.ownerId],
+    references: [users.id],
+  }),
+  project: one(projects, {
+    fields: [operations.projectId],
+    references: [projects.id],
+  }),
+  linkedHabit: one(habits, {
+    fields: [operations.linkedHabitId],
+    references: [habits.id],
+  }),
+  forkedFrom: one(operations, {
+    fields: [operations.forkedFromId],
+    references: [operations.id],
+    relationName: "operationForks",
+  }),
+  forks: many(operations, {
+    relationName: "operationForks",
+  }),
+  versions: many(operationVersions),
+  referenceNotes: many(operationReferenceNotes),
+  runs: many(operationRuns),
+  linkedTasks: many(tasks),
+}));
+
+export const operationVersionsRelations = relations(
+  operationVersions,
+  ({ one, many }) => ({
+    operation: one(operations, {
+      fields: [operationVersions.operationId],
+      references: [operations.id],
+    }),
+    createdBy: one(users, {
+      fields: [operationVersions.createdById],
+      references: [users.id],
+    }),
+    runs: many(operationRuns),
+  })
+);
+
+export const operationReferenceNotesRelations = relations(
+  operationReferenceNotes,
+  ({ one }) => ({
+    operation: one(operations, {
+      fields: [operationReferenceNotes.operationId],
+      references: [operations.id],
+    }),
+    note: one(notes, {
+      fields: [operationReferenceNotes.noteId],
+      references: [notes.id],
+    }),
+  })
+);
+
+export const operationRunsRelations = relations(
+  operationRuns,
+  ({ one, many }) => ({
+    operation: one(operations, {
+      fields: [operationRuns.operationId],
+      references: [operations.id],
+    }),
+    version: one(operationVersions, {
+      fields: [operationRuns.versionId],
+      references: [operationVersions.id],
+    }),
+    runner: one(users, {
+      fields: [operationRuns.runnerId],
+      references: [users.id],
+    }),
+    steps: many(operationRunSteps),
+    linkedTasks: many(tasks),
+  })
+);
+
+export const operationRunStepsRelations = relations(
+  operationRunSteps,
+  ({ one }) => ({
+    run: one(operationRuns, {
+      fields: [operationRunSteps.runId],
+      references: [operationRuns.id],
+    }),
+  })
+);

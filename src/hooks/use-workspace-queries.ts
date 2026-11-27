@@ -24,6 +24,11 @@ import type {
 } from "@/server/services/habit-service";
 import type { ProjectWorkspaceData } from "@/server/services/project-service";
 import type {
+  OperationDetailPayload,
+  OperationsHubPayload,
+} from "@/server/services/operation-service";
+import type { OperationRunDetailPayload } from "@/server/services/operation-run-service";
+import type {
   AdminOverviewPayload,
   AdminOverviewSummaryPayload,
   AdminTimelineSectionPayload,
@@ -372,6 +377,63 @@ export function useAdminTimelineQuery(
   });
 }
 
+export function useOperationsHubQuery(
+  userId: string,
+  params: { includeArchived?: boolean; domain?: string; query?: string } = {},
+  initialData?: OperationsHubPayload,
+  initialDataUpdatedAt?: number
+) {
+  const search = new URLSearchParams();
+  if (params.includeArchived) search.set("archived", "true");
+  if (params.domain && params.domain !== "all") search.set("domain", params.domain);
+  if (params.query?.trim()) search.set("q", params.query.trim());
+  const filterKey = search.toString() || "default";
+  const endpoint = search.toString()
+    ? `/api/workspace/operations?${search.toString()}`
+    : "/api/workspace/operations";
+
+  return useQuery({
+    queryKey: workspaceQueryKeys.operationsHub(userId, filterKey),
+    queryFn: ({ signal }) =>
+      fetchWorkspaceJson<OperationsHubPayload>(endpoint, signal),
+    ...(initialData ? { initialData, initialDataUpdatedAt } : {}),
+  });
+}
+
+export function useOperationDetailQuery(
+  userId: string,
+  operationId: string,
+  initialData?: OperationDetailPayload,
+  initialDataUpdatedAt?: number
+) {
+  return useQuery({
+    queryKey: workspaceQueryKeys.operationDetail(userId, operationId),
+    queryFn: ({ signal }) =>
+      fetchWorkspaceJson<OperationDetailPayload>(
+        `/api/workspace/operations/${encodeURIComponent(operationId)}`,
+        signal
+      ),
+    ...(initialData ? { initialData, initialDataUpdatedAt } : {}),
+  });
+}
+
+export function useOperationRunQuery(
+  userId: string,
+  runId: string,
+  initialData?: OperationRunDetailPayload,
+  initialDataUpdatedAt?: number
+) {
+  return useQuery({
+    queryKey: workspaceQueryKeys.operationRun(userId, runId),
+    queryFn: ({ signal }) =>
+      fetchWorkspaceJson<OperationRunDetailPayload>(
+        `/api/workspace/operations/runs/${encodeURIComponent(runId)}`,
+        signal
+      ),
+    ...(initialData ? { initialData, initialDataUpdatedAt } : {}),
+  });
+}
+
 export function usePrefetchWorkspaceView(userId: string) {
   const queryClient = useQueryClient();
 
@@ -519,6 +581,18 @@ export function usePrefetchWorkspaceView(userId: string) {
     });
   }, [queryClient, userId]);
 
+  const prefetchOperationsHub = useCallback(() => {
+    void queryClient.prefetchQuery({
+      queryKey: workspaceQueryKeys.operationsHub(userId, "default"),
+      queryFn: ({ signal }) =>
+        fetchWorkspaceJson<OperationsHubPayload>(
+          "/api/workspace/operations",
+          signal
+        ),
+      staleTime: 30_000,
+    });
+  }, [queryClient, userId]);
+
   return {
     prefetchTasks,
     prefetchNotes,
@@ -527,6 +601,7 @@ export function usePrefetchWorkspaceView(userId: string) {
     prefetchHabitsMonth,
     prefetchHabitsCircle,
     prefetchFriendHabits,
+    prefetchOperationsHub,
     prefetchAdminOverview,
     prefetchAdminUsers,
     prefetchAdminTimeline,

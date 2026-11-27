@@ -6,6 +6,7 @@ import { formatInTimeZone } from "date-fns-tz";
 import {
   Archive,
   Bell,
+  BookOpenCheck,
   Calendar,
   CheckSquare,
   Clock,
@@ -512,6 +513,39 @@ function TaskInspectorForm({
           />
         </div>
       </div>
+
+      {item.task.operationRunId || item.task.operationId ? (
+        <div className="flex flex-wrap items-center justify-between gap-2 rounded-md border border-border bg-muted/60 px-2.5 py-2">
+          <div className="flex items-center gap-2 text-xs text-foreground">
+            <BookOpenCheck className="size-3.5 shrink-0 text-reminder" />
+            <span>
+              {item.task.operationRunId
+                ? "Linked to an Operation Run"
+                : "Scheduled from an Operation Blueprint"}
+            </span>
+          </div>
+          <Button
+            asChild
+            size="xs"
+            variant="outline"
+            className="h-7 gap-1 px-2 text-[11px]"
+          >
+            <Link
+              href={
+                item.task.operationRunId
+                  ? `/app/operations/runs/${item.task.operationRunId}`
+                  : `/app/operations/${item.task.operationId}?action=start`
+              }
+              onClick={onClose}
+            >
+              <span>
+                {item.task.operationRunId ? "Resume run" : "Start run"}
+              </span>
+              <ExternalLink className="size-3" />
+            </Link>
+          </Button>
+        </div>
+      ) : null}
 
       <div className="space-y-1.5">
         <Label htmlFor="inspector-task-desc" className="text-[11px] text-muted-foreground">

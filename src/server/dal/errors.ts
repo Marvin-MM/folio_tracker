@@ -1,3 +1,5 @@
+import type { SecretScanFinding } from "@/server/domain/operations/secret-scanner";
+
 export class DalError extends Error {
   readonly statusCode: number;
   readonly code: string;
@@ -78,6 +80,26 @@ export class NotFoundError extends DalError {
 export class ConflictError extends DalError {
   constructor(message = "Resource conflict detected.") {
     super(message, "CONFLICT", 409);
+  }
+}
+
+export class ConcurrencyConflictError extends DalError {
+  constructor(
+    message = "This blueprint was modified elsewhere. Refresh to load the latest version before saving."
+  ) {
+    super(message, "CONCURRENCY_CONFLICT", 409);
+  }
+}
+
+export class SecretScanBlockedError extends DalError {
+  readonly findings: SecretScanFinding[];
+
+  constructor(
+    findings: SecretScanFinding[],
+    message = "Publishing blocked: remove detected secrets or convert them into Secret variables first."
+  ) {
+    super(message, "SECRET_SCAN_BLOCKED", 422);
+    this.findings = findings;
   }
 }
 

@@ -2,6 +2,8 @@
 
 import { removePushSubscriptionAction } from "@/actions/notifications";
 import { authClient } from "@/lib/auth-client";
+import { clearAllEphemeralRunSecrets } from "@/lib/ephemeral-run-secrets";
+import { clearAllOfflineRunCaches } from "@/lib/offline-run-store";
 import { clearBrowserQueryClient } from "@/lib/query/query-client";
 import { useWorkspaceUIStore } from "@/stores/workspace-ui-store";
 
@@ -61,9 +63,13 @@ export async function performSecureSignOut(
 ): Promise<void> {
   await cleanupBrowserPushSubscription(options.revokePushOnServer ?? true);
   clearBrowserQueryClient();
+  clearAllOfflineRunCaches();
+  clearAllEphemeralRunSecrets();
   useWorkspaceUIStore.getState().resetSessionState();
   await authClient.signOut();
   clearBrowserQueryClient();
+  clearAllOfflineRunCaches();
+  clearAllEphemeralRunSecrets();
 }
 
 /**

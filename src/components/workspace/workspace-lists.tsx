@@ -16,6 +16,7 @@ import {
   ArrowDown,
   ArrowUp,
   Bell,
+  BookOpenCheck,
   CalendarCheck2,
   CalendarRange,
   Check,
@@ -419,6 +420,24 @@ export function TaskListView({
         </div>
 
         <div className="flex shrink-0 items-center gap-1.5">
+          {task.operationRunId ? (
+            <Link
+              href={`/app/operations/runs/${task.operationRunId}`}
+              className="inline-flex items-center gap-1 rounded border border-collab/35 bg-collab/10 px-1.5 py-0.5 text-[10px] font-medium text-collab transition-colors hover:bg-collab/20"
+            >
+              <BookOpenCheck className="size-2.5 shrink-0" />
+              <span>Run</span>
+            </Link>
+          ) : task.operationId ? (
+            <Link
+              href={`/app/operations/${task.operationId}?action=start`}
+              className="inline-flex items-center gap-1 rounded border border-reminder/35 bg-reminder/10 px-1.5 py-0.5 text-[10px] font-medium text-reminder transition-colors hover:bg-reminder/20"
+            >
+              <BookOpenCheck className="size-2.5 shrink-0" />
+              <span>Operation</span>
+            </Link>
+          ) : null}
+
           {task.priority !== "none" && !isDone ? (
             <Badge
               variant="outline"

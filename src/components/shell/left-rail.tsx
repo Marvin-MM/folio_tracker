@@ -5,6 +5,7 @@ import Link from "next/link";
 import { usePathname } from "next/navigation";
 import {
   Bell,
+  BookOpenCheck,
   CalendarCheck2,
   CalendarRange,
   ChevronsLeft,
@@ -111,6 +112,8 @@ export function LeftRail({
       prefetch.prefetchHabitsMonth(
         getCurrentYearMonthForTimezone(user.timezone)
       );
+    } else if (href === "/app/operations") {
+      prefetch.prefetchOperationsHub();
     }
   };
 
@@ -150,6 +153,12 @@ export function LeftRail({
       label: "Habits",
       icon: Repeat2,
       count: summary.habitsCount,
+    },
+    {
+      href: "/app/operations",
+      label: "Operations",
+      icon: BookOpenCheck,
+      count: summary.operationsCount,
     },
   ] as const;
 

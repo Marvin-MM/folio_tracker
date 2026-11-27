@@ -18,6 +18,7 @@ import {
   habits,
   notes,
   notifications,
+  operations,
   projectMembers,
   projects,
   reminders,
@@ -47,6 +48,7 @@ export interface SidebarSummary {
   remindersCount: number;
   notesCount: number;
   habitsCount: number;
+  operationsCount: number;
   unreadNotificationsCount: number;
   projects: SidebarProjectItem[];
 }
@@ -95,6 +97,7 @@ export class DrizzleWorkspaceRepository implements WorkspaceRepository {
       reminderRows,
       noteRows,
       habitRows,
+      operationRows,
       unreadRows,
       memberProjects,
     ] = await Promise.all([
@@ -147,6 +150,12 @@ export class DrizzleWorkspaceRepository implements WorkspaceRepository {
         .select({ value: count() })
         .from(habits)
         .where(and(eq(habits.userId, userId), eq(habits.isArchived, false))),
+      this.database
+        .select({ value: count() })
+        .from(operations)
+        .where(
+          and(eq(operations.ownerId, userId), eq(operations.isArchived, false))
+        ),
       cachedUnread === null
         ? this.database
             .select({ value: count() })
@@ -253,6 +262,7 @@ export class DrizzleWorkspaceRepository implements WorkspaceRepository {
       remindersCount: reminderRows[0]?.value ?? 0,
       notesCount: noteRows[0]?.value ?? 0,
       habitsCount: habitRows[0]?.value ?? 0,
+      operationsCount: operationRows[0]?.value ?? 0,
       unreadNotificationsCount: unreadCount,
       projects: memberProjects.map((project) => ({
         ...project,

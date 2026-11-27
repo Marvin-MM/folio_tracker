@@ -1,6 +1,6 @@
 # Folio — System Architecture
 
-> Visual-first architectural blueprint for **Folio**: a personal-first productivity workspace unifying **Tasks**, **Markdown Notes**, **Durable Timed Reminders**, **Shared Projects (RBAC)**, **Real-Calendar Habit Tracking with Bidirectional Task Sync**, an **Accountability Circle** with dynamic per-monitor review windows, **Unified Chronological Activity Timelines**, and an **Env-Synced Operations Admin Portal**.
+> Visual-first architectural blueprint for **Folio**: a personal-first productivity workspace unifying **Tasks**, **Markdown Notes**, **Durable Timed Reminders**, **Shared Projects (RBAC)**, **Real-Calendar Habit Tracking with Bidirectional Task Sync**, an **Accountability Circle** with dynamic per-monitor review windows, **Universal Operations Blueprints & Guided Execution Runs**, **Unified Chronological Activity Timelines**, and an **Env-Synced Operations Admin Portal**.
 
 ---
 
@@ -22,20 +22,20 @@ flowchart TB
   end
 
   subgraph App["Next.js App Router (force-dynamic)"]
-    RSC["RSC Pages & Layouts (/, /login, /offline, /app/*, /app/admin, /app/habits*, /invite/*)"]
+    RSC["RSC Pages & Layouts (/, /login, /offline, /app/*, /app/operations*, /app/admin, /app/habits*, /invite/*)"]
     ACT["Server Actions (src/actions/*) — Zod -> Auth -> Service -> Targeted Query Invalidation"]
-    API["Route Handlers (/api/workspace/* x9 incl. chunked import-history, /api/admin/overview?section=..., /api/auth, /api/inngest, /api/health, /api/reminders, /api/notifications)"]
+    API["Route Handlers (/api/workspace/* x12 incl. operations & chunked import-history, /api/admin/overview?section=..., /api/auth, /api/inngest, /api/health, /api/reminders, /api/notifications)"]
   end
 
   subgraph Core["SOLID Domain Core (src/server/)"]
-    DOM["Pure Domain Engines (src/server/domain/) — Habit Analytics, Month-Lock Policy, Import & Comment Windows"]
-    SVC["12 Domain Services — Task, Note, Reminder, Project, Invite, Habit, Monitor, Comment, Account, Notification, Preferences, Admin"]
-    DAL["Scoped DAL & Direct-Turso Guards (React.cache requireSession/requireAdmin, assertProjectRole, canUserReadEntity, HabitMonitorReadDal, withDbRetry)"]
+    DOM["Pure Domain Engines (src/server/domain/) — Operations (Interpolator, Secret Scanner, Domain Presets), Habit Analytics, Month-Lock Policy, Import & Comment Windows"]
+    SVC["14 Domain Services — Task, Note, Reminder, Project, Invite, Habit, Monitor, Comment, Operation, OperationRun, Account, Notification, Preferences, Admin"]
+    DAL["Scoped DAL & Direct-Turso Guards (React.cache requireSession/requireAdmin, assertOperationAccess, assertProjectRole, canUserReadEntity, HabitMonitorReadDal, withDbRetry)"]
     PRV["Provider Ports (EventBus, NotificationChannel x3, RateLimiter x6, UnreadCounterCache, AuthEmailDispatcher)"]
   end
 
   subgraph Infra["Persistence & External Services"]
-    DB[("Turso / libSQL (SQLite WAL) — 26 Tables, ULID PKs, Cascading FKs, CHECK & Partial Unique Indexes")]
+    DB[("Turso / libSQL (SQLite WAL) — 31 Tables, ULID PKs, Cascading FKs, CHECK & Partial Unique Indexes")]
     RDS[("Redis 3-Tier (Upstash -> ioredis -> Memory) — RateLimiter & UnreadCounter ONLY")]
     ING["Inngest v4 Durable Engine — 13 Functions, Plan-Safe Concurrency (default 5, crons 1) & LIMIT 200 Crons"]
     EXT["External Delivery & Identity (Resend, VAPID Web Push, Google OAuth)"]
@@ -70,7 +70,7 @@ flowchart TB
 
 ## 2. SOLID Clean Layering & Dependency Direction
 
-Dependencies point strictly inward toward `src/server/db/` and `src/server/domain/`. Pure domain calculations (`habit-analytics.ts`, `habit-month-lock.ts`, `comment-window-policy.ts`, `habit-import.ts`, `habit-evolution.ts`) have zero DB or network imports, while every service accepts repositories and providers via constructor injection (DIP) so all 28 Vitest suites (117 tests) execute offline against ephemeral SQLite databases.
+Dependencies point strictly inward toward `src/server/db/` and `src/server/domain/`. Pure domain calculations (`operations/*`, `habit-analytics.ts`, `habit-month-lock.ts`, `comment-window-policy.ts`, `habit-import.ts`, `habit-evolution.ts`) have zero DB or network imports, while every service accepts repositories and providers via constructor injection (DIP) so all 31 Vitest suites (131 tests) execute offline against ephemeral SQLite databases.
 
 ```mermaid
 flowchart LR
@@ -86,16 +86,16 @@ flowchart LR
 
   subgraph Domain["Pure Domain & Service Orchestration"]
     PURE["src/server/domain/ (habit-analytics, comment-window-policy — Zero I/O)"]
-    SVCS["src/server/services/ (12 ACID Services + Env Admin Role Sync — Zero Network I/O inside tx)"]
+    SVCS["src/server/services/ (14 ACID Services + Env Admin Role Sync — Zero Network I/O inside tx)"]
   end
 
   subgraph DataAndPorts["Data Access & Provider Ports"]
-    DALS["src/server/dal/ (Scoped Repos, Auth/Admin Guards, Zero-Leak HabitMonitorReadDal)"]
+    DALS["src/server/dal/ (Scoped Repos, Auth/Admin/Operation Guards, Zero-Leak HabitMonitorReadDal)"]
     PORTS["src/server/providers/ (EventBus, NotificationChannel, RateLimiter, UnreadCounterCache, AuthEmail)"]
   end
 
   subgraph Foundations["Schema & Concrete Adapters"]
-    SCHEMA["src/server/db/ (26 Drizzle Tables, Relations, WAL Client, withDbRetry)"]
+    SCHEMA["src/server/db/ (31 Drizzle Tables, Relations, WAL Client, withDbRetry)"]
     ADAPT["External Adapters (Inngest v4, Resend, web-push, Upstash / ioredis / InMemory)"]
   end
 
@@ -123,7 +123,7 @@ flowchart LR
 
 ---
 
-## 3. Unified Entity-Relationship Model (26 Tables)
+## 3. Unified Entity-Relationship Model (31 Tables)
 
 All primary keys are sortable ULIDs (`ulidx`), all timestamps are UTC Unix epoch milliseconds (`integer`) paired with explicit IANA timezone strings and calendar date keys (`YYYY-MM-DD`), and referential integrity is enforced by SQLite/Turso (`PRAGMA foreign_keys = ON`, `CHECK` constraints, partial unique indexes, and cascading deletes).
 
@@ -426,6 +426,63 @@ erDiagram
   users ||--o{ habit_reactions : "reacts"
 ```
 
+### 3C. Universal Operations Blueprints, Immutable Versions & Execution Runs (5 Tables)
+
+Anchored to `users`, `projects`, `habits`, `notes`, and `tasks(operation_id, operation_run_id)` with `ON DELETE SET NULL` safety so deleting an operation never orphans or breaks tasks.
+
+```mermaid
+erDiagram
+  operations {
+    text id PK "ULID"
+    text owner_id FK "CASCADE -> users"
+    text project_id FK "nullable SET NULL -> projects"
+    text linked_habit_id FK "nullable SET NULL -> habits"
+    text slug UK
+    text domain "general..study"
+    text visibility "private | unlisted | public"
+    text unlisted_token_hash UK "nullable SHA-256 hex"
+    integer current_version "CHECK >= 1"
+    integer edit_version "Optimistic lock >= 1"
+    integer review_cycle_days "nullable >= 1"
+    integer last_verified_at "nullable UTC ms"
+  }
+  operation_versions {
+    text id PK "ULID"
+    text operation_id FK "CASCADE -> operations"
+    integer version_number "UNIQUE(operation_id, version_number)"
+    text variables_schema_json
+    text prerequisites_json
+    text steps_snapshot_json
+    text change_summary
+  }
+  operation_reference_notes {
+    text operation_id PK "FK CASCADE -> operations"
+    text note_id PK "FK CASCADE -> notes"
+  }
+  operation_runs {
+    text id PK "ULID"
+    text operation_id FK "CASCADE -> operations"
+    text version_id FK "Pinned CASCADE -> operation_versions"
+    text runner_id FK "CASCADE -> users"
+    text status "in_progress | completed | abandoned"
+    text variables_values_json "Non-secret values ONLY"
+    text prerequisites_checked_json
+  }
+  operation_run_steps {
+    text id PK "ULID"
+    text run_id FK "CASCADE -> operation_runs"
+    text step_key "UNIQUE(run_id, step_key)"
+    text status "pending | done | skipped | blocked"
+    text note "nullable <= 500 chars"
+  }
+
+  operations ||--o{ operation_versions : "immutable snapshots"
+  operations ||--o{ operation_reference_notes : "links notes"
+  operations ||--o{ operation_runs : "executes"
+  operation_versions ||--o{ operation_runs : "pins"
+  operation_runs ||--o{ operation_run_steps : "tracks"
+```
+
 **Schema Guardrails:**
 - **Zero Polymorphic FK Drift:** `reminders` enforces `CHECK ((task_id IS NOT NULL AND note_id IS NULL) OR (task_id IS NULL AND note_id IS NOT NULL))` for clean cascading deletes.
 - **Self-Monitoring & Ledger Uniqueness:** `habit_monitors` enforces `CHECK (owner_id != monitor_user_id)` and `UNIQUE(owner_id, monitor_user_id)`; `habit_logs` enforces `UNIQUE(habit_id, date_key)`; `habit_weekly_snapshots` enforces `UNIQUE(owner_id, cycle_key)`.
@@ -669,7 +726,7 @@ Folio enforces a strict client-state split so navigating across Inbox, Today, Up
 ```mermaid
 flowchart TB
   subgraph Push["Shared-Device Sign-Out, Cache Wipe & Web Push Hygiene"]
-    SO["performSecureSignOut()"] --> CacheWipe["clearBrowserQueryClient() + useWorkspaceUIStore.resetSessionState()"]
+    SO["performSecureSignOut()"] --> CacheWipe["clearBrowserQueryClient() + clearAllOfflineRunCaches() + clearAllEphemeralRunSecrets() + resetSessionState()"]
     CacheWipe --> SWCheck["navigator.serviceWorker.ready -> pushManager.getSubscription()"]
     SWCheck --> DelServer["removePushSubscriptionAction() — DELETE WHERE user_id=? AND endpoint=?"]
     DelServer --> Unsub["subscription.unsubscribe()"]

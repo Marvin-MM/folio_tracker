@@ -10,6 +10,7 @@ export type WorkspaceInvalidationDomain =
   | "projects"
   | "habits"
   | "circle"
+  | "operations"
   | "notifications"
   | "sidebar"
   | "admin"
@@ -69,6 +70,14 @@ export const workspaceQueryKeys = {
     ["workspace", userId, "admin", "users", filterKey] as const,
   adminTimeline: (userId: string, category: string) =>
     ["workspace", userId, "admin", "timeline", category] as const,
+  operationsRoot: (userId: string) =>
+    ["workspace", userId, "operations"] as const,
+  operationsHub: (userId: string, filterKey = "default") =>
+    ["workspace", userId, "operations", "hub", filterKey] as const,
+  operationDetail: (userId: string, operationId: string) =>
+    ["workspace", userId, "operations", "detail", operationId] as const,
+  operationRun: (userId: string, runId: string) =>
+    ["workspace", userId, "operations", "run", runId] as const,
 };
 
 /**
@@ -171,6 +180,14 @@ export async function invalidateWorkspaceDomains(
         })
       );
     }
+  }
+
+  if (uniqueDomains.has("operations")) {
+    invalidations.push(
+      queryClient.invalidateQueries({
+        queryKey: workspaceQueryKeys.operationsRoot(userId),
+      })
+    );
   }
 
   if (uniqueDomains.has("admin")) {

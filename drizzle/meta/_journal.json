@@ -57,6 +57,13 @@
       "when": 1795731258413,
       "tag": "0007_habit_month_locks",
       "breakpoints": true
+    },
+    {
+      "idx": 8,
+      "version": "6",
+      "when": 1795765287955,
+      "tag": "0008_operations_phase_1",
+      "breakpoints": true
     }
   ]
 }

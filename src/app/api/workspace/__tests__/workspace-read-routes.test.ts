@@ -143,6 +143,7 @@ describe("withWorkspaceAuth (GET /api/workspace/* security boundary)", () => {
       notesCount: 0,
       remindersCount: 0,
       habitsCount: 0,
+      operationsCount: 0,
       unreadNotificationsCount: 0,
       projects: [],
     });

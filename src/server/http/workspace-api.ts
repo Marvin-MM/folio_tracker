@@ -2,11 +2,13 @@ import { NextResponse } from "next/server";
 import { requireSession, type AuthenticatedContext } from "@/server/dal/auth-guard";
 import {
   CommentWindowClosedError,
+  ConcurrencyConflictError,
   ConflictError,
   ForbiddenError,
   MonthLockedError,
   NotFoundError,
   RateLimitError,
+  SecretScanBlockedError,
   UnauthorizedError,
   ValidationError,
 } from "@/server/dal/errors";
@@ -66,6 +68,22 @@ export async function withWorkspaceAuth(
     }
     if (error instanceof NotFoundError) {
       return workspaceErrorJson(error.code, error.message, 404);
+    }
+    if (error instanceof ConcurrencyConflictError) {
+      return workspaceErrorJson(error.code, error.message, 409);
+    }
+    if (error instanceof SecretScanBlockedError) {
+      return NextResponse.json(
+        {
+          ok: false,
+          error: {
+            code: error.code,
+            message: error.message,
+            findings: error.findings,
+          },
+        },
+        { status: 422, headers: PRIVATE_NO_STORE_HEADERS }
+      );
     }
     if (error instanceof ConflictError) {
       return workspaceErrorJson(error.code, error.message, 409);
