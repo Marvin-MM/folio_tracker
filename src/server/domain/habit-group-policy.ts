@@ -2,6 +2,7 @@ import {
   addDaysToDateKey,
   getDayOfWeekFromDateKey,
   isValidDateKey,
+  isValidTimeHHmm,
 } from "@/server/domain/habit-analytics";
 
 export interface GroupWeek {
@@ -45,4 +46,77 @@ export function parseGroupCycleKey(
   if (week.periodStartDate > todayDateKey) return null;
 
   return week;
+}
+
+export function isWithinQuietHours(
+  localHHmm: string,
+  quietStart: string,
+  quietEnd: string
+): boolean {
+  if (
+    !isValidTimeHHmm(localHHmm) ||
+    !isValidTimeHHmm(quietStart) ||
+    !isValidTimeHHmm(quietEnd)
+  ) {
+    return false;
+  }
+  if (quietStart === quietEnd) return false;
+
+  const minutes = (value: string) => {
+    const [hour, minute] = value.split(":").map(Number);
+    return (hour ?? 0) * 60 + (minute ?? 0);
+  };
+  const current = minutes(localHHmm);
+  const start = minutes(quietStart);
+  const end = minutes(quietEnd);
+
+  // Overnight range, e.g. 21:00 -> 08:00.
+  if (start > end) return current >= start || current < end;
+  return current >= start && current < end;
+}
+
+export interface StreakRiskInput {
+  currentStreak: number;
+  minStreak: number;
+  scheduledToday: boolean;
+  todayStatus: "done" | "missed" | "skipped" | null;
+  localHour: number;
+  startHour: number;
+}
+
+export type StreakRiskReason = "unlogged" | "missed" | null;
+
+/**
+ * Duolingo-style signal: only protect an established streak, and only once the
+ * owner's local day is late enough that an unlogged scheduled habit is
+ * genuinely at risk. A logged `missed` mark is an immediate rallying signal.
+ * `skipped` is a planned rest day and never triggers a nudge.
+ */
+export function evaluateStreakRisk(input: StreakRiskInput): {
+  atRisk: boolean;
+  reason: StreakRiskReason;
+} {
+  if (input.currentStreak < Math.max(1, input.minStreak)) {
+    return { atRisk: false, reason: null };
+  }
+  if (!input.scheduledToday) return { atRisk: false, reason: null };
+  if (input.todayStatus === "done" || input.todayStatus === "skipped") {
+    return { atRisk: false, reason: null };
+  }
+  if (input.todayStatus === "missed") {
+    return { atRisk: true, reason: "missed" };
+  }
+  if (input.localHour < input.startHour) {
+    return { atRisk: false, reason: null };
+  }
+  return { atRisk: true, reason: "unlogged" };
+}
+
+export function formatStreakPhrase(
+  streak: number,
+  unit: "days" | "weeks"
+): string {
+  const value = Math.max(0, streak);
+  // Adjectival form: "4-day streak", not "4-days streak".
+  return `${value}-${unit === "weeks" ? "week" : "day"}`;
 }

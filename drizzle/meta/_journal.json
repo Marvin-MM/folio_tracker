@@ -71,6 +71,13 @@
       "when": 1795780238787,
       "tag": "0009_habit_group_reviews",
       "breakpoints": true
+    },
+    {
+      "idx": 10,
+      "version": "6",
+      "when": 1795782064323,
+      "tag": "0010_partner_nudge_settings",
+      "breakpoints": true
     }
   ]
 }

@@ -101,6 +101,11 @@ const updateHabitSettingsSchema = z.object({
   defaultIntervalOpenHours: z.number().int().min(1).max(168).optional(),
   allowReactionsWhenLocked: z.boolean().optional(),
   eveningCheckinTime: optionalTimeSchema,
+  partnerNudgesEnabled: z.boolean().optional(),
+  partnerNudgeStartHour: z.number().int().min(0).max(23).optional(),
+  partnerNudgeMinStreak: z.number().int().min(1).max(365).optional(),
+  nudgeQuietHoursStart: timeHHmmSchema.optional(),
+  nudgeQuietHoursEnd: timeHHmmSchema.optional(),
   monthLockEnabled: z.boolean().optional(),
   monthLockGraceDays: z.number().int().min(0).max(14).optional(),
 });

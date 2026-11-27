@@ -144,6 +144,11 @@ export interface UpdateHabitSettingsInput {
   defaultIntervalOpenHours?: number;
   allowReactionsWhenLocked?: boolean;
   eveningCheckinTime?: string | null;
+  partnerNudgesEnabled?: boolean;
+  partnerNudgeStartHour?: number;
+  partnerNudgeMinStreak?: number;
+  nudgeQuietHoursStart?: string;
+  nudgeQuietHoursEnd?: string;
   monthLockEnabled?: boolean;
   monthLockGraceDays?: number;
 }
@@ -1461,6 +1466,50 @@ export class HabitService {
         input.eveningCheckinTime,
         "Evening check-in time"
       );
+    }
+
+    if (input.partnerNudgesEnabled !== undefined) {
+      patch.partnerNudgesEnabled = input.partnerNudgesEnabled;
+    }
+
+    if (input.partnerNudgeStartHour !== undefined) {
+      if (
+        !Number.isInteger(input.partnerNudgeStartHour) ||
+        input.partnerNudgeStartHour < 0 ||
+        input.partnerNudgeStartHour > 23
+      ) {
+        throw new ValidationError("Partner nudge start hour must be 0–23.");
+      }
+      patch.partnerNudgeStartHour = input.partnerNudgeStartHour;
+    }
+
+    if (input.partnerNudgeMinStreak !== undefined) {
+      if (
+        !Number.isInteger(input.partnerNudgeMinStreak) ||
+        input.partnerNudgeMinStreak < 1 ||
+        input.partnerNudgeMinStreak > 365
+      ) {
+        throw new ValidationError("Partner nudge minimum streak must be 1–365.");
+      }
+      patch.partnerNudgeMinStreak = input.partnerNudgeMinStreak;
+    }
+
+    if (input.nudgeQuietHoursStart !== undefined) {
+      const start = normalizeTimeOrNull(
+        input.nudgeQuietHoursStart,
+        "Quiet hours start"
+      );
+      if (!start) throw new ValidationError("Quiet hours start is required.");
+      patch.nudgeQuietHoursStart = start;
+    }
+
+    if (input.nudgeQuietHoursEnd !== undefined) {
+      const end = normalizeTimeOrNull(
+        input.nudgeQuietHoursEnd,
+        "Quiet hours end"
+      );
+      if (!end) throw new ValidationError("Quiet hours end is required.");
+      patch.nudgeQuietHoursEnd = end;
     }
 
     if (input.monthLockEnabled !== undefined) {

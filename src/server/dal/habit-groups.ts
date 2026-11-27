@@ -11,6 +11,7 @@ import {
   habitGroupReviews,
   habitGroups,
   habitGroupSharedHabits,
+  habitTrackerSettings,
   habits,
   users,
   type HabitGroupMemberRecord,
@@ -18,6 +19,7 @@ import {
   type HabitGroupReviewRecord,
   type HabitGroupRole,
   type HabitRecord,
+  type HabitTrackerSettingsRecord,
 } from "@/server/db/schema";
 
 export interface GroupSummary extends HabitGroupRecord {
@@ -53,6 +55,24 @@ export interface GroupSharedHabit {
 
 export interface GroupReviewWithAuthor extends HabitGroupReviewRecord {
   authorName: string;
+}
+
+export interface GroupNudgeRecipient {
+  userId: string;
+  name: string;
+  timezone: string;
+  settings: HabitTrackerSettingsRecord;
+}
+
+export interface GroupNudgeCandidate {
+  groupId: string;
+  groupName: string;
+  memberUserId: string;
+  memberName: string;
+  memberTimezone: string;
+  memberSettings: HabitTrackerSettingsRecord;
+  recipients: GroupNudgeRecipient[];
+  sharedHabits: GroupSharedHabit[];
 }
 
 export interface CreateGroupRowInput {
@@ -169,10 +189,20 @@ export interface HabitGroupRepository {
     input: { groupId: string; actorId: string; habitId: string },
     executor?: DbExecutor
   ): Promise<boolean>;
+  isHabitSharedWithGroup(
+    groupId: string,
+    habitId: string,
+    executor?: DbExecutor
+  ): Promise<boolean>;
   upsertReview(
     input: UpsertGroupReviewRowInput,
     executor?: DbExecutor
   ): Promise<HabitGroupReviewRecord>;
+  listActiveMemberCandidatesPage(
+    limit: number,
+    offset: number,
+    executor?: DbExecutor
+  ): Promise<GroupNudgeCandidate[]>;
 }
 
 export function maskEmail(email: string): string {
@@ -776,6 +806,26 @@ export class DrizzleHabitGroupRepository implements HabitGroupRepository {
     return deleted.length > 0;
   }
 
+  async isHabitSharedWithGroup(
+    groupId: string,
+    habitId: string,
+    executor: DbExecutor = this.database
+  ): Promise<boolean> {
+    // Delivery-time revocation check: a queued nudge must not fire after the
+    // owner unshares the habit between scan and dispatch.
+    const [shared] = await executor
+      .select({ habitId: habitGroupSharedHabits.habitId })
+      .from(habitGroupSharedHabits)
+      .where(
+        and(
+          eq(habitGroupSharedHabits.groupId, groupId),
+          eq(habitGroupSharedHabits.habitId, habitId)
+        )
+      )
+      .limit(1);
+    return Boolean(shared);
+  }
+
   async upsertReview(
     input: UpsertGroupReviewRowInput,
     executor: DbExecutor = this.database
@@ -817,6 +867,177 @@ export class DrizzleHabitGroupRepository implements HabitGroupRepository {
       .returning();
     if (!review) throw new Error("Failed to save group review.");
     return review;
+  }
+  /** One row per active (group, member) pair for the hourly nudge scanner. */
+  async listActiveMemberCandidatesPage(
+    limit: number,
+    offset: number,
+    executor: DbExecutor = this.database
+  ): Promise<GroupNudgeCandidate[]> {
+    const memberRows = await executor
+      .select()
+      .from(habitGroupMembers)
+      .where(eq(habitGroupMembers.status, "active"))
+      .orderBy(asc(habitGroupMembers.groupId), asc(habitGroupMembers.userId))
+      .limit(limit)
+      .offset(offset);
+    if (memberRows.length === 0) return [];
+
+    const groupIds = Array.from(new Set(memberRows.map((m) => m.groupId)));
+
+    const [groupRows, allGroupMembers, sharedRows] = await Promise.all([
+      executor.select().from(habitGroups).where(inArray(habitGroups.id, groupIds)),
+      executor
+        .select()
+        .from(habitGroupMembers)
+        .where(
+          and(
+            inArray(habitGroupMembers.groupId, groupIds),
+            eq(habitGroupMembers.status, "active")
+          )
+        ),
+      this.listSharedHabitsForGroupIds(groupIds, executor),
+    ]);
+
+    // Recipients come from every active member of each page's groups, not just
+    // the members on the current page. Query the union so large groups don't
+    // silently drop recipients that span a LIMIT/OFFSET boundary.
+    const allUserIds = Array.from(
+      new Set(allGroupMembers.map((member) => member.userId))
+    );
+    const [userRows, settingsRows] =
+      allUserIds.length > 0
+        ? await Promise.all([
+            executor.select().from(users).where(inArray(users.id, allUserIds)),
+            executor
+              .select()
+              .from(habitTrackerSettings)
+              .where(inArray(habitTrackerSettings.userId, allUserIds)),
+          ])
+        : [[], []];
+
+    const groupMap = new Map(groupRows.map((g) => [g.id, g]));
+    const userMap = new Map(userRows.map((u) => [u.id, u]));
+    const settingsMap = new Map(settingsRows.map((s) => [s.userId, s]));
+    const membersByGroup = new Map<string, string[]>();
+    for (const member of allGroupMembers) {
+      const list = membersByGroup.get(member.groupId) ?? [];
+      list.push(member.userId);
+      membersByGroup.set(member.groupId, list);
+    }
+    const sharedByGroup = new Map<string, GroupSharedHabit[]>();
+    for (const shared of sharedRows) {
+      const list = sharedByGroup.get(shared.groupId) ?? [];
+      list.push(shared);
+      sharedByGroup.set(shared.groupId, list);
+    }
+
+    const nowMs = Date.now();
+    const fallbackSettings = (userId: string): HabitTrackerSettingsRecord => ({
+      userId,
+      weekStartsOn: 1,
+      defaultCommentMode: "weekly_window",
+      defaultWindowStartDay: 6,
+      defaultWindowStartTime: "00:00",
+      defaultWindowEndDay: 0,
+      defaultWindowEndTime: "23:59",
+      defaultIntervalDays: null,
+      defaultIntervalAnchorDate: null,
+      defaultIntervalOpenHours: 24,
+      allowReactionsWhenLocked: true,
+      eveningCheckinTime: null,
+      partnerNudgesEnabled: false,
+      partnerNudgeStartHour: 18,
+      partnerNudgeMinStreak: 2,
+      nudgeQuietHoursStart: "21:00",
+      nudgeQuietHoursEnd: "08:00",
+      monthLockEnabled: true,
+      monthLockGraceDays: 3,
+      monthLockPinHash: null,
+      monthLockPinSalt: null,
+      monthLockPinFailedAttempts: 0,
+      monthLockPinLockedUntil: null,
+      updatedAt: nowMs,
+    });
+
+    return memberRows.flatMap((member): GroupNudgeCandidate[] => {
+      const group = groupMap.get(member.groupId);
+      const user = userMap.get(member.userId);
+      if (!group || !user) return [];
+
+      const recipients: GroupNudgeRecipient[] = (
+        membersByGroup.get(group.id) ?? []
+      )
+        .filter((id) => id !== member.userId)
+        .flatMap((id) => {
+          const recipient = userMap.get(id);
+          if (!recipient) return [];
+          return [
+            {
+              userId: id,
+              name: recipient.name,
+              timezone: recipient.timezone || "UTC",
+              settings: settingsMap.get(id) ?? fallbackSettings(id),
+            },
+          ];
+        });
+
+      return [
+        {
+          groupId: group.id,
+          groupName: group.name,
+          memberUserId: member.userId,
+          memberName: user.name,
+          memberTimezone: user.timezone || "UTC",
+          memberSettings:
+            settingsMap.get(member.userId) ?? fallbackSettings(member.userId),
+          recipients,
+          sharedHabits: sharedByGroup.get(group.id) ?? [],
+        },
+      ];
+    });
+  }
+
+  private async listSharedHabitsForGroupIds(
+    groupIds: string[],
+    executor: DbExecutor
+  ): Promise<GroupSharedHabit[]> {
+    if (groupIds.length === 0) return [];
+    const rows = await executor
+      .select({
+        groupId: habitGroupSharedHabits.groupId,
+        habitId: habitGroupSharedHabits.habitId,
+        sharedBy: habitGroupSharedHabits.sharedBy,
+        createdAt: habitGroupSharedHabits.createdAt,
+        title: habits.title,
+        ownerId: habits.userId,
+        cadenceType: habits.cadenceType,
+        scheduledDaysJson: habits.scheduledDaysJson,
+        weeklyTargetCount: habits.weeklyTargetCount,
+        startDate: habits.startDate,
+        ownerName: users.name,
+      })
+      .from(habitGroupSharedHabits)
+      .innerJoin(habits, eq(habitGroupSharedHabits.habitId, habits.id))
+      .innerJoin(users, eq(habits.userId, users.id))
+      .where(inArray(habitGroupSharedHabits.groupId, groupIds));
+
+    const activeRows = await executor
+      .select({
+        groupId: habitGroupMembers.groupId,
+        userId: habitGroupMembers.userId,
+      })
+      .from(habitGroupMembers)
+      .where(
+        and(
+          inArray(habitGroupMembers.groupId, groupIds),
+          eq(habitGroupMembers.status, "active")
+        )
+      );
+    const activeSet = new Set(
+      activeRows.map((row) => `${row.groupId}:${row.userId}`)
+    );
+    return rows.filter((row) => activeSet.has(`${row.groupId}:${row.ownerId}`));
   }
 }
 

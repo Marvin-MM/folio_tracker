@@ -54,6 +54,17 @@ function getDeepLink(notif: NotificationRecord): string {
       : "/app/habits/groups";
   }
   if (
+    notif.entityType === "habit_streak_risk" ||
+    notif.type === "habit.streak_risk"
+  ) {
+    // Streak nudges use `habit-streak-risk:${groupId}:...` as their shared
+    // entity id; the second segment is the group to deep-link back to.
+    const groupId = entityId?.split(":")[1];
+    return groupId
+      ? `/app/habits/groups/${encodeURIComponent(groupId)}`
+      : "/app/habits/groups";
+  }
+  if (
     notif.entityType === "habit_group_review" ||
     notif.type === "habit.group_review_posted"
   ) {

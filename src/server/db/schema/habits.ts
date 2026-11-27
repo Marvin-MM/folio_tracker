@@ -76,6 +76,29 @@ export const habitTrackerSettings = sqliteTable(
       .notNull()
       .default(true),
     eveningCheckinTime: text("evening_checkin_time"),
+    /** Master switch for partner streak-risk nudges from accountability groups. */
+    partnerNudgesEnabled: integer("partner_nudges_enabled", { mode: "boolean" })
+      .notNull()
+      .default(false),
+    /** Local hour (0-23) from which an unlogged streak is considered at risk. */
+    partnerNudgeStartHour: integer("partner_nudge_start_hour", {
+      mode: "number",
+    })
+      .notNull()
+      .default(18),
+    /** Minimum current streak worth protecting before partners are nudged. */
+    partnerNudgeMinStreak: integer("partner_nudge_min_streak", {
+      mode: "number",
+    })
+      .notNull()
+      .default(2),
+    /** Recipient quiet hours (HH:mm, inclusive start / exclusive end). */
+    nudgeQuietHoursStart: text("nudge_quiet_hours_start")
+      .notNull()
+      .default("21:00"),
+    nudgeQuietHoursEnd: text("nudge_quiet_hours_end")
+      .notNull()
+      .default("08:00"),
     monthLockEnabled: integer("month_lock_enabled", { mode: "boolean" })
       .notNull()
       .default(true),
@@ -120,6 +143,14 @@ export const habitTrackerSettings = sqliteTable(
     check(
       "habit_settings_interval_open_hours_check",
       sql`${table.defaultIntervalOpenHours} >= 1`
+    ),
+    check(
+      "habit_settings_partner_nudge_start_hour_check",
+      sql`${table.partnerNudgeStartHour} >= 0 AND ${table.partnerNudgeStartHour} <= 23`
+    ),
+    check(
+      "habit_settings_partner_nudge_min_streak_check",
+      sql`${table.partnerNudgeMinStreak} >= 1 AND ${table.partnerNudgeMinStreak} <= 365`
     ),
     check(
       "habit_settings_month_lock_grace_days_check",

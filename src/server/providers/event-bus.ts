@@ -113,6 +113,27 @@ export type AppDomainEvent =
     }
   | {
       id?: string;
+      name: "app/habit.streak_at_risk";
+      data: {
+        groupId: string;
+        groupName: string;
+        ownerId: string;
+        ownerName: string;
+        ownerTimezone: string;
+        recipientId: string;
+        recipientName: string;
+        recipientTimezone: string;
+        habitId: string;
+        habitTitle: string;
+        dateKey: string;
+        currentStreak: number;
+        streakUnit: "days" | "weeks";
+        reason: "unlogged" | "missed";
+        dedupKey: string;
+      };
+    }
+  | {
+      id?: string;
       name: "app/habit.comment_posted";
       data: {
         commentId: string;

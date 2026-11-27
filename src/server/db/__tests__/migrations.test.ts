@@ -18,7 +18,7 @@ describe("Drizzle migrations integrity", () => {
     const journalPath = path.resolve(process.cwd(), "drizzle/meta/_journal.json");
     const journal = JSON.parse(readFileSync(journalPath, "utf8")) as DrizzleJournal;
 
-    expect(journal.entries.length).toBeGreaterThanOrEqual(10);
+    expect(journal.entries.length).toBeGreaterThanOrEqual(11);
 
     for (let i = 1; i < journal.entries.length; i += 1) {
       const prev = journal.entries[i - 1]!;
@@ -52,6 +52,25 @@ describe("Drizzle migrations integrity", () => {
       expect(tableNames).toContain("habit_group_shared_habits");
       expect(tableNames).toContain("habit_group_reviews");
       expect(tableNames).toHaveLength(30);
+    } finally {
+      client.close();
+    }
+  });
+
+  it("defaults partner streak nudges to opt-in off in the committed schema", async () => {
+    const client = createClient({ url: ":memory:" });
+    try {
+      const db = drizzle(client);
+      await migrate(db, {
+        migrationsFolder: path.resolve(process.cwd(), "drizzle"),
+      });
+
+      const tableRes = await client.execute(
+        "SELECT sql FROM sqlite_master WHERE type='table' AND name='habit_tracker_settings'",
+      );
+      const schemaSql = String(tableRes.rows[0]?.sql ?? "");
+      expect(schemaSql).toContain("partner_nudges_enabled");
+      expect(schemaSql).toContain("partner_nudges_enabled` integer DEFAULT false NOT NULL");
     } finally {
       client.close();
     }
