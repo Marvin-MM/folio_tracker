@@ -3,10 +3,7 @@ import { notFound } from "next/navigation";
 import { DayPageClient } from "@/components/habits/day-page-client";
 import { isFeatureEnabled } from "@/config/features";
 import { requireSession } from "@/server/dal/auth-guard";
-import {
-  getLocalDateKey,
-  isValidDateKey,
-} from "@/server/domain/habit-analytics";
+import { isValidDateKey } from "@/server/domain/habit-analytics";
 import { habitService } from "@/server/services/habit-service";
 
 export const dynamic = "force-dynamic";
@@ -27,7 +24,7 @@ export default async function DayPage({ params }: DayPageProps) {
 
   const { user } = await requireSession();
   const timezone = user.timezone || "UTC";
-  if (date > getLocalDateKey(Date.now(), timezone)) {
+  if (date > habitService.getTodayDateKey(timezone)) {
     notFound();
   }
 

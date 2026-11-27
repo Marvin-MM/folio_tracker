@@ -108,11 +108,10 @@ describe("Phase C day workspace and lazy day entries", () => {
       rollups: true,
       missReasons: true,
     });
-    expect(workspace.spendingModuleAvailable).toBe(false);
-    expect(workspace.rollups.unavailableAdapters).toEqual([
-      "numeric log values",
-      "money module",
-    ]);
+    expect(workspace.rollups).toEqual({
+      habitRate: { day: null, month: null },
+      runsThisWeek: null,
+    });
     expect(await dayEntryRows(user.id)).toHaveLength(0);
 
     await expect(
@@ -247,5 +246,64 @@ describe("Phase C day workspace and lazy day entries", () => {
     expect(workspace.highlights?.misses).toEqual([
       { habitId: missed.id, title: "Missed habit", reason: "work" },
     ]);
+  });
+
+  it("counts runs logged across a month boundary in the same week", async () => {
+    const user = await createUser();
+    const run = await habitSvc.createHabit(user.id, "UTC", {
+      title: "Morning Run",
+      cadenceType: "weekly_target",
+      weeklyTargetCount: 2,
+      startDate: "2026-10-01",
+    });
+    await conn.db.insert(habitLogs).values([
+      {
+        userId: user.id,
+        habitId: run.id,
+        dateKey: "2026-10-31",
+        status: "done",
+        loggedAt: FIXED_NOW,
+      },
+      {
+        userId: user.id,
+        habitId: run.id,
+        dateKey: "2026-11-01",
+        status: "done",
+        loggedAt: FIXED_NOW,
+      },
+    ]);
+
+    const workspace = await habitSvc.getDayWorkspace(
+      user.id,
+      "UTC",
+      "2026-11-01"
+    );
+    expect(workspace.rollups.runsThisWeek).toEqual({ done: 2, target: 2 });
+  });
+
+  it("tolerates malformed excuse-range habit ids JSON", async () => {
+    const user = await createUser();
+    const habit = await habitSvc.createHabit(user.id, "UTC", {
+      title: "Corrupt excuse range",
+      startDate: "2026-11-01",
+    });
+    await conn.db.insert(habitExcuseRanges).values({
+      userId: user.id,
+      startDate: "2026-11-17",
+      endDate: "2026-11-17",
+      reason: "travel",
+      habitIdsJson: "{not-json",
+      createdAt: FIXED_NOW,
+      updatedAt: FIXED_NOW,
+    });
+
+    const workspace = await habitSvc.getDayWorkspace(
+      user.id,
+      "UTC",
+      "2026-11-17"
+    );
+    expect(
+      workspace.checklist.find((item) => item.habit.id === habit.id)?.status
+    ).not.toBe("skipped");
   });
 });

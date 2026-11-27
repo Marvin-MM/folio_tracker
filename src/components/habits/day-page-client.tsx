@@ -1,6 +1,12 @@
 "use client";
 
-import { useEffect, useRef, useState, useTransition, type TouchEvent } from "react";
+import {
+  useOptimistic,
+  useRef,
+  useState,
+  useTransition,
+  type TouchEvent,
+} from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import {
@@ -53,6 +59,14 @@ function formatPercent(value: number | null): string {
   return value === null ? "—" : `${Math.round(value * 100)}%`;
 }
 
+/** Returns `undefined` for invalid input so callers never save NaN. */
+function parseSleepHours(raw: string): number | null | undefined {
+  if (raw.trim() === "") return null;
+  const value = Number(raw);
+  if (!Number.isFinite(value) || value < 0 || value > 24) return undefined;
+  return value;
+}
+
 type EntryPatch = Parameters<typeof saveDayEntryAction>[0];
 
 export function DayPageClient({
@@ -64,8 +78,30 @@ export function DayPageClient({
   const invalidate = useInvalidateWorkspace();
   const [, startTransition] = useTransition();
   const workspace = initialWorkspace;
-  const [items, setItems] = useState(workspace.checklist);
-  const [energy, setEnergy] = useState(workspace.dayEntry?.energy ?? 5);
+  // Checklist status is optimistic for the duration of the server action.
+  // Server props are the source of truth; no effect copies them into state.
+  const [items, applyOptimisticStatus] = useOptimistic(
+    workspace.checklist,
+    (
+      current,
+      action: { habitId: string; status: HabitLogStatus | null }
+    ) =>
+      current.map((item) =>
+        item.habit.id === action.habitId
+          ? {
+              ...item,
+              status: action.status,
+              log:
+                action.status && item.log
+                  ? { ...item.log, status: action.status }
+                  : null,
+            }
+          : item
+      )
+  );
+  const [energy, setEnergy] = useState<number | null>(
+    workspace.dayEntry?.energy ?? null
+  );
   const [sleepHours, setSleepHours] = useState(
     workspace.dayEntry?.sleepHours === null ||
       workspace.dayEntry?.sleepHours === undefined
@@ -78,12 +114,8 @@ export function DayPageClient({
   );
   const touchStart = useRef<{ x: number; y: number } | null>(null);
 
-  useEffect(() => {
-    setItems(workspace.checklist);
-  }, [workspace.checklist]);
-
   const refresh = async () => {
-    await invalidate(["habits", "today"]);
+    await invalidate(["habits", "today", "tasks", "sidebar"]);
     router.refresh();
   };
 
@@ -99,6 +131,15 @@ export function DayPageClient({
     });
   };
 
+  const commitSleep = () => {
+    const parsed = parseSleepHours(sleepHours);
+    if (parsed === undefined) {
+      toast.error("Sleep hours must be between 0 and 24.");
+      return;
+    }
+    saveEntry({ dateKey: workspace.dateKey, sleepHours: parsed });
+  };
+
   const toggleStatus = (
     habitId: string,
     currentStatus: HabitLogStatus | null,
@@ -106,21 +147,8 @@ export function DayPageClient({
   ) => {
     const resolved: HabitLogStatus | null =
       currentStatus === nextStatus ? null : nextStatus;
-    setItems((previous) =>
-      previous.map((item) =>
-        item.habit.id === habitId
-          ? {
-              ...item,
-              status: resolved,
-              log:
-                resolved && item.log
-                  ? { ...item.log, status: resolved }
-                  : null,
-            }
-          : item
-      )
-    );
     startTransition(async () => {
+      applyOptimisticStatus({ habitId, status: resolved });
       const result = await logHabitDayAction({
         habitId,
         dateKey: workspace.dateKey,
@@ -371,7 +399,9 @@ export function DayPageClient({
               <div className="space-y-1">
                 <div className="flex items-center justify-between text-[11px]">
                   <label htmlFor="day-energy">Energy</label>
-                  <span className="mono-tabular">{energy}/10</span>
+                  <span className="mono-tabular">
+                    {energy === null ? "—" : `${energy}/10`}
+                  </span>
                 </div>
                 <input
                   id="day-energy"
@@ -379,12 +409,18 @@ export function DayPageClient({
                   min={1}
                   max={10}
                   step={1}
-                  value={energy}
+                  value={energy ?? 5}
                   onChange={(event) => setEnergy(Number(event.target.value))}
-                  onPointerUp={() =>
-                    saveEntry({ dateKey: workspace.dateKey, energy })
-                  }
-                  onKeyUp={() => saveEntry({ dateKey: workspace.dateKey, energy })}
+                  onPointerUp={() => {
+                    if (energy !== null) {
+                      saveEntry({ dateKey: workspace.dateKey, energy });
+                    }
+                  }}
+                  onKeyUp={() => {
+                    if (energy !== null) {
+                      saveEntry({ dateKey: workspace.dateKey, energy });
+                    }
+                  }}
                   className="w-full accent-primary"
                 />
               </div>
@@ -405,23 +441,12 @@ export function DayPageClient({
                     value={sleepHours}
                     placeholder="Optional"
                     onChange={(event) => setSleepHours(event.target.value)}
-                    onBlur={() =>
-                      saveEntry({
-                        dateKey: workspace.dateKey,
-                        sleepHours: sleepHours === "" ? null : Number(sleepHours),
-                      })
-                    }
+                    onBlur={commitSleep}
                     className="min-h-9 w-full rounded border border-border bg-background px-2 text-xs md:min-h-8"
                   />
                   <button
                     type="button"
-                    onClick={() =>
-                      saveEntry({
-                        dateKey: workspace.dateKey,
-                        energy,
-                        sleepHours: sleepHours === "" ? null : Number(sleepHours),
-                      })
-                    }
+                    onClick={commitSleep}
                     className={BUTTON_CLASS}
                   >
                     Save
@@ -563,20 +588,6 @@ export function DayPageClient({
                 {rollups.runsThisWeek.target === null
                   ? ""
                   : ` / ${rollups.runsThisWeek.target} target`}
-              </p>
-            ) : null}
-
-            {rollups.unavailableAdapters.length > 0 ? (
-              <p className="mt-2 text-[10px] text-muted-foreground">
-                Computed totals awaiting adapters:{" "}
-                {rollups.unavailableAdapters.join(", ")}.
-              </p>
-            ) : null}
-
-            {workspace.spendingModuleAvailable ? (
-              <p className="mt-2 text-[11px] text-muted-foreground">
-                Spending: {rollups.daySpending ?? "—"} today ·{" "}
-                {rollups.monthSpending ?? "—"} this month
               </p>
             ) : null}
           </section>

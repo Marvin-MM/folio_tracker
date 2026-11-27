@@ -1,21 +1,17 @@
 import { fromZonedTime } from "date-fns-tz";
 import { ulid } from "ulidx";
 import { isFeatureEnabled } from "@/config/features";
-import { REVIEW_PROMPTS, type ReviewPrompt } from "@/data/reviewPrompts";
+import { getJournalPromptForDate } from "@/server/domain/journal-prompts";
 import {
-  computeRollupVersion,
-  createRollupPartitionKey,
-  type RollupValueEvent,
+  computeHabitRate,
+  computeRunsThisWeek,
   getMonthRangeForDate,
   getWeekRangeForDate,
-  selectGoalTotal,
-  selectHabitRate,
-  selectHoursForRange,
-  selectLoanBalance,
-  selectRunsThisWeek,
-  selectSpending,
-} from "@/domain/rollups";
-import { getJournalPromptForDate } from "@/domain/journal-prompts";
+} from "@/server/domain/rollups";
+import {
+  REVIEW_PROMPTS,
+  type ReviewPrompt,
+} from "@/server/domain/review-prompts";
 import {
   generatePositionBetween,
   MAX_POSITION_KEY_LENGTH,
@@ -181,6 +177,30 @@ function isSavedViewNameConflict(error: unknown): boolean {
     current = (current as Error & { cause?: unknown }).cause;
   }
   return false;
+}
+
+/**
+ * Excuse ranges persisted before validation may contain malformed JSON. Such
+ * rows are ignored entirely: treating them as `[]` would mean “all habits” and
+ * silently excuse the whole day.
+ */
+function parseHabitIdsJson(value: string): string[] | null {
+  try {
+    const parsed: unknown = JSON.parse(value);
+    return Array.isArray(parsed)
+      ? parsed.filter((id): id is string => typeof id === "string")
+      : null;
+  } catch {
+    return null;
+  }
+}
+
+function enumerateDateKeys(start: string, end: string): string[] {
+  const keys: string[] = [];
+  for (let cursor = start; cursor <= end; cursor = addDaysToDateKey(cursor, 1)) {
+    keys.push(cursor);
+  }
+  return keys;
 }
 
 export interface CreateHabitInput {
@@ -407,16 +427,8 @@ export interface DayChecklistViewItem {
 }
 
 export interface DayRollupsView {
-  goalTotal: number | null;
-  hoursThisWeek: number | null;
-  hoursThisMonth: number | null;
-  runsThisWeek: { done: number; target: number | null } | null;
-  daySpending: number | null;
-  monthSpending: number | null;
-  loanBalance: number | null;
   habitRate: { day: number | null; month: number | null };
-  /** Adapters not present in the current schema; never persisted as fake zeros. */
-  unavailableAdapters: string[];
+  runsThisWeek: { done: number; target: number | null } | null;
 }
 
 export interface DayWorkspace {
@@ -429,7 +441,6 @@ export interface DayWorkspace {
   journalPrompt: ReviewPrompt | null;
   highlights: DayHighlights | null;
   rollups: DayRollupsView;
-  spendingModuleAvailable: boolean;
   previousDateKey: string;
   nextDateKey: string | null;
   flags: {
@@ -1065,6 +1076,11 @@ export class HabitService {
     return { todayDateKey, items };
   }
 
+  /** Server-owned clock helper: pages never read `Date.now()` directly. */
+  getTodayDateKey(timezone: string): string {
+    return getLocalDateKey(this.now(), timezone);
+  }
+
   /**
    * Phase C day workspace. Reads only: a `habit_day_entries` row is created by
    * `saveDayEntry` only after the user actually edits a field.
@@ -1083,36 +1099,42 @@ export class HabitService {
     }
 
     const monthRange = getMonthRangeForDate(dateKey);
-    const [monthWorkspace, dayEntry, excuseRanges, monthLogs] =
-      await Promise.all([
-        this.getMonthWorkspace(userId, timezone, {
-          yearMonth: dateKey.slice(0, 7),
-        }),
-        this.habits.getDayEntry(userId, dateKey),
-        this.habits.listExcuseRangesForRange(
-          userId,
-          monthRange.start,
-          monthRange.end
-        ),
-        this.habits.listLogsForRange(
-          userId,
-          monthRange.start,
-          monthRange.end
-        ),
-      ]);
+    const [monthWorkspace, dayEntry] = await Promise.all([
+      this.getMonthWorkspace(userId, timezone, {
+        yearMonth: dateKey.slice(0, 7),
+      }),
+      this.habits.getDayEntry(userId, dateKey),
+    ]);
 
     const calendar = monthWorkspace.analytics.calendar;
     const weekStartsOn: 0 | 1 = monthWorkspace.settings.weekStartsOn === 0 ? 0 : 1;
+    const weekRange = getWeekRangeForDate(dateKey, weekStartsOn);
+    // Weeks can straddle months and streaks look backwards, so read a broad
+    // window instead of only the viewed month. Rollups are recomputed from
+    // these logs on each request — no stale partition cache.
+    const lookbackStart = addDaysToDateKey(dateKey, -120);
+    const lookbackEnd = monthRange.end > weekRange.end ? monthRange.end : weekRange.end;
+    const [excuseRanges, lookbackLogs] = await Promise.all([
+      this.habits.listExcuseRangesForRange(userId, lookbackStart, lookbackEnd),
+      this.habits.listLogsForRange(userId, lookbackStart, lookbackEnd),
+    ]);
+    const parsedExcuseRanges = excuseRanges.flatMap((range) => {
+      const habitIds = parseHabitIdsJson(range.habitIdsJson);
+      if (habitIds === null) return [];
+      return [
+        {
+          startDate: range.startDate,
+          endDate: range.endDate,
+          habitIds,
+          deletedAt: range.deletedAt,
+        },
+      ];
+    });
     const effectiveLogs = applyEffectiveStatusesToLogs({
       habits: monthWorkspace.habits,
-      dateKeys: calendar.days.map((day) => day.dateKey),
-      logs: monthLogs,
-      excuseRanges: excuseRanges.map((range) => ({
-        startDate: range.startDate,
-        endDate: range.endDate,
-        habitIds: JSON.parse(range.habitIdsJson) as string[],
-        deletedAt: range.deletedAt,
-      })),
+      dateKeys: enumerateDateKeys(lookbackStart, lookbackEnd),
+      logs: lookbackLogs,
+      excuseRanges: parsedExcuseRanges,
     });
 
     const effectiveAnalytics = computeHabitMonthAnalytics({
@@ -1131,121 +1153,40 @@ export class HabitService {
       habits: monthWorkspace.habits,
       dateKey,
       logs: rawLogsForDate,
-      excuseRanges: excuseRanges.map((range) => ({
-        startDate: range.startDate,
-        endDate: range.endDate,
-        habitIds: JSON.parse(range.habitIdsJson) as string[],
-        deletedAt: range.deletedAt,
-      })),
+      excuseRanges: parsedExcuseRanges,
     }).map((item) => ({
       ...item,
       habit: item.habit as HabitRecord,
       log: item.log as HabitLogRecord | null,
     }));
 
-    const rollupVersion = computeRollupVersion([
-      ...effectiveLogs.map((log) => ({ loggedAt: log.loggedAt })),
-      ...(dayEntry ? [{ updatedAt: dayEntry.updatedAt }] : []),
-    ]);
-    const weekRange = getWeekRangeForDate(dateKey, weekStartsOn);
+    const rollupsEnabled = isFeatureEnabled("rollups");
     const dayRange = { start: dateKey, end: dateKey };
-    const noNumericValues: RollupValueEvent[] = [];
-    const noMoneyValues: RollupValueEvent[] = [];
-
-    // Adapters for numeric log values and the money module do not exist in the
-    // current schema. Selectors are exercised with empty partitions; results
-    // stay null instead of being persisted or displayed as misleading zeros.
-    const unavailableAdapters = [
-      "numeric log values",
-      "money module",
-    ];
+    const habitRateMonth = computeHabitRate(effectiveLogs, monthRange);
     const runHabitIds = resolveRunHabitIds(monthWorkspace.habits);
     const runTargets = monthWorkspace.habits
       .filter((habit) => runHabitIds.includes(habit.id))
       .map((habit) => habit.weeklyTargetCount)
       .filter((target): target is number => typeof target === "number");
-    const runsThisWeek =
-      runHabitIds.length === 0
-        ? null
-        : selectRunsThisWeek({
-            partitionKey: createRollupPartitionKey(
-              userId,
-              "runs-week",
-              weekRange
-            ),
-            version: rollupVersion,
-            logs: effectiveLogs,
-            runHabitIds,
-            range: weekRange,
-            target: runTargets.length > 0 ? runTargets.reduce((a, b) => a + b, 0) : null,
-          });
-    const habitRateDay = selectHabitRate({
-      partitionKey: createRollupPartitionKey(userId, "rate-day", dayRange),
-      version: rollupVersion,
-      logs: effectiveLogs,
-      range: dayRange,
-    });
-    const habitRateMonth = selectHabitRate({
-      partitionKey: createRollupPartitionKey(userId, "rate-month", monthRange),
-      version: rollupVersion,
-      logs: effectiveLogs,
-      range: monthRange,
-    });
-
-    const rollupsEnabled = isFeatureEnabled("rollups");
     const rollups: DayRollupsView = {
-      goalTotal: rollupsEnabled
-        ? selectGoalTotal({
-            partitionKey: createRollupPartitionKey(userId, "goal", dayRange),
-            version: rollupVersion,
-            startingValue: null,
-            values: noNumericValues,
-          })
-        : null,
-      hoursThisWeek: rollupsEnabled
-        ? selectHoursForRange({
-            partitionKey: createRollupPartitionKey(userId, "hours-week", weekRange),
-            version: rollupVersion,
-            values: noNumericValues,
-            range: weekRange,
-          }) || null
-        : null,
-      hoursThisMonth: rollupsEnabled
-        ? selectHoursForRange({
-            partitionKey: createRollupPartitionKey(userId, "hours-month", monthRange),
-            version: rollupVersion,
-            values: noNumericValues,
-            range: monthRange,
-          }) || null
-        : null,
-      runsThisWeek: rollupsEnabled ? runsThisWeek : null,
-      daySpending: rollupsEnabled
-        ? selectSpending({
-            partitionKey: createRollupPartitionKey(userId, "spend-day", dayRange),
-            version: rollupVersion,
-            values: noMoneyValues,
-            range: dayRange,
-          }) || null
-        : null,
-      monthSpending: rollupsEnabled
-        ? selectSpending({
-            partitionKey: createRollupPartitionKey(userId, "spend-month", monthRange),
-            version: rollupVersion,
-            values: noMoneyValues,
-            range: monthRange,
-          }) || null
-        : null,
-      loanBalance: rollupsEnabled
-        ? selectLoanBalance({
-            partitionKey: createRollupPartitionKey(userId, "loan", monthRange),
-            version: rollupVersion,
-            values: noMoneyValues,
-          }) || null
-        : null,
       habitRate: rollupsEnabled
-        ? { day: habitRateDay, month: habitRateMonth }
+        ? {
+            day: computeHabitRate(effectiveLogs, dayRange),
+            month: habitRateMonth,
+          }
         : { day: null, month: null },
-      unavailableAdapters: rollupsEnabled ? unavailableAdapters : [],
+      runsThisWeek:
+        rollupsEnabled && runHabitIds.length > 0
+          ? computeRunsThisWeek({
+              logs: effectiveLogs,
+              runHabitIds,
+              range: weekRange,
+              target:
+                runTargets.length > 0
+                  ? runTargets.reduce((sum, target) => sum + target, 0)
+                  : null,
+            })
+          : null,
     };
 
     const highlights = rollupsEnabled
@@ -1275,7 +1216,6 @@ export class HabitService {
       journalPrompt: savedPrompt ?? getJournalPromptForDate(dateKey, REVIEW_PROMPTS),
       highlights,
       rollups,
-      spendingModuleAvailable: false,
       previousDateKey,
       nextDateKey,
       flags: {

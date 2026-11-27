@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
-import { REVIEW_PROMPTS } from "@/data/reviewPrompts";
-import { getJournalPromptForDate } from "@/domain/journal-prompts";
+import { getJournalPromptForDate } from "@/server/domain/journal-prompts";
+import { REVIEW_PROMPTS } from "@/server/domain/review-prompts";
 
 describe("journal prompt rotation", () => {
   it("maps a date to a stable prompt from the seeded list", () => {

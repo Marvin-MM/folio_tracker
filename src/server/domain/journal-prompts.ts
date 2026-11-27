@@ -1,4 +1,4 @@
-import type { ReviewPrompt } from "@/data/reviewPrompts";
+import type { ReviewPrompt } from "@/server/domain/review-prompts";
 
 /** Pure date-based rotation: every calendar day maps to one stable prompt. */
 export function getJournalPromptForDate(
