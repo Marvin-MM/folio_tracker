@@ -19,21 +19,24 @@ export const metadata: Metadata = {
 
 interface GroupWorkspacePageProps {
   params: Promise<{ groupId: string }>;
+  searchParams: Promise<{ cycle?: string }>;
 }
 
 export default async function GroupWorkspacePage({
   params,
+  searchParams,
 }: GroupWorkspacePageProps) {
-  const [{ user }, routeParams] = await Promise.all([
+  const [{ user }, routeParams, query] = await Promise.all([
     requireSession(),
     params,
+    searchParams,
   ]);
 
   const circleBadgeCount = await habitMonitorService.getCircleBadgeCount(
     user.id
   );
   const workspaceResult = await habitGroupService
-    .getWorkspace(user.id, routeParams.groupId)
+    .getWorkspace(user.id, routeParams.groupId, query.cycle)
     .then((workspace) => ({ ok: true as const, workspace }))
     .catch((error: unknown) => {
       if (error instanceof ForbiddenError || error instanceof NotFoundError) {

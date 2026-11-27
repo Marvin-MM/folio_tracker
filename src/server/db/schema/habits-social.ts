@@ -411,6 +411,45 @@ export const habitGroupSharedHabits = sqliteTable(
   ]
 );
 
+export const habitGroupReviews = sqliteTable(
+  "habit_group_reviews",
+  {
+    id: text("id")
+      .primaryKey()
+      .$defaultFn(() => ulid()),
+    groupId: text("group_id")
+      .notNull()
+      .references(() => habitGroups.id, { onDelete: "cascade" }),
+    cycleKey: text("cycle_key").notNull(),
+    periodStartDate: text("period_start_date").notNull(),
+    periodEndDate: text("period_end_date").notNull(),
+    authorId: text("author_id")
+      .notNull()
+      .references(() => users.id, { onDelete: "cascade" }),
+    wentWell: text("went_well").notNull(),
+    challenges: text("challenges").notNull(),
+    nextFocus: text("next_focus").notNull(),
+    metricsJson: text("metrics_json").notNull().default("{}"),
+    createdAt: integer("created_at", { mode: "number" })
+      .notNull()
+      .$defaultFn(() => Date.now()),
+    updatedAt: integer("updated_at", { mode: "number" })
+      .notNull()
+      .$defaultFn(() => Date.now()),
+  },
+  (table) => [
+    uniqueIndex("habit_group_reviews_group_cycle_author_uq").on(
+      table.groupId,
+      table.cycleKey,
+      table.authorId
+    ),
+    index("habit_group_reviews_group_cycle_idx").on(
+      table.groupId,
+      table.cycleKey
+    ),
+  ]
+);
+
 export type HabitMonitorRecord = typeof habitMonitors.$inferSelect;
 export type NewHabitMonitorRecord = typeof habitMonitors.$inferInsert;
 export type HabitMonitorItemRecord = typeof habitMonitorItems.$inferSelect;
@@ -424,3 +463,4 @@ export type HabitGroupRecord = typeof habitGroups.$inferSelect;
 export type HabitGroupMemberRecord = typeof habitGroupMembers.$inferSelect;
 export type HabitGroupSharedHabitRecord =
   typeof habitGroupSharedHabits.$inferSelect;
+export type HabitGroupReviewRecord = typeof habitGroupReviews.$inferSelect;

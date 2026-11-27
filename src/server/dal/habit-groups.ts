@@ -8,12 +8,14 @@ import {
 import { db, type AppDatabase, type DbExecutor } from "@/server/db";
 import {
   habitGroupMembers,
+  habitGroupReviews,
   habitGroups,
   habitGroupSharedHabits,
   habits,
   users,
   type HabitGroupMemberRecord,
   type HabitGroupRecord,
+  type HabitGroupReviewRecord,
   type HabitGroupRole,
   type HabitRecord,
 } from "@/server/db/schema";
@@ -49,11 +51,28 @@ export interface GroupSharedHabit {
   createdAt: number;
 }
 
+export interface GroupReviewWithAuthor extends HabitGroupReviewRecord {
+  authorName: string;
+}
+
 export interface CreateGroupRowInput {
   ownerId: string;
   name: string;
   description: string | null;
   invitedUserIds: string[];
+  nowMs: number;
+}
+
+export interface UpsertGroupReviewRowInput {
+  groupId: string;
+  authorId: string;
+  cycleKey: string;
+  periodStartDate: string;
+  periodEndDate: string;
+  wentWell: string;
+  challenges: string;
+  nextFocus: string;
+  metricsJson: string;
   nowMs: number;
 }
 
@@ -82,6 +101,18 @@ export interface HabitGroupRepository {
     actorId: string,
     executor?: DbExecutor
   ): Promise<GroupSharedHabit[]>;
+  getReview(
+    groupId: string,
+    cycleKey: string,
+    authorId: string,
+    executor?: DbExecutor
+  ): Promise<HabitGroupReviewRecord | null>;
+  listReviews(
+    groupId: string,
+    cycleKey: string,
+    actorId: string,
+    executor?: DbExecutor
+  ): Promise<GroupReviewWithAuthor[]>;
   createGroupWithMembers(
     input: CreateGroupRowInput,
     executor?: DbExecutor
@@ -138,6 +169,10 @@ export interface HabitGroupRepository {
     input: { groupId: string; actorId: string; habitId: string },
     executor?: DbExecutor
   ): Promise<boolean>;
+  upsertReview(
+    input: UpsertGroupReviewRowInput,
+    executor?: DbExecutor
+  ): Promise<HabitGroupReviewRecord>;
 }
 
 export function maskEmail(email: string): string {
@@ -370,6 +405,67 @@ export class DrizzleHabitGroupRepository implements HabitGroupRepository {
     );
 
     return rows.filter((row) => activeUserIds.has(row.ownerId));
+  }
+
+  async getReview(
+    groupId: string,
+    cycleKey: string,
+    authorId: string,
+    executor: DbExecutor = this.database
+  ): Promise<HabitGroupReviewRecord | null> {
+    const [row] = await executor
+      .select()
+      .from(habitGroupReviews)
+      .where(
+        and(
+          eq(habitGroupReviews.groupId, groupId),
+          eq(habitGroupReviews.cycleKey, cycleKey),
+          eq(habitGroupReviews.authorId, authorId)
+        )
+      )
+      .limit(1);
+    return row ?? null;
+  }
+
+  async listReviews(
+    groupId: string,
+    cycleKey: string,
+    actorId: string,
+    executor: DbExecutor = this.database
+  ): Promise<GroupReviewWithAuthor[]> {
+    const actor = await this.getMember(groupId, actorId, executor);
+    if (!actor) throw new ForbiddenError("You are not an active group member.");
+
+    const rows = await executor
+      .select({ review: habitGroupReviews, authorName: users.name })
+      .from(habitGroupReviews)
+      .innerJoin(users, eq(habitGroupReviews.authorId, users.id))
+      .where(
+        and(
+          eq(habitGroupReviews.groupId, groupId),
+          eq(habitGroupReviews.cycleKey, cycleKey)
+        )
+      )
+      .orderBy(desc(habitGroupReviews.updatedAt));
+
+    // Removed members' reviews are not exposed on the group board.
+    const activeUserIds = new Set(
+      (
+        await executor
+          .select({ userId: habitGroupMembers.userId })
+          .from(habitGroupMembers)
+          .where(
+            and(
+              eq(habitGroupMembers.groupId, groupId),
+              eq(habitGroupMembers.status, "active")
+            )
+          )
+      ).map((row) => row.userId)
+    );
+
+    return rows
+      .filter((row) => activeUserIds.has(row.review.authorId))
+      .map((row) => ({ ...row.review, authorName: row.authorName }));
   }
 
   async createGroupWithMembers(
@@ -678,6 +774,49 @@ export class DrizzleHabitGroupRepository implements HabitGroupRepository {
       )
       .returning({ habitId: habitGroupSharedHabits.habitId });
     return deleted.length > 0;
+  }
+
+  async upsertReview(
+    input: UpsertGroupReviewRowInput,
+    executor: DbExecutor = this.database
+  ): Promise<HabitGroupReviewRecord> {
+    const actor = await this.getMember(input.groupId, input.authorId, executor);
+    if (!actor) throw new ForbiddenError("You are not an active group member.");
+
+    // The unique (group, cycle, author) index makes this a single atomic
+    // statement. The metrics snapshot and period are written only on the
+    // first post; editing the narrative must never rewrite either one.
+    const [review] = await executor
+      .insert(habitGroupReviews)
+      .values({
+        groupId: input.groupId,
+        cycleKey: input.cycleKey,
+        periodStartDate: input.periodStartDate,
+        periodEndDate: input.periodEndDate,
+        authorId: input.authorId,
+        wentWell: input.wentWell,
+        challenges: input.challenges,
+        nextFocus: input.nextFocus,
+        metricsJson: input.metricsJson,
+        createdAt: input.nowMs,
+        updatedAt: input.nowMs,
+      })
+      .onConflictDoUpdate({
+        target: [
+          habitGroupReviews.groupId,
+          habitGroupReviews.cycleKey,
+          habitGroupReviews.authorId,
+        ],
+        set: {
+          wentWell: input.wentWell,
+          challenges: input.challenges,
+          nextFocus: input.nextFocus,
+          updatedAt: input.nowMs,
+        },
+      })
+      .returning();
+    if (!review) throw new Error("Failed to save group review.");
+    return review;
   }
 }
 
