@@ -8,24 +8,35 @@ import {
   AlertTriangle,
   Archive,
   ArchiveRestore,
+  ArrowUpRight,
   BookOpenCheck,
+  Check,
   Clock,
+  Compass,
   Eye,
+  FolderKanban,
+  GitFork,
   Globe,
   Link2,
   Lock,
+  Mail,
   Pencil,
   Play,
   Plus,
   Repeat2,
   Search,
+  Users,
+  X,
   XCircle,
 } from "lucide-react";
 import { toast } from "sonner";
 import {
   abandonOperationRunAction,
+  acceptInAppOperationInviteAction,
   archiveOperationAction,
+  declineOperationInviteAction,
 } from "@/actions/operations";
+import { ExploreDirectoryView } from "@/components/operations/explore-directory-view";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -41,6 +52,13 @@ interface OperationsHubViewProps {
   timezone: string;
   includeArchived: boolean;
   onIncludeArchivedChange: (next: boolean) => void;
+}
+
+type HubTab = "operations" | "runs" | "shared" | "explore";
+
+function parseInitialTab(raw: string | null): HubTab {
+  if (raw === "runs" || raw === "shared" || raw === "explore") return raw;
+  return "operations";
 }
 
 function formatShortDate(ms: number, timezone: string): string {
@@ -62,14 +80,15 @@ export function OperationsHubView({
   const invalidate = useInvalidateWorkspace();
   const [isPending, startTransition] = useTransition();
 
-  const initialTab = searchParams.get("tab") === "runs" ? "runs" : "operations";
-  const [activeTab, setActiveTab] = useState<"operations" | "runs">(initialTab);
+  const [activeTab, setActiveTab] = useState<HubTab>(() =>
+    parseInitialTab(searchParams.get("tab"))
+  );
   const [selectedDomain, setSelectedDomain] = useState<OperationDomain | "all">(
     "all"
   );
   const [searchQuery, setSearchQuery] = useState("");
 
-  const handleTabChange = (tab: "operations" | "runs") => {
+  const handleTabChange = (tab: HubTab) => {
     setActiveTab(tab);
     const params = new URLSearchParams(searchParams.toString());
     if (tab === "operations") params.delete("tab");
@@ -94,6 +113,9 @@ export function OperationsHubView({
       );
     });
   }, [payload.operations, selectedDomain, searchQuery]);
+
+  const sharedBadgeCount =
+    payload.sharedWithMe.length + payload.pendingInvitations.length;
 
   const handleToggleArchive = (operationId: string, nextArchived: boolean) => {
     startTransition(async () => {
@@ -124,6 +146,30 @@ export function OperationsHubView({
     });
   };
 
+  const handleAcceptInvite = (invitationId: string) => {
+    startTransition(async () => {
+      const result = await acceptInAppOperationInviteAction({ invitationId });
+      if (!result.ok) {
+        toast.error(result.error.message);
+        return;
+      }
+      await invalidate(["operations", "notifications", "sidebar"]);
+      toast.success("Invitation accepted.");
+    });
+  };
+
+  const handleDeclineInvite = (invitationId: string) => {
+    startTransition(async () => {
+      const result = await declineOperationInviteAction({ invitationId });
+      if (!result.ok) {
+        toast.error(result.error.message);
+        return;
+      }
+      await invalidate(["operations", "notifications"]);
+      toast.success("Invitation declined.");
+    });
+  };
+
   return (
     <div className="mx-auto w-full max-w-5xl space-y-5 px-4 py-5 md:px-6">
       {/* Header */}
@@ -137,7 +183,7 @@ export function OperationsHubView({
           </div>
           <p className="text-xs text-muted-foreground">
             Universal blueprints, playbooks, recipes, and guided execution runs
-            — versioned and ready offline.
+            — versioned, collaborative, and ready offline.
           </p>
         </div>
 
@@ -153,12 +199,12 @@ export function OperationsHubView({
         </Button>
       </div>
 
-      {/* Extensible Hub Tabs */}
+      {/* 4-Tab Operations Hub */}
       <div className="flex flex-wrap items-center justify-between gap-3 border-b border-border pb-2">
         <div
           role="tablist"
           aria-label="Operations views"
-          className="inline-flex items-center gap-1 rounded-md border border-border bg-muted/60 p-0.5"
+          className="inline-flex max-w-full flex-wrap items-center gap-1 rounded-md border border-border bg-muted/60 p-0.5"
         >
           <button
             type="button"
@@ -166,7 +212,7 @@ export function OperationsHubView({
             aria-selected={activeTab === "operations"}
             onClick={() => handleTabChange("operations")}
             className={cn(
-              "inline-flex h-8 items-center gap-1.5 rounded px-3 text-xs font-medium transition-colors md:h-7",
+              "inline-flex h-8 items-center gap-1.5 rounded px-2.5 text-xs font-medium transition-colors md:h-7",
               activeTab === "operations"
                 ? "bg-background text-foreground shadow-xs"
                 : "text-muted-foreground hover:text-foreground"
@@ -184,7 +230,7 @@ export function OperationsHubView({
             aria-selected={activeTab === "runs"}
             onClick={() => handleTabChange("runs")}
             className={cn(
-              "inline-flex h-8 items-center gap-1.5 rounded px-3 text-xs font-medium transition-colors md:h-7",
+              "inline-flex h-8 items-center gap-1.5 rounded px-2.5 text-xs font-medium transition-colors md:h-7",
               activeTab === "runs"
                 ? "bg-background text-foreground shadow-xs"
                 : "text-muted-foreground hover:text-foreground"
@@ -202,6 +248,51 @@ export function OperationsHubView({
               {payload.activeRuns.length}
             </span>
           </button>
+
+          <button
+            type="button"
+            role="tab"
+            aria-selected={activeTab === "shared"}
+            onClick={() => handleTabChange("shared")}
+            className={cn(
+              "inline-flex h-8 items-center gap-1.5 rounded px-2.5 text-xs font-medium transition-colors md:h-7",
+              activeTab === "shared"
+                ? "bg-background text-foreground shadow-xs"
+                : "text-muted-foreground hover:text-foreground"
+            )}
+          >
+            <Users className="size-3" />
+            <span>Shared With Me</span>
+            <span
+              className={cn(
+                "mono-tabular rounded px-1 text-[11px]",
+                payload.pendingInvitations.length > 0
+                  ? "bg-reminder/15 text-reminder"
+                  : "text-muted-foreground"
+              )}
+            >
+              {sharedBadgeCount}
+            </span>
+          </button>
+
+          <button
+            type="button"
+            role="tab"
+            aria-selected={activeTab === "explore"}
+            onClick={() => handleTabChange("explore")}
+            className={cn(
+              "inline-flex h-8 items-center gap-1.5 rounded px-2.5 text-xs font-medium transition-colors md:h-7",
+              activeTab === "explore"
+                ? "bg-background text-foreground shadow-xs"
+                : "text-muted-foreground hover:text-foreground"
+            )}
+          >
+            <Compass className="size-3" />
+            <span>Explore</span>
+            <span className="mono-tabular text-[11px] text-muted-foreground">
+              {payload.exploreOperations.length}
+            </span>
+          </button>
         </div>
 
         {activeTab === "operations" ? (
@@ -213,12 +304,20 @@ export function OperationsHubView({
             />
             <span>Show archived</span>
           </label>
+        ) : activeTab === "explore" ? (
+          <Link
+            href="/explore"
+            className="inline-flex items-center gap-1 text-xs text-muted-foreground transition-colors hover:text-foreground"
+          >
+            Open public directory
+            <ArrowUpRight className="size-3" />
+          </Link>
         ) : null}
       </div>
 
+      {/* TAB 1: My Operations */}
       {activeTab === "operations" ? (
         <div className="space-y-4">
-          {/* Search & Domain Filter Chips */}
           <div className="space-y-2.5">
             <div className="relative">
               <Search className="pointer-events-none absolute top-1/2 left-2.5 size-3.5 -translate-y-1/2 text-muted-foreground" />
@@ -266,7 +365,6 @@ export function OperationsHubView({
             </div>
           </div>
 
-          {/* Blueprint Grid */}
           {filteredOperations.length === 0 ? (
             <div className="rounded-lg border border-dashed border-border bg-card/50 px-5 py-10 text-center">
               <BookOpenCheck className="mx-auto size-7 text-muted-foreground/70" />
@@ -283,24 +381,31 @@ export function OperationsHubView({
 
               {payload.operations.length === 0 ? (
                 <div className="mt-4 flex flex-wrap items-center justify-center gap-2">
-                  {(["cooking", "tech", "fitness", "diy", "business", "study"] as const).map(
-                    (domain) => {
-                      const preset = getOperationDomainPreset(domain);
-                      return (
-                        <Button
-                          key={domain}
-                          asChild
-                          variant="outline"
-                          size="sm"
-                          className="h-9 text-xs md:h-7"
-                        >
-                          <Link href={`/app/operations/new?domain=${domain}`}>
-                            + {preset.label}
-                          </Link>
-                        </Button>
-                      );
-                    }
-                  )}
+                  {(
+                    [
+                      "cooking",
+                      "tech",
+                      "fitness",
+                      "diy",
+                      "business",
+                      "study",
+                    ] as const
+                  ).map((domain) => {
+                    const preset = getOperationDomainPreset(domain);
+                    return (
+                      <Button
+                        key={domain}
+                        asChild
+                        variant="outline"
+                        size="sm"
+                        className="h-9 text-xs md:h-7"
+                      >
+                        <Link href={`/app/operations/new?domain=${domain}`}>
+                          + {preset.label}
+                        </Link>
+                      </Button>
+                    );
+                  })}
                 </div>
               ) : null}
             </div>
@@ -357,11 +462,19 @@ export function OperationsHubView({
                           ) : null}
                         </div>
 
-                        {item.activeRunsCount > 0 ? (
-                          <span className="mono-tabular rounded border border-reminder/35 bg-reminder/10 px-1.5 py-0.5 text-[10px] font-medium text-reminder">
-                            {item.activeRunsCount} active
-                          </span>
-                        ) : null}
+                        <div className="flex items-center gap-1.5">
+                          {operation.forkCount > 0 ? (
+                            <span className="mono-tabular inline-flex items-center gap-0.5 text-[10px] text-muted-foreground">
+                              <GitFork className="size-2.5" />
+                              {operation.forkCount}
+                            </span>
+                          ) : null}
+                          {item.activeRunsCount > 0 ? (
+                            <span className="mono-tabular rounded border border-reminder/35 bg-reminder/10 px-1.5 py-0.5 text-[10px] font-medium text-reminder">
+                              {item.activeRunsCount} active
+                            </span>
+                          ) : null}
+                        </div>
                       </div>
 
                       <div>
@@ -484,9 +597,9 @@ export function OperationsHubView({
             </div>
           )}
         </div>
-      ) : (
+      ) : activeTab === "runs" ? (
+        /* TAB 2: Active Runs */
         <div className="space-y-6">
-          {/* Active Runs */}
           <section className="space-y-2.5">
             <h2 className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">
               In Progress ({payload.activeRuns.length})
@@ -504,7 +617,9 @@ export function OperationsHubView({
             ) : (
               <div className="space-y-2.5">
                 {payload.activeRuns.map((entry) => {
-                  const preset = getOperationDomainPreset(entry.operationDomain);
+                  const preset = getOperationDomainPreset(
+                    entry.operationDomain
+                  );
                   const completedUnits = entry.doneSteps + entry.skippedSteps;
                   const pct =
                     entry.totalSteps > 0
@@ -584,7 +699,6 @@ export function OperationsHubView({
             )}
           </section>
 
-          {/* Completed & Abandoned Run Log */}
           {payload.recentRuns.length > 0 ? (
             <section className="space-y-2.5">
               <h2 className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">
@@ -641,6 +755,214 @@ export function OperationsHubView({
             </section>
           ) : null}
         </div>
+      ) : activeTab === "shared" ? (
+        /* TAB 3: Shared With Me + Pending In-App Invitations */
+        <div className="space-y-6">
+          {payload.pendingInvitations.length > 0 ? (
+            <section className="space-y-2.5">
+              <h2 className="flex items-center gap-1.5 text-xs font-semibold uppercase tracking-wider text-reminder">
+                <Mail className="size-3.5" />
+                Pending Invitations ({payload.pendingInvitations.length})
+              </h2>
+
+              <div className="space-y-2">
+                {payload.pendingInvitations.map((item) => {
+                  const preset = getOperationDomainPreset(item.operationDomain);
+                  return (
+                    <div
+                      key={item.invitation.id}
+                      className="flex flex-col justify-between gap-3 rounded-lg border border-reminder/40 bg-reminder/5 p-3.5 sm:flex-row sm:items-center"
+                    >
+                      <div className="min-w-0 space-y-1">
+                        <div className="flex flex-wrap items-center gap-1.5">
+                          <Badge
+                            variant="outline"
+                            className={cn(
+                              "h-5 px-1.5 text-[10px]",
+                              preset.badgeClassName
+                            )}
+                          >
+                            {preset.shortLabel}
+                          </Badge>
+                          <Badge
+                            variant="outline"
+                            className="h-5 border-collab/40 px-1.5 text-[10px] capitalize text-collab"
+                          >
+                            {item.invitation.role}
+                          </Badge>
+                        </div>
+                        <p className="text-sm font-semibold text-foreground">
+                          {item.operationTitle}
+                        </p>
+                        <p className="text-xs text-muted-foreground">
+                          Invited by{" "}
+                          <span className="font-medium text-foreground">
+                            {item.inviterName}
+                          </span>
+                          {item.inviterHandle ? ` (@${item.inviterHandle})` : ""}
+                        </p>
+                      </div>
+
+                      <div className="flex shrink-0 items-center gap-1.5">
+                        <Button
+                          type="button"
+                          size="sm"
+                          disabled={isPending}
+                          onClick={() => handleAcceptInvite(item.invitation.id)}
+                          className="h-9 gap-1 px-3 text-xs md:h-7"
+                        >
+                          <Check className="size-3.5" />
+                          Accept
+                        </Button>
+                        <Button
+                          type="button"
+                          size="sm"
+                          variant="outline"
+                          disabled={isPending}
+                          onClick={() =>
+                            handleDeclineInvite(item.invitation.id)
+                          }
+                          className="h-9 gap-1 px-2.5 text-xs text-muted-foreground hover:text-overdue md:h-7"
+                        >
+                          <X className="size-3.5" />
+                          Decline
+                        </Button>
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+            </section>
+          ) : null}
+
+          <section className="space-y-2.5">
+            <h2 className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">
+              Shared Operations ({payload.sharedWithMe.length})
+            </h2>
+
+            {payload.sharedWithMe.length === 0 ? (
+              <div className="rounded-lg border border-dashed border-border bg-card/50 px-5 py-10 text-center">
+                <Users className="mx-auto size-7 text-muted-foreground/70" />
+                <h3 className="mt-3 text-sm font-medium text-foreground">
+                  Nothing shared with you yet
+                </h3>
+                <p className="mx-auto mt-1 max-w-md text-xs text-muted-foreground">
+                  When teammates invite you to private operations or share a
+                  blueprint with your Shared Project team, it will appear here.
+                </p>
+              </div>
+            ) : (
+              <div className="grid grid-cols-1 gap-3 md:grid-cols-2">
+                {payload.sharedWithMe.map((item) => {
+                  const preset = getOperationDomainPreset(
+                    item.operation.domain
+                  );
+                  return (
+                    <article
+                      key={item.operation.id}
+                      className="flex flex-col justify-between gap-3 rounded-lg border border-border bg-card p-3.5 transition-colors hover:border-foreground/25"
+                    >
+                      <div className="space-y-2">
+                        <div className="flex flex-wrap items-center gap-1.5">
+                          <Badge
+                            variant="outline"
+                            className={cn(
+                              "h-5 px-1.5 text-[10px]",
+                              preset.badgeClassName
+                            )}
+                          >
+                            {preset.shortLabel}
+                          </Badge>
+                          <Badge
+                            variant="outline"
+                            className={cn(
+                              "h-5 px-1.5 text-[10px] capitalize",
+                              item.role === "collaborator"
+                                ? "border-collab/40 bg-collab/10 text-collab"
+                                : "border-border text-muted-foreground"
+                            )}
+                          >
+                            {item.role}
+                          </Badge>
+                          {item.accessSource === "project_inherited" ? (
+                            <span className="inline-flex items-center gap-1 rounded border border-border bg-background px-1.5 py-0.5 text-[10px] text-muted-foreground">
+                              <FolderKanban className="size-2.5 text-collab" />
+                              Project Team
+                            </span>
+                          ) : null}
+                        </div>
+
+                        <div>
+                          <Link
+                            href={`/app/operations/${item.operation.id}`}
+                            className="text-sm font-semibold tracking-tight text-foreground hover:text-reminder"
+                          >
+                            {item.operation.title}
+                          </Link>
+                          {item.operation.summary ? (
+                            <p className="mt-1 line-clamp-2 text-xs leading-relaxed text-muted-foreground">
+                              {item.operation.summary}
+                            </p>
+                          ) : null}
+                        </div>
+
+                        <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-[11px] text-muted-foreground">
+                          <span>
+                            By{" "}
+                            <strong className="font-medium text-foreground">
+                              {item.ownerName}
+                            </strong>
+                            {item.ownerHandle ? ` (@${item.ownerHandle})` : ""}
+                          </span>
+                          <span className="mono-tabular">
+                            v{item.operation.currentVersion} · {item.stepCount}{" "}
+                            {item.stepCount === 1 ? "step" : "steps"}
+                          </span>
+                        </div>
+                      </div>
+
+                      <div className="flex items-center justify-end gap-1.5 border-t border-border/70 pt-2.5">
+                        <Button
+                          asChild
+                          size="sm"
+                          className="h-9 gap-1 px-2.5 text-xs md:h-7"
+                        >
+                          <Link
+                            href={`/app/operations/${item.operation.id}?action=start`}
+                          >
+                            <Play className="size-3" />
+                            Start Run
+                          </Link>
+                        </Button>
+                        {item.role === "collaborator" ? (
+                          <Button
+                            asChild
+                            size="sm"
+                            variant="outline"
+                            className="h-9 gap-1 px-2.5 text-xs md:h-7"
+                          >
+                            <Link
+                              href={`/app/operations/${item.operation.id}/edit`}
+                            >
+                              <Pencil className="size-3" />
+                              Edit
+                            </Link>
+                          </Button>
+                        ) : null}
+                      </div>
+                    </article>
+                  );
+                })}
+              </div>
+            )}
+          </section>
+        </div>
+      ) : (
+        /* TAB 4: Public Explore Directory */
+        <ExploreDirectoryView
+          operations={payload.exploreOperations}
+          embedded
+        />
       )}
     </div>
   );

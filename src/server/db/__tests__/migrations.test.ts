@@ -18,7 +18,7 @@ describe("Drizzle migrations integrity", () => {
     const journalPath = path.resolve(process.cwd(), "drizzle/meta/_journal.json");
     const journal = JSON.parse(readFileSync(journalPath, "utf8")) as DrizzleJournal;
 
-    expect(journal.entries.length).toBeGreaterThanOrEqual(9);
+    expect(journal.entries.length).toBeGreaterThanOrEqual(10);
 
     for (let i = 1; i < journal.entries.length; i += 1) {
       const prev = journal.entries[i - 1]!;
@@ -52,7 +52,11 @@ describe("Drizzle migrations integrity", () => {
       expect(tableNames).toContain("operation_reference_notes");
       expect(tableNames).toContain("operation_runs");
       expect(tableNames).toContain("operation_run_steps");
-      expect(tableNames).toHaveLength(31);
+      expect(tableNames).toContain("user_follows");
+      expect(tableNames).toContain("operation_members");
+      expect(tableNames).toContain("operation_invitations");
+      expect(tableNames).toContain("operation_step_flags");
+      expect(tableNames).toHaveLength(35);
     } finally {
       client.close();
     }

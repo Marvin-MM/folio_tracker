@@ -15,6 +15,12 @@ import {
   sendHabitMonitorInviteFn,
   sendHabitMonitorRequestFn,
 } from "@/server/inngest/habit-review-digest";
+import {
+  deliverOperationStalenessNudgeFn,
+  operationStalenessAuditCronFn,
+  sendOperationInviteEmailFn,
+  sendOperationInviteInAppFn,
+} from "@/server/inngest/operation-staleness";
 
 export const inngestFunctions = [
   scheduleReminderFn,
@@ -30,4 +36,8 @@ export const inngestFunctions = [
   sendHabitMonitorRequestFn,
   sendHabitMonitorInviteFn,
   sendHabitCommentNotificationFn,
+  operationStalenessAuditCronFn,
+  deliverOperationStalenessNudgeFn,
+  sendOperationInviteInAppFn,
+  sendOperationInviteEmailFn,
 ];

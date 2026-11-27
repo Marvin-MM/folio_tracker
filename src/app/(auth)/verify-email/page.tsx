@@ -5,7 +5,6 @@ import { DEFAULT_AUTHENTICATED_PATH } from "@/lib/constants";
 import { sanitizeCallbackUrl } from "@/lib/redirect";
 import { isEmailPasswordAuthEnabled } from "@/server/auth";
 
-export const dynamic = "force-dynamic";
 
 export const metadata: Metadata = {
   title: "Verify email",

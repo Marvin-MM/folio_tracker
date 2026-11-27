@@ -1,3 +1,4 @@
+import { unstable_rethrow } from "next/navigation";
 import { NextResponse } from "next/server";
 import { requireSession, type AuthenticatedContext } from "@/server/dal/auth-guard";
 import {
@@ -9,6 +10,7 @@ import {
   NotFoundError,
   RateLimitError,
   SecretScanBlockedError,
+  SecretScanWarningAckRequiredError,
   UnauthorizedError,
   ValidationError,
 } from "@/server/dal/errors";
@@ -54,6 +56,7 @@ export async function withWorkspaceAuth(
     const auth = await requireSession();
     return await handler(auth);
   } catch (error) {
+    unstable_rethrow(error);
     if (error instanceof UnauthorizedError) {
       return workspaceErrorJson(error.code, error.message, 401);
     }
@@ -80,6 +83,19 @@ export async function withWorkspaceAuth(
             code: error.code,
             message: error.message,
             findings: error.findings,
+          },
+        },
+        { status: 422, headers: PRIVATE_NO_STORE_HEADERS }
+      );
+    }
+    if (error instanceof SecretScanWarningAckRequiredError) {
+      return NextResponse.json(
+        {
+          ok: false,
+          error: {
+            code: error.code,
+            message: error.message,
+            warnings: error.warnings,
           },
         },
         { status: 422, headers: PRIVATE_NO_STORE_HEADERS }

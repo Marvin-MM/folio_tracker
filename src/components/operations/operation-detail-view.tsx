@@ -14,7 +14,9 @@ import {
   Clock,
   Copy,
   FileText,
+  Flag,
   FolderKanban,
+  GitFork,
   Globe,
   History,
   Link2,
@@ -24,20 +26,26 @@ import {
   Play,
   Repeat2,
   RotateCcw,
+  Share2,
   ShieldCheck,
   Terminal,
   Timer,
   Trash2,
+  User,
 } from "lucide-react";
 import { toast } from "sonner";
 import {
   archiveOperationAction,
   deleteOperationAction,
+  flagOperationStepAction,
+  forkOperationAction,
   markOperationVerifiedAction,
   rollbackOperationVersionAction,
   scheduleOperationRunTaskAction,
   startOperationRunAction,
 } from "@/actions/operations";
+import { OperationFlagsPanel } from "@/components/operations/operation-flags-panel";
+import { OperationShareModal } from "@/components/operations/operation-share-modal";
 import { SafeMarkdown } from "@/components/operations/safe-markdown";
 import { formatTimerSeconds } from "@/components/operations/step-timer";
 import { Badge } from "@/components/ui/badge";
@@ -66,6 +74,7 @@ import {
   SheetHeader,
   SheetTitle,
 } from "@/components/ui/sheet";
+import { Textarea } from "@/components/ui/textarea";
 import { useInvalidateWorkspace } from "@/hooks/use-workspace-queries";
 import { setEphemeralRunSecrets } from "@/lib/ephemeral-run-secrets";
 import { zonedWallClockToUtcMs } from "@/lib/reminder-presets";
@@ -79,6 +88,7 @@ import type { OperationDetailPayload } from "@/server/services/operation-service
 
 interface OperationDetailViewProps {
   detail: OperationDetailPayload;
+  userId: string;
   timezone: string;
   autoOpenStartDialog?: boolean;
 }
@@ -93,6 +103,7 @@ function formatDateTime(ms: number, timezone: string): string {
 
 export function OperationDetailView({
   detail,
+  userId,
   timezone,
   autoOpenStartDialog = false,
 }: OperationDetailViewProps) {
@@ -100,15 +111,27 @@ export function OperationDetailView({
   const invalidate = useInvalidateWorkspace();
   const [isPending, startTransition] = useTransition();
 
-  const { operation, currentVersion, versions, referenceNotes, recentRuns } =
-    detail;
+  const {
+    operation,
+    currentVersion,
+    versions,
+    referenceNotes,
+    recentRuns,
+    access,
+    owner,
+    openFlags,
+  } = detail;
+  const { capabilities } = access;
   const preset = getOperationDomainPreset(operation.domain);
 
   const [startDialogOpen, setStartDialogOpen] = useState(false);
   const [scheduleDialogOpen, setScheduleDialogOpen] = useState(false);
+  const [shareModalOpen, setShareModalOpen] = useState(false);
   const [historyOpen, setHistoryOpen] = useState(false);
   const [deleteDialogOpen, setDeleteDialogOpen] = useState(false);
   const [copiedStepKey, setCopiedStepKey] = useState<string | null>(null);
+  const [flagStepKey, setFlagStepKey] = useState<string | null>(null);
+  const [flagMessage, setFlagMessage] = useState("");
 
   const autoOpenedRef = useRef(false);
   useEffect(() => {
@@ -293,6 +316,39 @@ export function OperationDetailView({
     });
   };
 
+  const handleFork = () => {
+    startTransition(async () => {
+      const result = await forkOperationAction({ operationId: operation.id });
+      if (!result.ok) {
+        toast.error(result.error.message);
+        return;
+      }
+      await invalidate(["operations", "sidebar"]);
+      toast.success("Forked blueprint into your workspace.");
+      router.push(`/app/operations/${result.data.forked.id}`);
+    });
+  };
+
+  const handleSubmitFlag = () => {
+    if (!flagStepKey || !flagMessage.trim()) return;
+    startTransition(async () => {
+      const result = await flagOperationStepAction({
+        operationId: operation.id,
+        stepKey: flagStepKey,
+        versionNumber: currentVersion.versionNumber,
+        message: flagMessage.trim(),
+      });
+      if (!result.ok) {
+        toast.error(result.error.message);
+        return;
+      }
+      setFlagStepKey(null);
+      setFlagMessage("");
+      await invalidate(["operations"]);
+      toast.success("Step flagged for review.");
+    });
+  };
+
   return (
     <div className="mx-auto w-full max-w-4xl space-y-5 px-4 py-5 md:px-6">
       {/* Top Breadcrumb */}
@@ -344,6 +400,19 @@ export function OperationDetailView({
                   {operation.estimatedMinutes} min
                 </span>
               ) : null}
+              {access.role !== "owner" ? (
+                <Badge
+                  variant="outline"
+                  className={cn(
+                    "h-5 px-1.5 text-[10px] capitalize",
+                    access.role === "collaborator"
+                      ? "border-collab/40 bg-collab/10 text-collab"
+                      : "border-border text-muted-foreground"
+                  )}
+                >
+                  {access.role.replace("_", " ")}
+                </Badge>
+              ) : null}
               {detail.staleness.isStale ? (
                 <span className="inline-flex items-center gap-1 rounded border border-overdue/40 bg-overdue/10 px-1.5 py-0.5 text-[10px] font-medium text-overdue">
                   <AlertTriangle className="size-2.5" />
@@ -363,6 +432,27 @@ export function OperationDetailView({
             <h1 className="text-lg font-semibold tracking-tight text-foreground">
               {operation.title}
             </h1>
+
+            {access.role !== "owner" ? (
+              <p className="inline-flex items-center gap-1.5 text-[11px] text-muted-foreground">
+                <User className="size-3" />
+                <span>
+                  Maintained by{" "}
+                  {owner.handle ? (
+                    <Link
+                      href={`/u/${owner.handle}`}
+                      className="font-medium text-foreground hover:underline"
+                    >
+                      {owner.name} (@{owner.handle})
+                    </Link>
+                  ) : (
+                    <strong className="font-medium text-foreground">
+                      {owner.name}
+                    </strong>
+                  )}
+                </span>
+              </p>
+            ) : null}
 
             {operation.summary ? (
               <p className="text-xs leading-relaxed text-muted-foreground">
@@ -384,28 +474,57 @@ export function OperationDetailView({
             ) : null}
           </div>
 
-          {/* Primary Actions */}
+          {/* Primary Actions (strictly RBAC capability-scoped) */}
           <div className="flex flex-wrap items-center gap-1.5">
-            <Button
-              type="button"
-              size="sm"
-              onClick={() => setStartDialogOpen(true)}
-              className="h-9 gap-1.5 px-3 text-xs md:h-8"
-            >
-              <Play className="size-3.5" />
-              Start Run
-            </Button>
-            <Button
-              asChild
-              variant="outline"
-              size="sm"
-              className="h-9 gap-1.5 px-3 text-xs md:h-8"
-            >
-              <Link href={`/app/operations/${operation.id}/edit`}>
-                <Pencil className="size-3.5" />
-                Edit
-              </Link>
-            </Button>
+            {capabilities.canRun ? (
+              <Button
+                type="button"
+                size="sm"
+                onClick={() => setStartDialogOpen(true)}
+                className="h-9 gap-1.5 px-3 text-xs md:h-8"
+              >
+                <Play className="size-3.5" />
+                Start Run
+              </Button>
+            ) : null}
+            {capabilities.canManageSharing ? (
+              <Button
+                type="button"
+                variant="outline"
+                size="sm"
+                onClick={() => setShareModalOpen(true)}
+                className="h-9 gap-1.5 px-3 text-xs md:h-8"
+              >
+                <Share2 className="size-3.5" />
+                Share
+              </Button>
+            ) : null}
+            {capabilities.canEditSteps ? (
+              <Button
+                asChild
+                variant="outline"
+                size="sm"
+                className="h-9 gap-1.5 px-3 text-xs md:h-8"
+              >
+                <Link href={`/app/operations/${operation.id}/edit`}>
+                  <Pencil className="size-3.5" />
+                  Edit
+                </Link>
+              </Button>
+            ) : null}
+            {capabilities.canFork && access.role !== "owner" ? (
+              <Button
+                type="button"
+                variant="outline"
+                size="sm"
+                disabled={isPending}
+                onClick={handleFork}
+                className="h-9 gap-1.5 px-2.5 text-xs md:h-8"
+              >
+                <GitFork className="size-3.5" />
+                Fork
+              </Button>
+            ) : null}
             <Button
               type="button"
               variant="outline"
@@ -433,7 +552,9 @@ export function OperationDetailView({
         {(detail.linkedProject ||
           detail.linkedHabit ||
           referenceNotes.length > 0 ||
-          detail.staleness.isStale) ? (
+          detail.staleness.isStale ||
+          capabilities.canEditSteps ||
+          capabilities.canDelete) ? (
           <div className="flex flex-wrap items-center justify-between gap-2 border-t border-border/80 pt-3">
             <div className="flex flex-wrap items-center gap-2 text-xs">
               {detail.linkedProject ? (
@@ -469,79 +590,58 @@ export function OperationDetailView({
             </div>
 
             <div className="flex items-center gap-1.5">
-              <Button
-                type="button"
-                variant="ghost"
-                size="sm"
-                disabled={isPending}
-                onClick={handleMarkVerified}
-                className="h-8 gap-1 px-2 text-[11px] text-muted-foreground hover:text-foreground md:h-7"
-              >
-                <ShieldCheck className="size-3.5" />
-                Mark verified
-              </Button>
-              <Button
-                type="button"
-                variant="ghost"
-                size="sm"
-                disabled={isPending}
-                onClick={handleArchiveToggle}
-                className="h-8 gap-1 px-2 text-[11px] text-muted-foreground hover:text-foreground md:h-7"
-              >
-                <Archive className="size-3.5" />
-                {operation.isArchived ? "Restore" : "Archive"}
-              </Button>
-              <Button
-                type="button"
-                variant="ghost"
-                size="sm"
-                disabled={isPending}
-                onClick={() => setDeleteDialogOpen(true)}
-                className="h-8 gap-1 px-2 text-[11px] text-overdue hover:text-overdue md:h-7"
-              >
-                <Trash2 className="size-3.5" />
-                Delete
-              </Button>
+              {capabilities.canEditSteps ? (
+                <Button
+                  type="button"
+                  variant="ghost"
+                  size="sm"
+                  disabled={isPending}
+                  onClick={handleMarkVerified}
+                  className="h-8 gap-1 px-2 text-[11px] text-muted-foreground hover:text-foreground md:h-7"
+                >
+                  <ShieldCheck className="size-3.5" />
+                  Mark verified
+                </Button>
+              ) : null}
+              {capabilities.canDelete ? (
+                <>
+                  <Button
+                    type="button"
+                    variant="ghost"
+                    size="sm"
+                    disabled={isPending}
+                    onClick={handleArchiveToggle}
+                    className="h-8 gap-1 px-2 text-[11px] text-muted-foreground hover:text-foreground md:h-7"
+                  >
+                    <Archive className="size-3.5" />
+                    {operation.isArchived ? "Restore" : "Archive"}
+                  </Button>
+                  <Button
+                    type="button"
+                    variant="ghost"
+                    size="sm"
+                    disabled={isPending}
+                    onClick={() => setDeleteDialogOpen(true)}
+                    className="h-8 gap-1 px-2 text-[11px] text-overdue hover:text-overdue md:h-7"
+                  >
+                    <Trash2 className="size-3.5" />
+                    Delete
+                  </Button>
+                </>
+              ) : null}
             </div>
           </div>
-        ) : (
-          <div className="flex flex-wrap items-center justify-end gap-1.5 border-t border-border/80 pt-2.5">
-            <Button
-              type="button"
-              variant="ghost"
-              size="sm"
-              disabled={isPending}
-              onClick={handleMarkVerified}
-              className="h-8 gap-1 px-2 text-[11px] text-muted-foreground hover:text-foreground md:h-7"
-            >
-              <ShieldCheck className="size-3.5" />
-              Mark verified
-            </Button>
-            <Button
-              type="button"
-              variant="ghost"
-              size="sm"
-              disabled={isPending}
-              onClick={handleArchiveToggle}
-              className="h-8 gap-1 px-2 text-[11px] text-muted-foreground hover:text-foreground md:h-7"
-            >
-              <Archive className="size-3.5" />
-              {operation.isArchived ? "Restore" : "Archive"}
-            </Button>
-            <Button
-              type="button"
-              variant="ghost"
-              size="sm"
-              disabled={isPending}
-              onClick={() => setDeleteDialogOpen(true)}
-              className="h-8 gap-1 px-2 text-[11px] text-overdue hover:text-overdue md:h-7"
-            >
-              <Trash2 className="size-3.5" />
-              Delete
-            </Button>
-          </div>
-        )}
+        ) : null}
       </section>
+
+      {/* Open Step Flags Panel (Owners & Collaborators only) */}
+      {capabilities.canResolveFlags && openFlags.length > 0 ? (
+        <OperationFlagsPanel
+          operationId={operation.id}
+          openFlags={openFlags}
+          steps={currentVersion.steps}
+        />
+      ) : null}
 
       {/* Variables Preview */}
       {currentVersion.variables.length > 0 ? (
@@ -655,6 +755,22 @@ export function OperationDetailView({
                   >
                     {step.type}
                   </Badge>
+                  {capabilities.canFlagSteps ? (
+                    <Button
+                      type="button"
+                      variant="ghost"
+                      size="sm"
+                      onClick={() => {
+                        setFlagStepKey(step.key);
+                        setFlagMessage("");
+                      }}
+                      aria-label={`Flag step ${index + 1}`}
+                      className="h-6 gap-1 px-1.5 text-[10px] text-muted-foreground hover:text-overdue"
+                    >
+                      <Flag className="size-3" />
+                      Flag
+                    </Button>
+                  ) : null}
                 </div>
               </div>
 
@@ -1137,7 +1253,7 @@ export function OperationDetailView({
                     checklist · {ver.variables.length} vars
                   </p>
 
-                  {!isCurrent ? (
+                  {!isCurrent && capabilities.canRollback ? (
                     <Button
                       type="button"
                       variant="outline"
@@ -1156,6 +1272,81 @@ export function OperationDetailView({
           </div>
         </SheetContent>
       </Sheet>
+
+      {/* Owner Share & Access Control Modal */}
+      {capabilities.canManageSharing ? (
+        <OperationShareModal
+          open={shareModalOpen}
+          onOpenChange={setShareModalOpen}
+          userId={userId}
+          operationId={operation.id}
+          operationSlug={operation.slug}
+          initialVisibility={operation.visibility}
+          initialAllowForking={operation.allowForking}
+          initialShareWithProject={operation.shareWithProject}
+        />
+      ) : null}
+
+      {/* Flag Step Issue Dialog */}
+      <Dialog
+        open={Boolean(flagStepKey)}
+        onOpenChange={(open) => {
+          if (!open) {
+            setFlagStepKey(null);
+            setFlagMessage("");
+          }
+        }}
+      >
+        <DialogContent className="sm:max-w-md">
+          <DialogHeader>
+            <DialogTitle className="text-sm">Flag Step Issue</DialogTitle>
+            <DialogDescription className="text-xs">
+              Report an outdated command, unclear instruction, or missing check
+              on v{currentVersion.versionNumber}. Owners and collaborators will
+              see it in the blueprint&apos;s Open Flags panel.
+            </DialogDescription>
+          </DialogHeader>
+          <div className="space-y-2 py-1">
+            <Label htmlFor="detail-flag-message" className="text-xs">
+              What needs updating?
+            </Label>
+            <Textarea
+              id="detail-flag-message"
+              rows={3}
+              maxLength={500}
+              value={flagMessage}
+              onChange={(e) => setFlagMessage(e.target.value)}
+              placeholder="Describe what failed, changed, or needs clarification…"
+              className="text-xs"
+            />
+          </div>
+          <DialogFooter>
+            <Button
+              type="button"
+              variant="outline"
+              size="sm"
+              onClick={() => setFlagStepKey(null)}
+              className="h-9 text-xs md:h-8"
+            >
+              Cancel
+            </Button>
+            <Button
+              type="button"
+              size="sm"
+              disabled={isPending || !flagMessage.trim()}
+              onClick={handleSubmitFlag}
+              className="h-9 gap-1.5 text-xs md:h-8"
+            >
+              {isPending ? (
+                <Loader2 className="size-3.5 animate-spin" />
+              ) : (
+                <Flag className="size-3.5" />
+              )}
+              Submit Flag
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
 
       {/* Delete Confirmation Dialog */}
       <Dialog open={deleteDialogOpen} onOpenChange={setDeleteDialogOpen}>

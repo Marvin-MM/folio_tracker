@@ -97,6 +97,16 @@ export const auth = betterAuth({
         defaultValue: false,
         input: false,
       },
+      handle: {
+        type: "string",
+        required: false,
+        input: false,
+      },
+      bio: {
+        type: "string",
+        required: false,
+        input: false,
+      },
     },
   },
   emailAndPassword: {

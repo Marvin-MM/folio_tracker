@@ -6,7 +6,6 @@ import { requireSession } from "@/server/dal/auth-guard";
 import { ForbiddenError, NotFoundError } from "@/server/dal/errors";
 import { operationService } from "@/server/services/operation-service";
 
-export const dynamic = "force-dynamic";
 
 interface OperationEditPageProps {
   params: Promise<{ id: string }>;
@@ -18,6 +17,9 @@ export async function generateMetadata({
   try {
     const [{ user }, { id }] = await Promise.all([requireSession(), params]);
     const detail = await operationService.getOperationDetail(user.id, id);
+    if (!detail.access.capabilities.canEditSteps) {
+      return { title: "Edit Operation" };
+    }
     return { title: `Edit · ${detail.operation.title}` };
   } catch {
     return { title: "Edit Operation" };
@@ -39,6 +41,10 @@ export default async function OperationEditPage({
       notFound();
     }
     throw error;
+  }
+
+  if (!detail.access.capabilities.canEditSteps) {
+    notFound();
   }
 
   return (

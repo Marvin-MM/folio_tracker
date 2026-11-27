@@ -9,7 +9,6 @@ import {
 } from "@/server/auth";
 import { getOptionalSession } from "@/server/dal/auth-guard";
 
-export const dynamic = "force-dynamic";
 
 export const metadata: Metadata = {
   title: "Create account",

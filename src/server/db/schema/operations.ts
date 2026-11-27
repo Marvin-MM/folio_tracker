@@ -85,6 +85,9 @@ export const operations = sqliteTable(
     allowForking: integer("allow_forking", { mode: "boolean" })
       .notNull()
       .default(true),
+    shareWithProject: integer("share_with_project", { mode: "boolean" })
+      .notNull()
+      .default(false),
     currentVersion: integer("current_version", { mode: "number" })
       .notNull()
       .default(1),

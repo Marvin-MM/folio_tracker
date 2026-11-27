@@ -5,7 +5,6 @@ import { ViewHeader } from "@/components/workspace/view-header";
 import { requireSession } from "@/server/dal/auth-guard";
 import { userRepository } from "@/server/dal/user-repository";
 
-export const dynamic = "force-dynamic";
 
 export const metadata: Metadata = {
   title: "Settings",
@@ -44,6 +43,8 @@ export default async function SettingsPage() {
     isSuspended: false,
     timezone: user.timezone || "UTC",
     emailRemindersEnabled: user.emailRemindersEnabled ?? true,
+    handle: typeof user.handle === "string" ? user.handle : null,
+    bio: typeof user.bio === "string" ? user.bio : null,
   };
 
   return (

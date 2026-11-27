@@ -4,7 +4,6 @@ import { requireSession } from "@/server/dal/auth-guard";
 import { OPERATION_DOMAINS, type OperationDomain } from "@/server/db/schema";
 import { operationService } from "@/server/services/operation-service";
 
-export const dynamic = "force-dynamic";
 
 export const metadata: Metadata = {
   title: "New Operation",

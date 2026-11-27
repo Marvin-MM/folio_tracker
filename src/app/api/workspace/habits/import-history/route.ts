@@ -9,7 +9,6 @@ import {
 import { defaultRateLimiter } from "@/server/providers/redis/rate-limiter";
 import { habitService } from "@/server/services/habit-service";
 
-export const dynamic = "force-dynamic";
 export const maxDuration = 60;
 
 const dateKeySchema = z

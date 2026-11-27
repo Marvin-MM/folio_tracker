@@ -106,10 +106,14 @@ function makeClientKey(prefix: string): string {
   return `${prefix}_${Math.random().toString(36).slice(2, 9)}`;
 }
 
-function createEmptyStep(domain: OperationDomain, position = "a0"): EditableStep {
+function createEmptyStep(
+  domain: OperationDomain,
+  position = "a0",
+  explicitKey?: string
+): EditableStep {
   const preset = getOperationDomainPreset(domain);
   return {
-    key: makeClientKey("step"),
+    key: explicitKey ?? makeClientKey("step"),
     position,
     type: preset.defaultStepType,
     title: "",
@@ -155,6 +159,10 @@ export function OperationBuilderView({
 
   const existingOp = detail?.operation;
   const existingVer = detail?.currentVersion;
+  const isCollaboratorMode =
+    mode === "edit" &&
+    detail !== undefined &&
+    !detail.access.capabilities.canChangeVisibility;
 
   const [title, setTitle] = useState(existingOp?.title ?? "");
   const [summary, setSummary] = useState(existingOp?.summary ?? "");
@@ -198,7 +206,7 @@ export function OperationBuilderView({
   const [steps, setSteps] = useState<EditableStep[]>(() =>
     existingVer && existingVer.steps.length > 0
       ? existingVer.steps.map(toEditableStep)
-      : [createEmptyStep(existingOp?.domain ?? initialDomain)]
+      : [createEmptyStep(existingOp?.domain ?? initialDomain, "a0", "step_1")]
   );
 
   const [changeSummary, setChangeSummary] = useState("");
@@ -208,6 +216,7 @@ export function OperationBuilderView({
     fingerprint: string;
     findings: SecretScanFinding[];
   } | null>(null);
+  const [acknowledgeWarnings, setAcknowledgeWarnings] = useState(false);
   const [historyOpen, setHistoryOpen] = useState(false);
 
   // Add Variable inline form state
@@ -448,6 +457,7 @@ export function OperationBuilderView({
       prerequisites,
       steps: cleanStepsForSubmit,
       changeSummary: changeSummary.trim() || null,
+      acknowledgeWarnings,
     };
 
     startTransition(async () => {
@@ -579,6 +589,23 @@ export function OperationBuilderView({
         </div>
       </div>
 
+      {/* Collaborator Mode Notice */}
+      {isCollaboratorMode ? (
+        <div
+          role="status"
+          data-testid="collaborator-mode-banner"
+          className="flex items-start gap-2 rounded-lg border border-collab/40 bg-collab/5 px-4 py-2.5 text-xs text-foreground"
+        >
+          <Lock className="mt-0.5 size-3.5 shrink-0 text-collab" />
+          <p>
+            <strong className="font-medium">Collaborator mode:</strong> You can
+            edit steps, variables, and prerequisites and publish new versions.
+            Visibility, sharing, and project links can only be changed by the
+            owner.
+          </p>
+        </div>
+      ) : null}
+
       {/* Optimistic Lock Conflict Banner */}
       {concurrencyConflict ? (
         <div
@@ -642,12 +669,13 @@ export function OperationBuilderView({
           </ul>
         </div>
       ) : isSharedVisibility && liveScanReport.hasWarnings ? (
-        <div className="space-y-1.5 rounded-lg border border-reminder/40 bg-reminder/10 px-4 py-3 text-xs">
+        <div className="space-y-2 rounded-lg border border-reminder/40 bg-reminder/10 px-4 py-3 text-xs">
           <div className="flex items-center gap-2 font-medium text-reminder">
             <AlertTriangle className="size-4 shrink-0" />
             <span>
               Scanner advisory ({liveScanReport.warnings.length} item
-              {liveScanReport.warnings.length === 1 ? "" : "s"} — non-blocking)
+              {liveScanReport.warnings.length === 1 ? "" : "s"} — confirmation
+              required for shared publishing)
             </span>
           </div>
           <ul className="space-y-1 pl-6 text-foreground/85">
@@ -658,6 +686,18 @@ export function OperationBuilderView({
               </li>
             ))}
           </ul>
+          <label className="flex cursor-pointer items-center gap-2 pt-1 text-foreground">
+            <input
+              type="checkbox"
+              checked={acknowledgeWarnings}
+              onChange={(e) => setAcknowledgeWarnings(e.target.checked)}
+              className="size-4 rounded border-border accent-primary"
+            />
+            <span>
+              I reviewed these advisories and confirm no sensitive data is
+              exposed.
+            </span>
+          </label>
         </div>
       ) : isSharedVisibility ? (
         <div className="flex items-center gap-2 rounded-lg border border-done/35 bg-done/10 px-3.5 py-2 text-xs text-done">
@@ -831,10 +871,11 @@ export function OperationBuilderView({
 
           <div className="space-y-1.5">
             <Label htmlFor="op-visibility" className="text-xs">
-              Visibility
+              Visibility {isCollaboratorMode ? "(Owner only)" : ""}
             </Label>
             <Select
               value={visibility}
+              disabled={isCollaboratorMode}
               onValueChange={(v) => setVisibility(v as OperationVisibility)}
             >
               <SelectTrigger id="op-visibility" className="h-9 bg-background text-xs md:h-8">
@@ -860,51 +901,53 @@ export function OperationBuilderView({
         </div>
 
         {/* Cross-Module Links */}
-        <div className="grid grid-cols-1 gap-3 border-t border-border/70 pt-3 md:grid-cols-2">
-          <div className="space-y-1.5">
-            <Label htmlFor="op-project" className="text-xs">
-              Linked Project (optional)
-            </Label>
-            <Select value={projectId} onValueChange={setProjectId}>
-              <SelectTrigger id="op-project" className="h-9 bg-background text-xs md:h-8">
-                <SelectValue placeholder="None" />
-              </SelectTrigger>
-              <SelectContent>
-                <SelectItem value="none" className="text-xs">
-                  No project linked
-                </SelectItem>
-                {linkOptions.projects.map((p) => (
-                  <SelectItem key={p.id} value={p.id} className="text-xs">
-                    {p.name}
+        {!isCollaboratorMode ? (
+          <div className="grid grid-cols-1 gap-3 border-t border-border/70 pt-3 md:grid-cols-2">
+            <div className="space-y-1.5">
+              <Label htmlFor="op-project" className="text-xs">
+                Linked Project (optional)
+              </Label>
+              <Select value={projectId} onValueChange={setProjectId}>
+                <SelectTrigger id="op-project" className="h-9 bg-background text-xs md:h-8">
+                  <SelectValue placeholder="None" />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="none" className="text-xs">
+                    No project linked
                   </SelectItem>
-                ))}
-              </SelectContent>
-            </Select>
-          </div>
+                  {linkOptions.projects.map((p) => (
+                    <SelectItem key={p.id} value={p.id} className="text-xs">
+                      {p.name}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </div>
 
-          <div className="space-y-1.5">
-            <Label htmlFor="op-habit" className="text-xs">
-              Linked Habit (auto-logged on run completion)
-            </Label>
-            <Select value={linkedHabitId} onValueChange={setLinkedHabitId}>
-              <SelectTrigger id="op-habit" className="h-9 bg-background text-xs md:h-8">
-                <SelectValue placeholder="None" />
-              </SelectTrigger>
-              <SelectContent>
-                <SelectItem value="none" className="text-xs">
-                  No habit linked
-                </SelectItem>
-                {linkOptions.habits.map((h) => (
-                  <SelectItem key={h.id} value={h.id} className="text-xs">
-                    {h.title}
+            <div className="space-y-1.5">
+              <Label htmlFor="op-habit" className="text-xs">
+                Linked Habit (auto-logged on run completion)
+              </Label>
+              <Select value={linkedHabitId} onValueChange={setLinkedHabitId}>
+                <SelectTrigger id="op-habit" className="h-9 bg-background text-xs md:h-8">
+                  <SelectValue placeholder="None" />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="none" className="text-xs">
+                    No habit linked
                   </SelectItem>
-                ))}
-              </SelectContent>
-            </Select>
+                  {linkOptions.habits.map((h) => (
+                    <SelectItem key={h.id} value={h.id} className="text-xs">
+                      {h.title}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </div>
           </div>
-        </div>
+        ) : null}
 
-        {linkOptions.notes.length > 0 ? (
+        {!isCollaboratorMode && linkOptions.notes.length > 0 ? (
           <div className="space-y-1.5">
             <Label className="text-xs">Reference Notes</Label>
             <div className="flex flex-wrap gap-1.5">
@@ -932,16 +975,18 @@ export function OperationBuilderView({
           </div>
         ) : null}
 
-        <div className="flex items-center justify-between border-t border-border/70 pt-3">
-          <label className="inline-flex cursor-pointer items-center gap-2 text-xs text-muted-foreground">
-            <Switch
-              checked={allowForking}
-              onCheckedChange={setAllowForking}
-              aria-label="Allow forking when shared"
-            />
-            <span>Allow forking when shared</span>
-          </label>
-        </div>
+        {!isCollaboratorMode ? (
+          <div className="flex items-center justify-between border-t border-border/70 pt-3">
+            <label className="inline-flex cursor-pointer items-center gap-2 text-xs text-muted-foreground">
+              <Switch
+                checked={allowForking}
+                onCheckedChange={setAllowForking}
+                aria-label="Allow forking when shared"
+              />
+              <span>Allow forking when shared</span>
+            </label>
+          </div>
+        ) : null}
       </section>
 
       {/* Section 2: Dynamic Variables */}
@@ -1214,8 +1259,9 @@ export function OperationBuilderView({
             return (
               <div
                 key={step.key}
+                id={`step-${step.key}`}
                 className={cn(
-                  "space-y-3 rounded-lg border bg-card p-4",
+                  "space-y-3 rounded-lg border bg-card p-4 scroll-mt-16",
                   step.type === "caution"
                     ? "border-overdue/55 bg-overdue/5"
                     : "border-border"

@@ -130,6 +130,8 @@ describe("withWorkspaceAuth (GET /api/workspace/* security boundary)", () => {
       isSuspended: false,
       timezone: "Africa/Kampala",
       emailRemindersEnabled: true,
+      handle: null,
+      bio: null,
     });
     vi.mocked(resolveLiveAdminStatus).mockResolvedValueOnce({
       isAdmin: true,

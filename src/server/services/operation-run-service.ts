@@ -13,7 +13,10 @@ import {
 } from "@/server/dal/errors";
 import { habitRepository, type HabitRepository } from "@/server/dal/habits";
 import {
-  assertOperationAccess,
+  assertOperationCapability,
+  resolveOperationAccess,
+} from "@/server/dal/operation-auth";
+import {
   operationRepository,
   type OperationReferenceNoteSummary,
   type OperationRepository,
@@ -92,6 +95,7 @@ export interface StartOperationRunInput {
   title?: string;
   variablesValues?: Record<string, string>;
   prerequisitesChecked?: string[];
+  unlistedToken?: string | null;
 }
 
 export interface UpdateRunPreflightInput {
@@ -274,12 +278,20 @@ export class OperationRunService {
 
     const createdRun = await withDbRetry(() =>
       this.database.transaction(async (tx) => {
-        const { operation } = await assertOperationAccess(
-          operationId,
-          userId,
-          ["owner"],
+        const access = await resolveOperationAccess(
+          {
+            operationId,
+            sessionUserId: userId,
+            unlistedToken: input.unlistedToken,
+          },
           tx
         );
+        assertOperationCapability(
+          access,
+          "canSaveRun",
+          "You do not have permission to start a saved run on this operation."
+        );
+        const { operation } = access;
 
         const latestVersion = await this.operations.getLatestVersion(
           operation.id,

@@ -4,7 +4,6 @@ import { requireAdmin } from "@/server/dal/auth-guard";
 import { DalError } from "@/server/dal/errors";
 import { adminService } from "@/server/services/admin-service";
 
-export const dynamic = "force-dynamic";
 
 const NO_STORE_HEADERS = {
   "Cache-Control": "private, no-store",

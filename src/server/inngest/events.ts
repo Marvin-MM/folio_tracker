@@ -116,3 +116,56 @@ export const habitCommentPostedEvent = eventType("app/habit.comment_posted", {
     deepLink: z.string(),
   }),
 });
+
+export const operationStaleAuditEvent = eventType("app/operation.stale_audit", {
+  schema: z.object({
+    operationId: z.string(),
+    ownerId: z.string(),
+    operationTitle: z.string(),
+    reviewCycleDays: z.number().int().min(1),
+    daysSinceVerified: z.number().int().min(0),
+    cycleBucket: z.number().int().min(1),
+    dedupKey: z.string(),
+  }),
+});
+
+export const operationInvitedInAppEvent = eventType(
+  "app/operation.invited_in_app",
+  {
+    schema: z.object({
+      invitationId: z.string(),
+      operationId: z.string(),
+      operationTitle: z.string(),
+      inviterName: z.string(),
+      targetUserId: z.string(),
+      role: z.enum(["collaborator", "viewer"]),
+    }),
+  }
+);
+
+export const operationInvitedEmailEvent = eventType(
+  "app/operation.invited_email",
+  {
+    schema: z.object({
+      invitationId: z.string(),
+      operationId: z.string(),
+      operationTitle: z.string(),
+      inviterName: z.string(),
+      targetEmail: z.string().email(),
+      role: z.enum(["collaborator", "viewer"]),
+      inviteUrl: z.string().url(),
+    }),
+  }
+);
+
+export const operationStepFlaggedEvent = eventType("app/operation.step_flagged", {
+  schema: z.object({
+    flagId: z.string(),
+    operationId: z.string(),
+    operationTitle: z.string(),
+    ownerId: z.string(),
+    reporterName: z.string(),
+    stepKey: z.string(),
+    messagePreview: z.string(),
+  }),
+});

@@ -6,4 +6,5 @@ export * from "./notifications";
 export * from "./habits";
 export * from "./habits-social";
 export * from "./operations";
+export * from "./operations-social";
 export * from "./relations";

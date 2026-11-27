@@ -124,6 +124,57 @@ export type AppDomainEvent =
         bodyPreview: string;
         deepLink: string;
       };
+    }
+  | {
+      id?: string;
+      name: "app/operation.stale_audit";
+      data: {
+        operationId: string;
+        ownerId: string;
+        operationTitle: string;
+        reviewCycleDays: number;
+        daysSinceVerified: number;
+        cycleBucket: number;
+        dedupKey: string;
+      };
+    }
+  | {
+      id?: string;
+      name: "app/operation.invited_in_app";
+      data: {
+        invitationId: string;
+        operationId: string;
+        operationTitle: string;
+        inviterName: string;
+        targetUserId: string;
+        role: "collaborator" | "viewer";
+      };
+    }
+  | {
+      id?: string;
+      name: "app/operation.invited_email";
+      data: {
+        invitationId: string;
+        operationId: string;
+        operationTitle: string;
+        inviterName: string;
+        targetEmail: string;
+        role: "collaborator" | "viewer";
+        inviteUrl: string;
+      };
+    }
+  | {
+      id?: string;
+      name: "app/operation.step_flagged";
+      data: {
+        flagId: string;
+        operationId: string;
+        operationTitle: string;
+        ownerId: string;
+        reporterName: string;
+        stepKey: string;
+        messagePreview: string;
+      };
     };
 
 export interface EventBus {

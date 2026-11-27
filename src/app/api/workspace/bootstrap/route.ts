@@ -5,7 +5,6 @@ import { userRepository } from "@/server/dal/user-repository";
 import { workspaceRepository } from "@/server/dal/workspace-repository";
 import { withWorkspaceAuth, workspaceJson } from "@/server/http/workspace-api";
 
-export const dynamic = "force-dynamic";
 
 export async function GET() {
   return withWorkspaceAuth(async ({ user }) => {

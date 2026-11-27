@@ -76,6 +76,8 @@ export const workspaceQueryKeys = {
     ["workspace", userId, "operations", "hub", filterKey] as const,
   operationDetail: (userId: string, operationId: string) =>
     ["workspace", userId, "operations", "detail", operationId] as const,
+  operationShare: (userId: string, operationId: string) =>
+    ["workspace", userId, "operations", "share", operationId] as const,
   operationRun: (userId: string, runId: string) =>
     ["workspace", userId, "operations", "run", runId] as const,
 };

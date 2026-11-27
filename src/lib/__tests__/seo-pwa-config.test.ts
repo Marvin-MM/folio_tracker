@@ -28,7 +28,7 @@ describe("SEO & PWA configuration", () => {
     );
   });
 
-  it("blocks private app, API, and invite token routes in robots.txt and sitemap.xml", () => {
+  it("blocks private app, API, and invite token routes in robots.txt and sitemap.xml", async () => {
     const robotsConfig = robots();
     const rules = Array.isArray(robotsConfig.rules)
       ? robotsConfig.rules[0]
@@ -39,9 +39,10 @@ describe("SEO & PWA configuration", () => {
     );
     expect(robotsConfig.sitemap).toMatch(/\/sitemap\.xml$/);
 
-    const entries = sitemap();
+    const entries = await sitemap();
     const urls = entries.map((e) => e.url);
     expect(urls.some((u) => u.endsWith("/"))).toBe(true);
+    expect(urls.some((u) => u.endsWith("/explore"))).toBe(true);
     expect(urls.some((u) => u.endsWith("/login"))).toBe(true);
     expect(urls.some((u) => u.includes("/app/"))).toBe(false);
     expect(urls.some((u) => u.includes("/invite/"))).toBe(false);

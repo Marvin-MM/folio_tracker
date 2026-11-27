@@ -9,11 +9,15 @@ import {
   type ActionResult,
 } from "@/actions/types";
 import { requireSession } from "@/server/dal/auth-guard";
+import { invalidatePublicOperationTags } from "@/server/dal/public-operations-cache";
 import {
+  OPERATION_MEMBER_ROLES,
   TASK_PRIORITIES,
+  type OperationMemberRecord,
   type OperationRecord,
   type OperationRunRecord,
   type OperationRunStepRecord,
+  type OperationStepFlagRecord,
   type ReminderRecord,
   type TaskRecord,
 } from "@/server/db/schema";
@@ -34,6 +38,10 @@ import {
   type SecretScanReport,
 } from "@/server/domain/operations";
 import {
+  MAX_STEP_FLAG_MESSAGE_LENGTH,
+  operationFlagService,
+} from "@/server/services/operation-flag-service";
+import {
   operationRunService,
   type CompleteRunResult,
   type OperationRunDetailPayload,
@@ -41,10 +49,20 @@ import {
 import {
   operationService,
   type OperationMutationResult,
+  type OperationVisibilityMutationResult,
 } from "@/server/services/operation-service";
+import {
+  operationShareService,
+  type SendOperationInviteResult,
+} from "@/server/services/operation-share-service";
+import { operationSocialService } from "@/server/services/operation-social-service";
 
 const blueprintBaseSchema = z.object({
-  title: z.string().trim().min(1, "Title is required.").max(MAX_OPERATION_TITLE_LENGTH),
+  title: z
+    .string()
+    .trim()
+    .min(1, "Title is required.")
+    .max(MAX_OPERATION_TITLE_LENGTH),
   summary: z.string().trim().max(MAX_OPERATION_SUMMARY_LENGTH).optional(),
   domain: operationDomainSchema.default("general"),
   tags: operationTagsSchema.optional(),
@@ -52,14 +70,19 @@ const blueprintBaseSchema = z.object({
   estimatedMinutes: z.number().int().min(1).max(10080).nullish(),
   visibility: operationVisibilitySchema.default("private"),
   allowForking: z.boolean().optional(),
+  shareWithProject: z.boolean().optional(),
   reviewCycleDays: z.number().int().min(1).max(3650).nullish(),
   projectId: z.string().trim().min(1).nullish(),
   linkedHabitId: z.string().trim().min(1).nullish(),
-  referenceNoteIds: z.array(z.string().trim().min(1)).max(MAX_REFERENCE_NOTES).optional(),
+  referenceNoteIds: z
+    .array(z.string().trim().min(1))
+    .max(MAX_REFERENCE_NOTES)
+    .optional(),
   variables: operationVariablesSchemaArray.optional(),
   prerequisites: operationPrerequisitesSchemaArray.optional(),
   steps: operationStepsSchemaArray,
   changeSummary: z.string().trim().max(240).nullish(),
+  acknowledgeWarnings: z.boolean().optional(),
 });
 
 const publishVersionSchema = blueprintBaseSchema.extend({
@@ -72,6 +95,25 @@ const rollbackVersionSchema = z.object({
   targetVersionNumber: z.number().int().min(1),
   expectedEditVersion: z.number().int().min(1),
   changeSummary: z.string().trim().max(240).nullish(),
+  acknowledgeWarnings: z.boolean().optional(),
+});
+
+const updateVisibilitySchema = z.object({
+  operationId: z.string().trim().min(1),
+  visibility: operationVisibilitySchema,
+  allowForking: z.boolean().optional(),
+  acknowledgeWarnings: z.boolean().optional(),
+});
+
+const updateProjectSharingSchema = z.object({
+  operationId: z.string().trim().min(1),
+  projectId: z.string().trim().min(1).nullable(),
+  shareWithProject: z.boolean(),
+});
+
+const forkOperationSchema = z.object({
+  operationId: z.string().trim().min(1),
+  unlistedToken: z.string().trim().min(1).nullish(),
 });
 
 const archiveOperationSchema = z.object({
@@ -96,14 +138,21 @@ const startRunSchema = z.object({
   operationId: z.string().trim().min(1),
   title: z.string().trim().max(160).optional(),
   variablesValues: z.record(z.string(), z.string().max(1000)).optional(),
-  prerequisitesChecked: z.array(z.string().trim().min(1).max(64)).max(50).optional(),
+  prerequisitesChecked: z
+    .array(z.string().trim().min(1).max(64))
+    .max(50)
+    .optional(),
+  unlistedToken: z.string().trim().min(1).nullish(),
 });
 
 const updateRunPreflightSchema = z.object({
   runId: z.string().trim().min(1),
   title: z.string().trim().min(1).max(160).optional(),
   variablesValues: z.record(z.string(), z.string().max(1000)).optional(),
-  prerequisitesChecked: z.array(z.string().trim().min(1).max(64)).max(50).optional(),
+  prerequisitesChecked: z
+    .array(z.string().trim().min(1).max(64))
+    .max(50)
+    .optional(),
 });
 
 const updateRunStepSchema = z.object({
@@ -160,15 +209,84 @@ const createBlockedStepTaskSchema = z.object({
   markStepBlocked: z.boolean().optional(),
 });
 
-function revalidateOperationRoutes(operationId?: string, runId?: string) {
+const inviteQuickPickSchema = z.object({
+  operationId: z.string().trim().min(1),
+  targetUserId: z.string().trim().min(1),
+  role: z.enum(OPERATION_MEMBER_ROLES),
+});
+
+const inviteByEmailSchema = z.object({
+  operationId: z.string().trim().min(1),
+  email: z.string().trim().email("Enter a valid email address."),
+  role: z.enum(OPERATION_MEMBER_ROLES),
+});
+
+const invitationIdSchema = z.object({
+  invitationId: z.string().trim().min(1),
+});
+
+const acceptTokenInviteSchema = z.object({
+  token: z.string().trim().min(16),
+});
+
+const revokeInvitationSchema = z.object({
+  operationId: z.string().trim().min(1),
+  invitationId: z.string().trim().min(1),
+});
+
+const memberMutationSchema = z.object({
+  operationId: z.string().trim().min(1),
+  targetUserId: z.string().trim().min(1),
+  role: z.enum(OPERATION_MEMBER_ROLES).optional(),
+});
+
+const flagStepSchema = z.object({
+  operationId: z.string().trim().min(1),
+  stepKey: z.string().trim().min(1).max(64),
+  versionNumber: z.number().int().min(1).optional(),
+  message: z
+    .string()
+    .trim()
+    .min(1, "Describe what is outdated or unclear.")
+    .max(MAX_STEP_FLAG_MESSAGE_LENGTH),
+  unlistedToken: z.string().trim().min(1).nullish(),
+});
+
+const resolveFlagSchema = z.object({
+  operationId: z.string().trim().min(1),
+  flagId: z.string().trim().min(1),
+});
+
+const followCreatorSchema = z.object({
+  targetUserId: z.string().trim().min(1),
+  follow: z.boolean(),
+});
+
+function revalidateOperationRoutes(params: {
+  operationId?: string;
+  runId?: string;
+  slug?: string | null;
+  ownerHandle?: string | null;
+}) {
   revalidatePath("/app/operations");
-  if (operationId) {
-    revalidatePath(`/app/operations/${operationId}`);
-    revalidatePath(`/app/operations/${operationId}/edit`);
+  if (params.operationId) {
+    revalidatePath(`/app/operations/${params.operationId}`);
+    revalidatePath(`/app/operations/${params.operationId}/edit`);
   }
-  if (runId) {
-    revalidatePath(`/app/operations/runs/${runId}`);
+  if (params.runId) {
+    revalidatePath(`/app/operations/runs/${params.runId}`);
   }
+  if (params.slug) {
+    revalidatePath(`/ops/${params.slug}`);
+  }
+  if (params.ownerHandle) {
+    revalidatePath(`/u/${params.ownerHandle}`);
+  }
+  revalidatePath("/explore");
+  invalidatePublicOperationTags({
+    slug: params.slug,
+    ownerHandle: params.ownerHandle,
+  });
 }
 
 export async function scanOperationDraftAction(
@@ -218,7 +336,11 @@ export async function createOperationAction(
     }
 
     const result = await operationService.createOperation(user.id, parsed.data);
-    revalidateOperationRoutes(result.operation.id);
+    revalidateOperationRoutes({
+      operationId: result.operation.id,
+      slug: result.operation.slug,
+      ownerHandle: result.ownerHandle,
+    });
     return actionOk(result);
   } catch (error) {
     return mapErrorToActionResult(error);
@@ -245,8 +367,124 @@ export async function publishOperationVersionAction(
       operationId,
       payload
     );
-    revalidateOperationRoutes(operationId);
+    revalidateOperationRoutes({
+      operationId,
+      slug: result.operation.slug,
+      ownerHandle: result.ownerHandle,
+    });
     return actionOk(result);
+  } catch (error) {
+    return mapErrorToActionResult(error);
+  }
+}
+
+export async function updateOperationVisibilityAction(
+  raw: z.input<typeof updateVisibilitySchema>
+): Promise<ActionResult<OperationVisibilityMutationResult>> {
+  try {
+    const { user } = await requireSession();
+    const parsed = updateVisibilitySchema.safeParse(raw);
+    if (!parsed.success) {
+      return actionErr("VALIDATION_ERROR", "Invalid visibility settings.");
+    }
+
+    const result = await operationService.updateVisibility(
+      user.id,
+      parsed.data.operationId,
+      {
+        visibility: parsed.data.visibility,
+        allowForking: parsed.data.allowForking,
+        acknowledgeWarnings: parsed.data.acknowledgeWarnings,
+      }
+    );
+    revalidateOperationRoutes({
+      operationId: result.operation.id,
+      slug: result.operation.slug,
+      ownerHandle: result.ownerHandle,
+    });
+    return actionOk(result);
+  } catch (error) {
+    return mapErrorToActionResult(error);
+  }
+}
+
+export async function rotateUnlistedOperationLinkAction(
+  raw: z.input<typeof operationIdSchema>
+): Promise<
+  ActionResult<{ operation: OperationRecord; mintedUnlistedToken: string }>
+> {
+  try {
+    const { user } = await requireSession();
+    const parsed = operationIdSchema.safeParse(raw);
+    if (!parsed.success) {
+      return actionErr("VALIDATION_ERROR", "Invalid operation ID.");
+    }
+    const result = await operationService.rotateUnlistedToken(
+      user.id,
+      parsed.data.operationId
+    );
+    revalidateOperationRoutes({
+      operationId: result.operation.id,
+      slug: result.operation.slug,
+    });
+    return actionOk(result);
+  } catch (error) {
+    return mapErrorToActionResult(error);
+  }
+}
+
+export async function updateOperationProjectSharingAction(
+  raw: z.input<typeof updateProjectSharingSchema>
+): Promise<ActionResult<OperationRecord>> {
+  try {
+    const { user } = await requireSession();
+    const parsed = updateProjectSharingSchema.safeParse(raw);
+    if (!parsed.success) {
+      return actionErr("VALIDATION_ERROR", "Invalid project sharing settings.");
+    }
+    const updated = await operationService.updateProjectSharing(
+      user.id,
+      parsed.data.operationId,
+      {
+        projectId: parsed.data.projectId,
+        shareWithProject: parsed.data.shareWithProject,
+      }
+    );
+    revalidateOperationRoutes({ operationId: updated.id });
+    return actionOk(updated);
+  } catch (error) {
+    return mapErrorToActionResult(error);
+  }
+}
+
+export async function forkOperationAction(
+  raw: z.input<typeof forkOperationSchema>
+): Promise<
+  ActionResult<{
+    forked: OperationRecord;
+    newForkCount: number;
+  }>
+> {
+  try {
+    const { user } = await requireSession();
+    const parsed = forkOperationSchema.safeParse(raw);
+    if (!parsed.success) {
+      return actionErr("VALIDATION_ERROR", "Invalid fork request.");
+    }
+    const result = await operationService.forkOperation(
+      user.id,
+      parsed.data.operationId,
+      parsed.data.unlistedToken
+    );
+    revalidateOperationRoutes({
+      operationId: result.forked.id,
+      slug: result.sourceSlug,
+      ownerHandle: result.sourceOwnerHandle,
+    });
+    return actionOk({
+      forked: result.forked,
+      newForkCount: result.newForkCount,
+    });
   } catch (error) {
     return mapErrorToActionResult(error);
   }
@@ -273,9 +511,14 @@ export async function rollbackOperationVersionAction(
         targetVersionNumber: parsed.data.targetVersionNumber,
         expectedEditVersion: parsed.data.expectedEditVersion,
         changeSummary: parsed.data.changeSummary,
+        acknowledgeWarnings: parsed.data.acknowledgeWarnings,
       }
     );
-    revalidateOperationRoutes(parsed.data.operationId);
+    revalidateOperationRoutes({
+      operationId: parsed.data.operationId,
+      slug: result.operation.slug,
+      ownerHandle: result.ownerHandle,
+    });
     return actionOk(result);
   } catch (error) {
     return mapErrorToActionResult(error);
@@ -291,12 +534,17 @@ export async function archiveOperationAction(
     if (!parsed.success) {
       return actionErr("VALIDATION_ERROR", "Invalid archive request.");
     }
-    const updated = await operationService.archiveOperation(
-      user.id,
-      parsed.data.operationId,
-      parsed.data.isArchived
-    );
-    revalidateOperationRoutes(parsed.data.operationId);
+    const { operation: updated, ownerHandle } =
+      await operationService.archiveOperation(
+        user.id,
+        parsed.data.operationId,
+        parsed.data.isArchived
+      );
+    revalidateOperationRoutes({
+      operationId: updated.id,
+      slug: updated.slug,
+      ownerHandle,
+    });
     return actionOk(updated);
   } catch (error) {
     return mapErrorToActionResult(error);
@@ -312,8 +560,15 @@ export async function deleteOperationAction(
     if (!parsed.success) {
       return actionErr("VALIDATION_ERROR", "Invalid operation ID.");
     }
-    await operationService.deleteOperation(user.id, parsed.data.operationId);
-    revalidateOperationRoutes(parsed.data.operationId);
+    const { slug, ownerHandle } = await operationService.deleteOperation(
+      user.id,
+      parsed.data.operationId
+    );
+    revalidateOperationRoutes({
+      operationId: parsed.data.operationId,
+      slug,
+      ownerHandle,
+    });
     return actionOk({ deleted: true });
   } catch (error) {
     return mapErrorToActionResult(error);
@@ -329,11 +584,13 @@ export async function markOperationVerifiedAction(
     if (!parsed.success) {
       return actionErr("VALIDATION_ERROR", "Invalid operation ID.");
     }
-    const updated = await operationService.markVerified(
-      user.id,
-      parsed.data.operationId
-    );
-    revalidateOperationRoutes(parsed.data.operationId);
+    const { operation: updated, ownerHandle } =
+      await operationService.markVerified(user.id, parsed.data.operationId);
+    revalidateOperationRoutes({
+      operationId: updated.id,
+      slug: updated.slug,
+      ownerHandle,
+    });
     return actionOk(updated);
   } catch (error) {
     return mapErrorToActionResult(error);
@@ -397,9 +654,13 @@ export async function startOperationRunAction(
         title: parsed.data.title,
         variablesValues: parsed.data.variablesValues,
         prerequisitesChecked: parsed.data.prerequisitesChecked,
+        unlistedToken: parsed.data.unlistedToken,
       }
     );
-    revalidateOperationRoutes(parsed.data.operationId, detail.run.id);
+    revalidateOperationRoutes({
+      operationId: parsed.data.operationId,
+      runId: detail.run.id,
+    });
     return actionOk(detail);
   } catch (error) {
     return mapErrorToActionResult(error);
@@ -485,7 +746,10 @@ export async function syncOfflineRunMutationsAction(
         stepUpdates: parsed.data.stepUpdates,
       }
     );
-    revalidateOperationRoutes(detail.operation.id, detail.run.id);
+    revalidateOperationRoutes({
+      operationId: detail.operation.id,
+      runId: detail.run.id,
+    });
     return actionOk(detail);
   } catch (error) {
     return mapErrorToActionResult(error);
@@ -511,7 +775,10 @@ export async function completeOperationRunAction(
         timezone: parsed.data.timezone ?? user.timezone ?? "UTC",
       }
     );
-    revalidateOperationRoutes(result.run.operationId, result.run.id);
+    revalidateOperationRoutes({
+      operationId: result.run.operationId,
+      runId: result.run.id,
+    });
     if (result.habitAutoLogged) {
       revalidatePath("/app/habits");
       revalidatePath("/app/today");
@@ -536,7 +803,10 @@ export async function abandonOperationRunAction(
       user.id,
       parsed.data.runId
     );
-    revalidateOperationRoutes(abandoned.operationId, abandoned.id);
+    revalidateOperationRoutes({
+      operationId: abandoned.operationId,
+      runId: abandoned.id,
+    });
     return actionOk(abandoned);
   } catch (error) {
     return mapErrorToActionResult(error);
@@ -575,8 +845,271 @@ export async function createBlockedStepTaskAction(
     revalidatePath("/app/today");
     revalidatePath("/app/upcoming");
     revalidatePath("/app/reminders");
-    revalidateOperationRoutes(undefined, parsed.data.runId);
+    revalidateOperationRoutes({ runId: parsed.data.runId });
     return actionOk(result);
+  } catch (error) {
+    return mapErrorToActionResult(error);
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Phase 2: Private Sharing, Smart Dual Invites, Step Flags & Creator Follows
+// ---------------------------------------------------------------------------
+
+export async function inviteOperationQuickPickAction(
+  raw: z.input<typeof inviteQuickPickSchema>
+): Promise<ActionResult<SendOperationInviteResult>> {
+  try {
+    const { user } = await requireSession();
+    const parsed = inviteQuickPickSchema.safeParse(raw);
+    if (!parsed.success) {
+      return actionErr("VALIDATION_ERROR", "Invalid quick-pick invite.");
+    }
+    const result = await operationShareService.inviteQuickPickUser(
+      user.id,
+      parsed.data.operationId,
+      {
+        targetUserId: parsed.data.targetUserId,
+        role: parsed.data.role,
+      }
+    );
+    revalidatePath(`/app/operations/${parsed.data.operationId}`);
+    return actionOk(result);
+  } catch (error) {
+    return mapErrorToActionResult(error);
+  }
+}
+
+export async function inviteOperationByEmailAction(
+  raw: z.input<typeof inviteByEmailSchema>
+): Promise<ActionResult<SendOperationInviteResult>> {
+  try {
+    const { user } = await requireSession();
+    const parsed = inviteByEmailSchema.safeParse(raw);
+    if (!parsed.success) {
+      return actionErr(
+        "VALIDATION_ERROR",
+        parsed.error.issues[0]?.message ?? "Enter a valid email address."
+      );
+    }
+    const result = await operationShareService.inviteByEmail(
+      user.id,
+      parsed.data.operationId,
+      {
+        email: parsed.data.email,
+        role: parsed.data.role,
+      }
+    );
+    revalidatePath(`/app/operations/${parsed.data.operationId}`);
+    return actionOk(result);
+  } catch (error) {
+    return mapErrorToActionResult(error);
+  }
+}
+
+export async function acceptInAppOperationInviteAction(
+  raw: z.input<typeof invitationIdSchema>
+): Promise<ActionResult<{ operationId: string; member: OperationMemberRecord }>> {
+  try {
+    const { user } = await requireSession();
+    const parsed = invitationIdSchema.safeParse(raw);
+    if (!parsed.success) {
+      return actionErr("VALIDATION_ERROR", "Invalid invitation ID.");
+    }
+    const result = await operationShareService.acceptInAppInvitation(
+      user.id,
+      parsed.data.invitationId
+    );
+    revalidatePath("/app/operations");
+    revalidatePath(`/app/operations/${result.operationId}`);
+    return actionOk(result);
+  } catch (error) {
+    return mapErrorToActionResult(error);
+  }
+}
+
+export async function acceptTokenOperationInviteAction(
+  raw: z.input<typeof acceptTokenInviteSchema>
+): Promise<ActionResult<{ operationId: string; member: OperationMemberRecord }>> {
+  try {
+    const { user } = await requireSession();
+    const parsed = acceptTokenInviteSchema.safeParse(raw);
+    if (!parsed.success) {
+      return actionErr("VALIDATION_ERROR", "Invalid invitation token.");
+    }
+    const result = await operationShareService.acceptTokenInvitation(
+      user.id,
+      parsed.data.token
+    );
+    revalidatePath("/app/operations");
+    revalidatePath(`/app/operations/${result.operationId}`);
+    return actionOk(result);
+  } catch (error) {
+    return mapErrorToActionResult(error);
+  }
+}
+
+export async function declineOperationInviteAction(
+  raw: z.input<typeof invitationIdSchema>
+): Promise<ActionResult<{ declined: true }>> {
+  try {
+    const { user } = await requireSession();
+    const parsed = invitationIdSchema.safeParse(raw);
+    if (!parsed.success) {
+      return actionErr("VALIDATION_ERROR", "Invalid invitation ID.");
+    }
+    await operationShareService.declineInvitation(
+      user.id,
+      parsed.data.invitationId
+    );
+    revalidatePath("/app/operations");
+    return actionOk({ declined: true });
+  } catch (error) {
+    return mapErrorToActionResult(error);
+  }
+}
+
+export async function revokeOperationInviteAction(
+  raw: z.input<typeof revokeInvitationSchema>
+): Promise<ActionResult<{ revoked: true }>> {
+  try {
+    const { user } = await requireSession();
+    const parsed = revokeInvitationSchema.safeParse(raw);
+    if (!parsed.success) {
+      return actionErr("VALIDATION_ERROR", "Invalid revoke request.");
+    }
+    await operationShareService.revokeInvitation(
+      user.id,
+      parsed.data.operationId,
+      parsed.data.invitationId
+    );
+    revalidatePath(`/app/operations/${parsed.data.operationId}`);
+    return actionOk({ revoked: true });
+  } catch (error) {
+    return mapErrorToActionResult(error);
+  }
+}
+
+export async function updateOperationMemberRoleAction(
+  raw: z.input<typeof memberMutationSchema>
+): Promise<ActionResult<OperationMemberRecord>> {
+  try {
+    const { user } = await requireSession();
+    const parsed = memberMutationSchema.safeParse(raw);
+    if (!parsed.success || !parsed.data.role) {
+      return actionErr("VALIDATION_ERROR", "Invalid member role update.");
+    }
+    const updated = await operationShareService.updateMemberRole(
+      user.id,
+      parsed.data.operationId,
+      parsed.data.targetUserId,
+      parsed.data.role
+    );
+    revalidatePath(`/app/operations/${parsed.data.operationId}`);
+    return actionOk(updated);
+  } catch (error) {
+    return mapErrorToActionResult(error);
+  }
+}
+
+export async function revokeOperationMemberAction(
+  raw: z.input<typeof memberMutationSchema>
+): Promise<ActionResult<{ revoked: true }>> {
+  try {
+    const { user } = await requireSession();
+    const parsed = memberMutationSchema.safeParse(raw);
+    if (!parsed.success) {
+      return actionErr("VALIDATION_ERROR", "Invalid revoke member request.");
+    }
+    await operationShareService.revokeMember(
+      user.id,
+      parsed.data.operationId,
+      parsed.data.targetUserId
+    );
+    revalidatePath(`/app/operations/${parsed.data.operationId}`);
+    return actionOk({ revoked: true });
+  } catch (error) {
+    return mapErrorToActionResult(error);
+  }
+}
+
+export async function flagOperationStepAction(
+  raw: z.input<typeof flagStepSchema>
+): Promise<ActionResult<OperationStepFlagRecord>> {
+  try {
+    const { user } = await requireSession();
+    const parsed = flagStepSchema.safeParse(raw);
+    if (!parsed.success) {
+      return actionErr(
+        "VALIDATION_ERROR",
+        parsed.error.issues[0]?.message ?? "Please describe the issue."
+      );
+    }
+    const created = await operationFlagService.flagStep(
+      user.id,
+      parsed.data.operationId,
+      {
+        stepKey: parsed.data.stepKey,
+        versionNumber: parsed.data.versionNumber,
+        message: parsed.data.message,
+        unlistedToken: parsed.data.unlistedToken,
+      }
+    );
+    revalidatePath(`/app/operations/${parsed.data.operationId}`);
+    return actionOk(created);
+  } catch (error) {
+    return mapErrorToActionResult(error);
+  }
+}
+
+export async function resolveOperationStepFlagAction(
+  raw: z.input<typeof resolveFlagSchema>
+): Promise<ActionResult<OperationStepFlagRecord>> {
+  try {
+    const { user } = await requireSession();
+    const parsed = resolveFlagSchema.safeParse(raw);
+    if (!parsed.success) {
+      return actionErr("VALIDATION_ERROR", "Invalid flag resolution request.");
+    }
+    const resolved = await operationFlagService.resolveFlag(
+      user.id,
+      parsed.data.operationId,
+      parsed.data.flagId
+    );
+    revalidatePath(`/app/operations/${parsed.data.operationId}`);
+    return actionOk(resolved);
+  } catch (error) {
+    return mapErrorToActionResult(error);
+  }
+}
+
+export async function toggleFollowCreatorAction(
+  raw: z.input<typeof followCreatorSchema>
+): Promise<ActionResult<{ following: boolean; followerCount: number }>> {
+  try {
+    const { user } = await requireSession();
+    const parsed = followCreatorSchema.safeParse(raw);
+    if (!parsed.success) {
+      return actionErr("VALIDATION_ERROR", "Invalid follow request.");
+    }
+    const res = parsed.data.follow
+      ? await operationSocialService.followCreator(
+          user.id,
+          parsed.data.targetUserId
+        )
+      : await operationSocialService.unfollowCreator(
+          user.id,
+          parsed.data.targetUserId
+        );
+
+    if (res.targetHandle) {
+      invalidatePublicOperationTags({ ownerHandle: res.targetHandle });
+      revalidatePath(`/u/${res.targetHandle}`);
+    }
+    return actionOk({
+      following: res.following,
+      followerCount: res.followerCount,
+    });
   } catch (error) {
     return mapErrorToActionResult(error);
   }

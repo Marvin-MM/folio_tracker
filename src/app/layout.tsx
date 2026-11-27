@@ -1,3 +1,4 @@
+import { Suspense } from "react";
 import type { Metadata, Viewport } from "next";
 import { Geist, Geist_Mono } from "next/font/google";
 import { ThemeProvider } from "@/components/providers/theme-provider";
@@ -180,7 +181,7 @@ export default function RootLayout({
           <PwaLaunchSplash />
           <ServiceWorkerRegistrar />
           <TooltipProvider delayDuration={250}>
-            {children}
+            <Suspense fallback={null}>{children}</Suspense>
             <Toaster position="bottom-right" />
           </TooltipProvider>
         </ThemeProvider>

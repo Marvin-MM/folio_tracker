@@ -1,4 +1,8 @@
-import { DalError, SecretScanBlockedError } from "@/server/dal/errors";
+import {
+  DalError,
+  SecretScanBlockedError,
+  SecretScanWarningAckRequiredError,
+} from "@/server/dal/errors";
 import type { SecretScanFinding } from "@/server/domain/operations/secret-scanner";
 
 export interface ActionErrorPayload {
@@ -6,6 +10,7 @@ export interface ActionErrorPayload {
   message: string;
   fieldErrors?: Record<string, string[]>;
   secretFindings?: SecretScanFinding[];
+  secretWarnings?: SecretScanFinding[];
 }
 
 export type ActionResult<T> =
@@ -20,7 +25,8 @@ export function actionErr<T = never>(
   code: string,
   message: string,
   fieldErrors?: Record<string, string[]>,
-  secretFindings?: SecretScanFinding[]
+  secretFindings?: SecretScanFinding[],
+  secretWarnings?: SecretScanFinding[]
 ): ActionResult<T> {
   return {
     ok: false,
@@ -29,6 +35,7 @@ export function actionErr<T = never>(
       message,
       ...(fieldErrors ? { fieldErrors } : {}),
       ...(secretFindings ? { secretFindings } : {}),
+      ...(secretWarnings ? { secretWarnings } : {}),
     },
   };
 }
@@ -38,6 +45,15 @@ export function mapErrorToActionResult<T = never>(
 ): ActionResult<T> {
   if (error instanceof SecretScanBlockedError) {
     return actionErr(error.code, error.message, undefined, error.findings);
+  }
+  if (error instanceof SecretScanWarningAckRequiredError) {
+    return actionErr(
+      error.code,
+      error.message,
+      undefined,
+      undefined,
+      error.warnings
+    );
   }
   if (error instanceof DalError) {
     return actionErr(error.code, error.message);

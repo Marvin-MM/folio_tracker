@@ -12,7 +12,6 @@ import { habitMonitorReadDal } from "@/server/dal/habits-social";
 import type { ScoringMode } from "@/server/domain/habit-analytics";
 import { habitMonitorService } from "@/server/services/habit-monitor-service";
 
-export const dynamic = "force-dynamic";
 
 export const metadata: Metadata = {
   title: "Friend Habit Ledger",

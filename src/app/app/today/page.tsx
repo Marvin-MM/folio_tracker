@@ -5,7 +5,6 @@ import { requireSession } from "@/server/dal/auth-guard";
 import { taskRepository } from "@/server/dal/task-repository";
 import { habitService } from "@/server/services/habit-service";
 
-export const dynamic = "force-dynamic";
 
 export const metadata: Metadata = {
   title: "Today",

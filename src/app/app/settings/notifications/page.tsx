@@ -5,7 +5,6 @@ import { ViewHeader } from "@/components/workspace/view-header";
 import { requireSession } from "@/server/dal/auth-guard";
 import { notificationRepository } from "@/server/dal/notification-repository";
 
-export const dynamic = "force-dynamic";
 
 export const metadata: Metadata = {
   title: "Notification Settings",

@@ -4,7 +4,6 @@ import { withWorkspaceAuth, workspaceJson } from "@/server/http/workspace-api";
 import { habitMonitorService } from "@/server/services/habit-monitor-service";
 import { habitService } from "@/server/services/habit-service";
 
-export const dynamic = "force-dynamic";
 
 export async function GET(request: NextRequest) {
   return withWorkspaceAuth(async ({ user }) => {

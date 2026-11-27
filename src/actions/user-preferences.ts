@@ -3,7 +3,9 @@
 import { revalidatePath } from "next/cache";
 import { z } from "zod";
 import { requireSession } from "@/server/dal/auth-guard";
+import { invalidatePublicOperationTags } from "@/server/dal/public-operations-cache";
 import type { UserPreferencesRecord } from "@/server/dal/user-repository";
+import { MAX_USER_BIO_LENGTH } from "@/server/domain/operations";
 import { userPreferencesService } from "@/server/services/user-preferences-service";
 import {
   actionErr,
@@ -20,6 +22,8 @@ const updatePreferencesSchema = z.object({
   name: z.string().trim().min(1, "Name is required.").max(80),
   timezone: z.string().trim().min(1, "Timezone is required.").max(100),
   emailRemindersEnabled: z.boolean(),
+  handle: z.string().trim().max(32).nullish(),
+  bio: z.string().trim().max(MAX_USER_BIO_LENGTH).nullish(),
 });
 
 export async function syncUserTimezoneAction(
@@ -46,6 +50,8 @@ export async function syncUserTimezoneAction(
         isSuspended: Boolean(user.isSuspended),
         timezone: user.timezone ?? "UTC",
         emailRemindersEnabled: user.emailRemindersEnabled ?? true,
+        handle: typeof user.handle === "string" ? user.handle : null,
+        bio: typeof user.bio === "string" ? user.bio : null,
       });
     }
 
@@ -74,12 +80,22 @@ export async function updateUserPreferencesAction(
 
   try {
     const { user } = await requireSession();
+    const previousHandle =
+      typeof user.handle === "string" ? user.handle : null;
     const updated = await userPreferencesService.updatePreferences(
       user.id,
       parsed.data
     );
+    invalidatePublicOperationTags({
+      ownerHandle: updated.handle,
+      previousHandle,
+    });
     revalidatePath("/app", "layout");
     revalidatePath("/app/settings");
+    if (updated.handle) revalidatePath(`/u/${updated.handle}`);
+    if (previousHandle && previousHandle !== updated.handle) {
+      revalidatePath(`/u/${previousHandle}`);
+    }
     return actionOk(updated);
   } catch (error) {
     return mapErrorToActionResult(error);

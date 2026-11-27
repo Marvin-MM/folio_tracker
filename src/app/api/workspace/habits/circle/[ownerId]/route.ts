@@ -4,7 +4,6 @@ import type { ScoringMode } from "@/server/domain/habit-analytics";
 import { withWorkspaceAuth, workspaceJson } from "@/server/http/workspace-api";
 import { habitMonitorService } from "@/server/services/habit-monitor-service";
 
-export const dynamic = "force-dynamic";
 
 export async function GET(
   request: NextRequest,

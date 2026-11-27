@@ -3,7 +3,6 @@ import { withWorkspaceAuth, workspaceJson } from "@/server/http/workspace-api";
 import { habitCommentService } from "@/server/services/habit-comment-service";
 import { habitMonitorService } from "@/server/services/habit-monitor-service";
 
-export const dynamic = "force-dynamic";
 
 export async function GET(request: NextRequest) {
   return withWorkspaceAuth(async ({ user }) => {

@@ -11,12 +11,16 @@ export interface UserPreferencesRecord {
   isSuspended: boolean;
   timezone: string;
   emailRemindersEnabled: boolean;
+  handle: string | null;
+  bio: string | null;
 }
 
 export interface UpdateUserPreferencesInput {
   name?: string;
   timezone?: string;
   emailRemindersEnabled?: boolean;
+  handle?: string | null;
+  bio?: string | null;
 }
 
 export interface UserRepository {
@@ -24,6 +28,10 @@ export interface UserRepository {
     userId: string,
     executor?: DbExecutor
   ): Promise<UserPreferencesRecord | null>;
+  findByHandle(
+    handle: string,
+    executor?: DbExecutor
+  ): Promise<{ id: string; handle: string } | null>;
   updatePreferences(
     userId: string,
     input: UpdateUserPreferencesInput,
@@ -50,12 +58,26 @@ export class DrizzleUserRepository implements UserRepository {
         isSuspended: users.isSuspended,
         timezone: users.timezone,
         emailRemindersEnabled: users.emailRemindersEnabled,
+        handle: users.handle,
+        bio: users.bio,
       })
       .from(users)
       .where(eq(users.id, userId))
       .limit(1);
 
     return record ?? null;
+  }
+
+  async findByHandle(
+    handle: string,
+    executor: DbExecutor = this.database
+  ): Promise<{ id: string; handle: string } | null> {
+    const [row] = await executor
+      .select({ id: users.id, handle: users.handle })
+      .from(users)
+      .where(eq(users.handle, handle.trim().toLowerCase()))
+      .limit(1);
+    return row && row.handle ? { id: row.id, handle: row.handle } : null;
   }
 
   async updatePreferences(
@@ -76,6 +98,12 @@ export class DrizzleUserRepository implements UserRepository {
     if (input.emailRemindersEnabled !== undefined) {
       updates.emailRemindersEnabled = input.emailRemindersEnabled;
     }
+    if (input.handle !== undefined) {
+      updates.handle = input.handle;
+    }
+    if (input.bio !== undefined) {
+      updates.bio = input.bio;
+    }
 
     const [updated] = await executor
       .update(users)
@@ -90,6 +118,8 @@ export class DrizzleUserRepository implements UserRepository {
         isSuspended: users.isSuspended,
         timezone: users.timezone,
         emailRemindersEnabled: users.emailRemindersEnabled,
+        handle: users.handle,
+        bio: users.bio,
       });
 
     return updated ?? null;

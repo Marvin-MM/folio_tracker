@@ -7,6 +7,7 @@ export interface DbRetryOptions {
 const TRANSIENT_SQLITE_PATTERNS = [
   "SQLITE_BUSY",
   "SQLITE_LOCKED",
+  "TRANSACTION_ACTIVE",
   "database is locked",
   "database table is locked",
   "SQLITE_BUSY_SNAPSHOT",

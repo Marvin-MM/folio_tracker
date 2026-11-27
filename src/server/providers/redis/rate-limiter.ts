@@ -9,6 +9,9 @@ export type RateLimitBucket =
   | "habit_monitor_invite"
   | "habit_history_import"
   | "habit_month_pin"
+  | "operation_invite"
+  | "operation_fork"
+  | "operation_flag"
   | "test_push";
 
 export interface RateLimitPolicy {
@@ -42,6 +45,21 @@ export const RATE_LIMIT_POLICIES: Record<RateLimitBucket, RateLimitPolicy> = {
     maxRequests: 10,
     windowMs: 15 * 60 * 1000,
     upstashWindow: "15 m",
+  },
+  operation_invite: {
+    maxRequests: 20,
+    windowMs: 60 * 60 * 1000,
+    upstashWindow: "1 h",
+  },
+  operation_fork: {
+    maxRequests: 30,
+    windowMs: 60 * 60 * 1000,
+    upstashWindow: "1 h",
+  },
+  operation_flag: {
+    maxRequests: 30,
+    windowMs: 60 * 60 * 1000,
+    upstashWindow: "1 h",
   },
   test_push: {
     maxRequests: 5,
@@ -271,6 +289,30 @@ export class UpstashRateLimiter implements RateLimiter {
           RATE_LIMIT_POLICIES.habit_month_pin.upstashWindow
         ),
         prefix: "folio:rl:habit_month_pin",
+      }),
+      operation_invite: new Ratelimit({
+        redis,
+        limiter: Ratelimit.slidingWindow(
+          RATE_LIMIT_POLICIES.operation_invite.maxRequests,
+          RATE_LIMIT_POLICIES.operation_invite.upstashWindow
+        ),
+        prefix: "folio:rl:operation_invite",
+      }),
+      operation_fork: new Ratelimit({
+        redis,
+        limiter: Ratelimit.slidingWindow(
+          RATE_LIMIT_POLICIES.operation_fork.maxRequests,
+          RATE_LIMIT_POLICIES.operation_fork.upstashWindow
+        ),
+        prefix: "folio:rl:operation_fork",
+      }),
+      operation_flag: new Ratelimit({
+        redis,
+        limiter: Ratelimit.slidingWindow(
+          RATE_LIMIT_POLICIES.operation_flag.maxRequests,
+          RATE_LIMIT_POLICIES.operation_flag.upstashWindow
+        ),
+        prefix: "folio:rl:operation_flag",
       }),
       test_push: new Ratelimit({
         redis,

@@ -249,7 +249,7 @@ export class AdminService {
         latencyMs: probes.dbLatencyMs,
         details: [
           { label: "Mode", value: dbMode },
-          { label: "Schema", value: "31 tables · ULID · FKs ON" },
+          { label: "Schema", value: "35 tables · ULID · FKs ON" },
         ],
       },
       {

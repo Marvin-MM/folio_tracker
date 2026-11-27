@@ -103,6 +103,18 @@ export class SecretScanBlockedError extends DalError {
   }
 }
 
+export class SecretScanWarningAckRequiredError extends DalError {
+  readonly warnings: SecretScanFinding[];
+
+  constructor(
+    warnings: SecretScanFinding[],
+    message = "Review and acknowledge the scanner advisories (such as internal IPs or email addresses) before publishing."
+  ) {
+    super(message, "SECRET_SCAN_WARNINGS_REQUIRE_ACK", 422);
+    this.warnings = warnings;
+  }
+}
+
 export class ValidationError extends DalError {
   constructor(message = "Invalid input provided.") {
     super(message, "VALIDATION_ERROR", 400);

@@ -71,6 +71,7 @@ export function OperationDetailQueryView({
   return (
     <OperationDetailView
       detail={data ?? initialData}
+      userId={userId}
       timezone={timezone}
       autoOpenStartDialog={autoOpenStartDialog}
     />

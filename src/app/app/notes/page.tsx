@@ -4,7 +4,6 @@ import { getServerTimestampMs } from "@/lib/query/clock";
 import { requireSession } from "@/server/dal/auth-guard";
 import { noteRepository } from "@/server/dal/note-repository";
 
-export const dynamic = "force-dynamic";
 
 export const metadata: Metadata = {
   title: "Notes",

@@ -5,7 +5,6 @@ import { requireSession } from "@/server/dal/auth-guard";
 import { habitCommentService } from "@/server/services/habit-comment-service";
 import { habitMonitorService } from "@/server/services/habit-monitor-service";
 
-export const dynamic = "force-dynamic";
 
 export const metadata: Metadata = {
   title: "Accountability Circle",

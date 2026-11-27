@@ -6,7 +6,6 @@ import { requireSession } from "@/server/dal/auth-guard";
 import { ForbiddenError, NotFoundError } from "@/server/dal/errors";
 import { operationRunService } from "@/server/services/operation-run-service";
 
-export const dynamic = "force-dynamic";
 
 interface OperationRunPageProps {
   params: Promise<{ runId: string }>;

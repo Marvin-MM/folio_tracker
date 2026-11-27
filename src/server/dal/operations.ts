@@ -118,6 +118,8 @@ export interface CreateOperationRowInput {
   visibility: OperationVisibility;
   unlistedTokenHash?: string | null;
   allowForking: boolean;
+  shareWithProject?: boolean;
+  forkedFromId?: string | null;
   reviewCycleDays?: number | null;
   lastVerifiedAt?: number | null;
   nowMs: number;
@@ -125,7 +127,8 @@ export interface CreateOperationRowInput {
 
 export interface OptimisticUpdateOperationInput {
   operationId: string;
-  ownerId: string;
+  /** When omitted, caller MUST have already authorized via `resolveOperationAccess` (e.g. Collaborator). */
+  ownerId?: string;
   expectedEditVersion: number;
   incrementCurrentVersion: boolean;
   patch: {
@@ -140,6 +143,7 @@ export interface OptimisticUpdateOperationInput {
     visibility?: OperationVisibility;
     unlistedTokenHash?: string | null;
     allowForking?: boolean;
+    shareWithProject?: boolean;
     reviewCycleDays?: number | null;
     lastVerifiedAt?: number | null;
   };
@@ -200,11 +204,22 @@ export interface OperationRepository {
     patch: Partial<
       Pick<
         OperationRecord,
-        "isArchived" | "lastVerifiedAt" | "updatedAt"
+        | "isArchived"
+        | "lastVerifiedAt"
+        | "visibility"
+        | "unlistedTokenHash"
+        | "allowForking"
+        | "shareWithProject"
+        | "projectId"
+        | "updatedAt"
       >
     >,
     executor?: DbExecutor
   ): Promise<OperationRecord | null>;
+  incrementForkCount(
+    operationId: string,
+    executor?: DbExecutor
+  ): Promise<number>;
   deleteOperationForOwner(
     operationId: string,
     ownerId: string,
@@ -507,8 +522,10 @@ export class DrizzleOperationRepository implements OperationRepository {
         visibility: input.visibility,
         unlistedTokenHash: input.unlistedTokenHash ?? null,
         allowForking: input.allowForking,
+        shareWithProject: input.shareWithProject ?? false,
         currentVersion: 1,
         editVersion: 1,
+        forkedFromId: input.forkedFromId ?? null,
         forkCount: 0,
         reviewCycleDays: input.reviewCycleDays ?? null,
         lastVerifiedAt: input.lastVerifiedAt ?? null,
@@ -538,16 +555,18 @@ export class DrizzleOperationRepository implements OperationRepository {
       setPayload.currentVersion = sql`${operations.currentVersion} + 1`;
     }
 
+    const whereConditions = [
+      eq(operations.id, input.operationId),
+      eq(operations.editVersion, input.expectedEditVersion),
+    ];
+    if (input.ownerId) {
+      whereConditions.push(eq(operations.ownerId, input.ownerId));
+    }
+
     const [updated] = await executor
       .update(operations)
       .set(setPayload)
-      .where(
-        and(
-          eq(operations.id, input.operationId),
-          eq(operations.ownerId, input.ownerId),
-          eq(operations.editVersion, input.expectedEditVersion)
-        )
-      )
+      .where(and(...whereConditions))
       .returning();
 
     return updated ?? null;
@@ -557,7 +576,17 @@ export class DrizzleOperationRepository implements OperationRepository {
     operationId: string,
     ownerId: string,
     patch: Partial<
-      Pick<OperationRecord, "isArchived" | "lastVerifiedAt" | "updatedAt">
+      Pick<
+        OperationRecord,
+        | "isArchived"
+        | "lastVerifiedAt"
+        | "visibility"
+        | "unlistedTokenHash"
+        | "allowForking"
+        | "shareWithProject"
+        | "projectId"
+        | "updatedAt"
+      >
     >,
     executor: DbExecutor = this.database
   ): Promise<OperationRecord | null> {
@@ -573,6 +602,21 @@ export class DrizzleOperationRepository implements OperationRepository {
       .returning();
 
     return updated ?? null;
+  }
+
+  async incrementForkCount(
+    operationId: string,
+    executor: DbExecutor = this.database
+  ): Promise<number> {
+    const [updated] = await executor
+      .update(operations)
+      .set({
+        forkCount: sql`${operations.forkCount} + 1`,
+      })
+      .where(eq(operations.id, operationId))
+      .returning({ forkCount: operations.forkCount });
+
+    return updated?.forkCount ?? 0;
   }
 
   async deleteOperationForOwner(

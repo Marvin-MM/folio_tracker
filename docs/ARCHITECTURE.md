@@ -6,7 +6,7 @@
 
 ## 1. System Context & Edge Topology
 
-Every request passes through a defense-in-depth edge boundary (`next.config.ts` security headers + `src/proxy.ts` cache isolation) before hitting `force-dynamic` App Router handlers, a strict SOLID domain core, pure zero-I/O domain engines, and decoupled persistence/workflow adapters.
+Every request passes through a defense-in-depth edge boundary (`next.config.ts` security headers + `cacheComponents: true` / `partialPrefetching: true` + `src/proxy.ts` cache isolation) before hitting Partial-Prerendered or Dynamic App Router handlers, a strict SOLID domain core, pure zero-I/O domain engines, and decoupled persistence/workflow adapters. Public discovery routes (`/explore`, `/ops/[slug]` public, `/u/[handle]`) use native Next.js 16 `'use cache'` + `cacheTag()` / `updateTag()` strictly over stripped public DTOs, while all private routes (`/app/*`, `/api/*`, `/invite/*`, and unlisted `/ops/*?token=`) enforce `Cache-Control: private, no-store` and direct-Turso authorization.
 
 ```mermaid
 flowchart TB
@@ -17,27 +17,27 @@ flowchart TB
   end
 
   subgraph Edge["Vercel Edge & Next.js 16 Boundary"]
-    HDR["next.config.ts Headers — CSP, DENY, nosniff, Referrer-Policy, staleTimes (dynamic 60s / static 180s)"]
-    PRX["src/proxy.ts — Optimistic /app/* Guard + private, no-store on /app/* & /invite/*"]
+    HDR["next.config.ts — cacheComponents + partialPrefetching, CSP, DENY, nosniff, staleTimes (60s/180s)"]
+    PRX["src/proxy.ts — Optimistic /app/* Guard + private, no-store on /app/*, /invite/* & /ops/*?token="]
   end
 
-  subgraph App["Next.js App Router (force-dynamic)"]
-    RSC["RSC Pages & Layouts (/, /login, /offline, /app/*, /app/operations*, /app/admin, /app/habits*, /invite/*)"]
-    ACT["Server Actions (src/actions/*) — Zod -> Auth -> Service -> Targeted Query Invalidation"]
-    API["Route Handlers (/api/workspace/* x12 incl. operations & chunked import-history, /api/admin/overview?section=..., /api/auth, /api/inngest, /api/health, /api/reminders, /api/notifications)"]
+  subgraph App["Next.js App Router (cacheComponents + PPR)"]
+    RSC["RSC Pages & Layouts (/, /explore, /ops/[slug], /u/[handle], /login, /offline, /app/*, /invite/*)"]
+    ACT["Server Actions (src/actions/*) — Zod -> Auth -> Service -> updateTag() + Targeted Query Invalidation"]
+    API["Route Handlers (/api/workspace/* x13 incl. operations & share, /api/admin/overview, /api/auth, /api/inngest, /api/health)"]
   end
 
   subgraph Core["SOLID Domain Core (src/server/)"]
-    DOM["Pure Domain Engines (src/server/domain/) — Operations (Interpolator, Secret Scanner, Domain Presets), Habit Analytics, Month-Lock Policy, Import & Comment Windows"]
-    SVC["14 Domain Services — Task, Note, Reminder, Project, Invite, Habit, Monitor, Comment, Operation, OperationRun, Account, Notification, Preferences, Admin"]
-    DAL["Scoped DAL & Direct-Turso Guards (React.cache requireSession/requireAdmin, assertOperationAccess, assertProjectRole, canUserReadEntity, HabitMonitorReadDal, withDbRetry)"]
-    PRV["Provider Ports (EventBus, NotificationChannel x3, RateLimiter x6, UnreadCounterCache, AuthEmailDispatcher)"]
+    DOM["Pure Domain Engines (src/server/domain/) — Operations (Interpolator, Secret Scanner, Public DTOs, Handles), Habit Analytics, Month-Lock Policy, Import & Comment Windows"]
+    SVC["17 Domain Services — Task, Note, Reminder, Project, Invite, Habit, Monitor, Comment, Operation, OperationRun, OperationShare, OperationFlag, OperationSocial, Account, Notification, Preferences, Admin"]
+    DAL["Scoped DAL & Direct-Turso Guards (React.cache requireSession/requireAdmin, resolveOperationAccess, public-operations-cache 'use cache', assertProjectRole, HabitMonitorReadDal, withDbRetry)"]
+    PRV["Provider Ports (EventBus, NotificationChannel x3, RateLimiter x9, UnreadCounterCache, AuthEmailDispatcher)"]
   end
 
   subgraph Infra["Persistence & External Services"]
-    DB[("Turso / libSQL (SQLite WAL) — 31 Tables, ULID PKs, Cascading FKs, CHECK & Partial Unique Indexes")]
+    DB[("Turso / libSQL (SQLite WAL) — 35 Tables, ULID PKs, Cascading FKs, CHECK & Partial Unique Indexes")]
     RDS[("Redis 3-Tier (Upstash -> ioredis -> Memory) — RateLimiter & UnreadCounter ONLY")]
-    ING["Inngest v4 Durable Engine — 13 Functions, Plan-Safe Concurrency (default 5, crons 1) & LIMIT 200 Crons"]
+    ING["Inngest v4 Durable Engine — 17 Functions, Plan-Safe Concurrency (default 5, crons 1) & LIMIT 200 Crons"]
     EXT["External Delivery & Identity (Resend, VAPID Web Push, Google OAuth)"]
   end
 
@@ -70,7 +70,7 @@ flowchart TB
 
 ## 2. SOLID Clean Layering & Dependency Direction
 
-Dependencies point strictly inward toward `src/server/db/` and `src/server/domain/`. Pure domain calculations (`operations/*`, `habit-analytics.ts`, `habit-month-lock.ts`, `comment-window-policy.ts`, `habit-import.ts`, `habit-evolution.ts`) have zero DB or network imports, while every service accepts repositories and providers via constructor injection (DIP) so all 31 Vitest suites (131 tests) execute offline against ephemeral SQLite databases.
+Dependencies point strictly inward toward `src/server/db/` and `src/server/domain/`. Pure domain calculations (`operations/*`, `habit-analytics.ts`, `habit-month-lock.ts`, `comment-window-policy.ts`, `habit-import.ts`, `habit-evolution.ts`) have zero DB or network imports, while every service accepts repositories and providers via constructor injection (DIP) so all 33 Vitest suites (137 tests) execute offline against ephemeral SQLite databases.
 
 ```mermaid
 flowchart LR
@@ -117,13 +117,13 @@ flowchart LR
 | :--- | :--- | :--- |
 | `EventBus` | `InngestEventBus`, `InMemoryEventBus` | Post-commit durable event emission with deterministic deduplication `id` |
 | `NotificationChannel` (OCP) | `InAppNotificationChannel`, `WebPushNotificationChannel`, `EmailNotificationChannel` | Isolated per-channel delivery (`Promise.allSettled`, `404`/`410` auto-prune, email fallback) |
-| `RateLimiter` (ISP) | `UpstashRateLimiter`, `IoRedisRateLimiter` (Lua), `InMemoryRateLimiter` | Sliding-window protection (`auth` 10/10m, `project_invite` 20/1h, `habit_monitor_invite` 20/1h, `habit_history_import` 150/10m, `habit_month_pin` 10/15m, `test_push` 5/5m) |
+| `RateLimiter` (ISP) | `UpstashRateLimiter`, `IoRedisRateLimiter` (Lua), `InMemoryRateLimiter` | Sliding-window protection (`auth` 10/10m, `project_invite` 20/1h, `habit_monitor_invite` 20/1h, `habit_history_import` 150/10m, `habit_month_pin` 10/15m, `test_push` 5/5m, `operation_invite` 20/1h, `operation_fork` 30/1h, `operation_flag` 30/1h) |
 | `UnreadCounterCache` (ISP) | `UpstashUnreadCounterCache`, `IoRedisUnreadCounterCache`, `InMemoryUnreadCounterCache` | `300s` TTL unread badge cache only (**never** used for security, RBAC, or monitor access) |
 | `AuthEmailDispatcher` | `InngestAuthEmailDispatcher`, `ResendAuthEmailDispatcher`, `ConsoleAuthEmailDispatcher` | Verification & password-reset emails without logging raw tokens |
 
 ---
 
-## 3. Unified Entity-Relationship Model (31 Tables)
+## 3. Unified Entity-Relationship Model (35 Tables)
 
 All primary keys are sortable ULIDs (`ulidx`), all timestamps are UTC Unix epoch milliseconds (`integer`) paired with explicit IANA timezone strings and calendar date keys (`YYYY-MM-DD`), and referential integrity is enforced by SQLite/Turso (`PRAGMA foreign_keys = ON`, `CHECK` constraints, partial unique indexes, and cascading deletes).
 
@@ -426,9 +426,9 @@ erDiagram
   users ||--o{ habit_reactions : "reacts"
 ```
 
-### 3C. Universal Operations Blueprints, Immutable Versions & Execution Runs (5 Tables)
+### 3C. Universal Operations Blueprints, Collaboration RBAC, Social Graph & Step Flags (9 Tables)
 
-Anchored to `users`, `projects`, `habits`, `notes`, and `tasks(operation_id, operation_run_id)` with `ON DELETE SET NULL` safety so deleting an operation never orphans or breaks tasks.
+Anchored to `users` (extended with unique nullable `@handle` & `bio`), `projects` (opt-in `share_with_project`), `habits`, `notes`, and `tasks(operation_id, operation_run_id)` with `ON DELETE SET NULL` safety so deleting an operation never orphans tasks or forked blueprints (`forked_from_id`).
 
 ```mermaid
 erDiagram
@@ -436,7 +436,10 @@ erDiagram
     text id PK "ULID"
     text owner_id FK "CASCADE -> users"
     text project_id FK "nullable SET NULL -> projects"
+    boolean share_with_project "default false (opt-in)"
     text linked_habit_id FK "nullable SET NULL -> habits"
+    text forked_from_id FK "nullable SET NULL -> operations"
+    integer fork_count "default 0"
     text slug UK
     text domain "general..study"
     text visibility "private | unlisted | public"
@@ -475,12 +478,47 @@ erDiagram
     text status "pending | done | skipped | blocked"
     text note "nullable <= 500 chars"
   }
+  operation_members {
+    text operation_id PK "FK CASCADE -> operations"
+    text user_id PK "FK CASCADE -> users"
+    text role "CHECK collaborator | viewer"
+    text granted_by_id FK "nullable SET NULL -> users"
+  }
+  operation_invitations {
+    text id PK "ULID"
+    text operation_id FK "CASCADE -> operations"
+    text invited_by_id FK "CASCADE -> users"
+    text target_user_id FK "nullable CASCADE -> users"
+    text target_email
+    text token_hash UK "nullable SHA-256 hex"
+    text role "CHECK collaborator | viewer"
+    text status "CHECK pending..expired"
+    integer expires_at
+  }
+  operation_step_flags {
+    text id PK "ULID"
+    text operation_id FK "CASCADE -> operations"
+    integer version_number "CHECK >= 1"
+    text step_key
+    text reporter_id FK "CASCADE -> users"
+    text message
+    text status "CHECK open | resolved"
+    text resolved_by_id FK "nullable SET NULL -> users"
+  }
+  user_follows {
+    text follower_id PK "FK CASCADE -> users"
+    text following_id PK "FK CASCADE -> users (CHECK != follower_id)"
+    integer created_at
+  }
 
   operations ||--o{ operation_versions : "immutable snapshots"
   operations ||--o{ operation_reference_notes : "links notes"
   operations ||--o{ operation_runs : "executes"
   operation_versions ||--o{ operation_runs : "pins"
   operation_runs ||--o{ operation_run_steps : "tracks"
+  operations ||--o{ operation_members : "grants RBAC"
+  operations ||--o{ operation_invitations : "dual invites"
+  operations ||--o{ operation_step_flags : "step feedback"
 ```
 
 **Schema Guardrails:**
@@ -543,7 +581,7 @@ sequenceDiagram
 
 ## 5. Durable Automation Engine: Reminders, Habit Nudges & Review Digests
 
-All asynchronous scheduling and background sweeps run on **Inngest v4** (`13` registered functions in [route.ts](../src/app/api/inngest/route.ts)) with deterministic deduplication IDs, bounded `LIMIT 200` pagination inside `step.run()`, singleton cron concurrency (`1`), configurable worker concurrency (`INNGEST_CONCURRENCY_LIMIT`, default `5` for Inngest Free Plan), and `retries: 4`.
+All asynchronous scheduling and background sweeps run on **Inngest v4** (`17` registered functions in [registry.ts](../src/server/inngest/registry.ts), served via [route.ts](../src/app/api/inngest/route.ts)) with deterministic deduplication IDs, bounded `LIMIT 200` pagination inside `step.run()`, singleton cron concurrency (`1`), configurable worker concurrency (`INNGEST_CONCURRENCY_LIMIT`, default `5` for Inngest Free Plan), and `retries: 4`. Operations Phase 2 adds `operationStalenessAuditCronFn` (`0 7 * * *`, singleton `1`, `LIMIT 200` pagination) → `deliverOperationStalenessNudgeFn` (`op-stale-${id}-${bucket}` dedup), `sendOperationInviteInAppFn` (in-app invites + step-flagged alerts), and `sendOperationInviteEmailFn` (7-day external invite emails via Resend).
 
 ### 5A. Hybrid Reminder State Machine & Outbox Reconciliation
 
@@ -760,5 +798,5 @@ flowchart TB
 | **Zero-Leak Isolation** | `assertProjectRole()`, `canUserReadEntity()`, and `habit_monitors` checks always hit Turso directly (zero Redis security cache); `DrizzleHabitMonitorReadDal` and `deliverHabitReviewDigestFn` strictly project only `allowedHabitIds` when `scope = 'selected'`. |
 | **Anti-Enumeration** | Email monitor invites return a uniform non-enumerating status regardless of whether the target email belongs to an existing account; token URLs use 32-byte CSPRNG values hashed with SHA-256 before persistence. |
 | **Vercel Scale** | All periodic crons (`far-future`, `outbox`, `habit-nudge`, `habit-review-digest`) enforce singleton `concurrency: { limit: 1 }` and loop `LIMIT 200` pages inside isolated `step.run()` steps; event-driven Inngest workers enforce `concurrency: { limit: INNGEST_CONCURRENCY_LIMIT }` (default `5`, Free-Plan safe) and `retries: 4`. |
-| **Edge & Client Cache Isolation** | Every `/app/*`, `/invite/*`, and `/api/*` endpoint uses `force-dynamic`, zero unscoped `unstable_cache`, and `Cache-Control: private, no-store` alongside strict CSP & `X-Frame-Options: DENY`. Service Worker (`public/sw.js`) caches **only** public static shell assets and `/offline` (never `/api/*`, `/app/*`, or `/invite/*`). TanStack Query keys are user-scoped (`["workspace", userId, ...]`), Zustand persists zero PII, and `performSecureSignOut()` clears QueryClient + Zustand + push subscription + hard-navigates to `/login`. |
+| **Edge & Client Cache Isolation** | Public discovery routes (`/explore`, `/ops/[slug]` public, `/u/[handle]`) leverage Next.js 16 `cacheComponents: true` + native `'use cache'` (`cacheTag` + `updateTag`/`revalidateTag(..., 'max')`) strictly over stripped public DTOs; ZERO `unstable_cache` is used. Every `/app/*`, `/invite/*`, `/api/*`, and unlisted `/ops/*?token=` response enforces `Cache-Control: private, no-store` alongside strict CSP & `X-Frame-Options: DENY`. Service Worker (`public/sw.js`) caches **only** public static shell assets and `/offline`. TanStack Query keys are user-scoped (`["workspace", userId, ...]`), Zustand persists zero PII, and `performSecureSignOut()` clears QueryClient + offline runs + ephemeral RAM secrets + Zustand + push subscription + hard-navigates to `/login`. |
 | **Design System & Scope** | `shadcn/ui` **Mira** in Warm Paper (Light) and Carbon Ink (Dark) honoring OS `prefers-color-scheme` by default, WCAG AA contrast (including dark-mode Recharts ticks), `Geist` + `Geist Mono tabular-nums`, zero glassmorphism, `>= 36px` mobile / `28px` desktop targets, Skip-to-main-content landmark focus, reduced-motion compliance, and strictly in-app sharing (zero PNG/canvas/image-card exports). |

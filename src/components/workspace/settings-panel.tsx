@@ -1,8 +1,9 @@
 "use client";
 
 import { useState, useSyncExternalStore, useTransition, type FormEvent } from "react";
+import Link from "next/link";
 import { useRouter } from "next/navigation";
-import { AlertTriangle, Loader2, Trash2 } from "lucide-react";
+import { AlertTriangle, ArrowUpRight, Loader2, Trash2 } from "lucide-react";
 import { useTheme } from "next-themes";
 import { toast } from "sonner";
 import { deleteAccountAction } from "@/actions/account";
@@ -35,12 +36,14 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { Switch } from "@/components/ui/switch";
+import { Textarea } from "@/components/ui/textarea";
 import { useInvalidateWorkspace } from "@/hooks/use-workspace-queries";
 import {
   hardNavigateAfterSignOut,
   performSecureSignOut,
 } from "@/lib/client-sign-out";
 import type { UserPreferencesRecord } from "@/server/dal/user-repository";
+import { MAX_USER_BIO_LENGTH } from "@/server/domain/operations";
 
 interface SettingsPanelProps {
   profile: UserPreferencesRecord;
@@ -64,6 +67,8 @@ export function SettingsPanel({
     () => false
   );
   const [name, setName] = useState(profile.name);
+  const [handle, setHandle] = useState(profile.handle ?? "");
+  const [bio, setBio] = useState(profile.bio ?? "");
   const [timezone, setTimezone] = useState(profile.timezone);
   const [emailRemindersEnabled, setEmailRemindersEnabled] = useState(
     profile.emailRemindersEnabled
@@ -89,6 +94,8 @@ export function SettingsPanel({
         name,
         timezone,
         emailRemindersEnabled,
+        handle: handle.trim() || null,
+        bio: bio.trim() || null,
       });
 
       if (!result.ok) {
@@ -162,6 +169,65 @@ export function SettingsPanel({
                 onChange={(event) => setName(event.target.value)}
                 required
                 className="mira-row bg-background"
+              />
+            </div>
+
+            <div className="space-y-1.5">
+              <div className="flex items-center justify-between gap-2">
+                <Label htmlFor="settings-handle" className="text-xs">
+                  Public creator handle (optional)
+                </Label>
+                {profile.handle ? (
+                  <Link
+                    href={`/u/${profile.handle}`}
+                    className="inline-flex items-center gap-1 font-mono text-[11px] text-reminder hover:underline"
+                  >
+                    /u/{profile.handle}
+                    <ArrowUpRight className="size-3" />
+                  </Link>
+                ) : null}
+              </div>
+              <div className="relative">
+                <span className="pointer-events-none absolute top-1/2 left-2.5 -translate-y-1/2 font-mono text-xs text-muted-foreground">
+                  @
+                </span>
+                <Input
+                  id="settings-handle"
+                  name="handle"
+                  autoComplete="username"
+                  placeholder="your_handle"
+                  value={handle}
+                  onChange={(event) =>
+                    setHandle(event.target.value.replace(/^@+/, ""))
+                  }
+                  maxLength={30}
+                  className="mira-row bg-background pl-6 font-mono text-xs"
+                />
+              </div>
+              <p className="text-[11px] text-muted-foreground">
+                3–30 lowercase letters, numbers, hyphens, or underscores. Enables
+                your public profile page at <code className="font-mono">/u/handle</code>.
+              </p>
+            </div>
+
+            <div className="space-y-1.5">
+              <div className="flex items-center justify-between">
+                <Label htmlFor="settings-bio" className="text-xs">
+                  Creator bio (optional)
+                </Label>
+                <span className="mono-tabular text-[10px] text-muted-foreground">
+                  {bio.length}/{MAX_USER_BIO_LENGTH}
+                </span>
+              </div>
+              <Textarea
+                id="settings-bio"
+                name="bio"
+                rows={2}
+                maxLength={MAX_USER_BIO_LENGTH}
+                placeholder="Share what kind of playbooks, recipes, or guides you publish…"
+                value={bio}
+                onChange={(event) => setBio(event.target.value)}
+                className="bg-background text-xs"
               />
             </div>
 

@@ -25,6 +25,12 @@ import {
   operations,
   operationVersions,
 } from "./operations";
+import {
+  operationInvitations,
+  operationMembers,
+  operationStepFlags,
+  userFollows,
+} from "./operations-social";
 import { reminders } from "./reminders";
 import {
   notes,
@@ -85,6 +91,20 @@ export const usersRelations = relations(users, ({ one, many }) => ({
   ownedOperations: many(operations),
   createdOperationVersions: many(operationVersions),
   operationRuns: many(operationRuns),
+  followingUsers: many(userFollows, { relationName: "userFollower" }),
+  followerUsers: many(userFollows, { relationName: "userFollowing" }),
+  operationMemberships: many(operationMembers, {
+    relationName: "operationMemberUser",
+  }),
+  operationInvitationsSent: many(operationInvitations, {
+    relationName: "operationInviteSender",
+  }),
+  operationInvitationsReceived: many(operationInvitations, {
+    relationName: "operationInviteTarget",
+  }),
+  operationStepFlagsReported: many(operationStepFlags, {
+    relationName: "operationFlagReporter",
+  }),
   adminAuditLogs: many(adminAuditLogs),
 }));
 
@@ -436,6 +456,9 @@ export const operationsRelations = relations(operations, ({ one, many }) => ({
   versions: many(operationVersions),
   referenceNotes: many(operationReferenceNotes),
   runs: many(operationRuns),
+  members: many(operationMembers),
+  invitations: many(operationInvitations),
+  stepFlags: many(operationStepFlags),
   linkedTasks: many(tasks),
 }));
 
@@ -494,6 +517,79 @@ export const operationRunStepsRelations = relations(
     run: one(operationRuns, {
       fields: [operationRunSteps.runId],
       references: [operationRuns.id],
+    }),
+  })
+);
+
+export const userFollowsRelations = relations(userFollows, ({ one }) => ({
+  follower: one(users, {
+    fields: [userFollows.followerId],
+    references: [users.id],
+    relationName: "userFollower",
+  }),
+  following: one(users, {
+    fields: [userFollows.followingId],
+    references: [users.id],
+    relationName: "userFollowing",
+  }),
+}));
+
+export const operationMembersRelations = relations(
+  operationMembers,
+  ({ one }) => ({
+    operation: one(operations, {
+      fields: [operationMembers.operationId],
+      references: [operations.id],
+    }),
+    user: one(users, {
+      fields: [operationMembers.userId],
+      references: [users.id],
+      relationName: "operationMemberUser",
+    }),
+    grantedBy: one(users, {
+      fields: [operationMembers.grantedById],
+      references: [users.id],
+      relationName: "operationMemberGrantor",
+    }),
+  })
+);
+
+export const operationInvitationsRelations = relations(
+  operationInvitations,
+  ({ one }) => ({
+    operation: one(operations, {
+      fields: [operationInvitations.operationId],
+      references: [operations.id],
+    }),
+    invitedBy: one(users, {
+      fields: [operationInvitations.invitedById],
+      references: [users.id],
+      relationName: "operationInviteSender",
+    }),
+    targetUser: one(users, {
+      fields: [operationInvitations.targetUserId],
+      references: [users.id],
+      relationName: "operationInviteTarget",
+    }),
+  })
+);
+
+export const operationStepFlagsRelations = relations(
+  operationStepFlags,
+  ({ one }) => ({
+    operation: one(operations, {
+      fields: [operationStepFlags.operationId],
+      references: [operations.id],
+    }),
+    reporter: one(users, {
+      fields: [operationStepFlags.reporterId],
+      references: [users.id],
+      relationName: "operationFlagReporter",
+    }),
+    resolvedBy: one(users, {
+      fields: [operationStepFlags.resolvedById],
+      references: [users.id],
+      relationName: "operationFlagResolver",
     }),
   })
 );

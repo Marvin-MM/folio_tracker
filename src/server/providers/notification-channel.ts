@@ -10,7 +10,9 @@ export interface NotificationPayload {
     | "habit_nudge"
     | "habit_monitor_request"
     | "habit_review"
-    | "habit_comment";
+    | "habit_comment"
+    | "operation"
+    | "operation_invitation";
   entityId: string;
   reminderId?: string;
   deepLink: string;

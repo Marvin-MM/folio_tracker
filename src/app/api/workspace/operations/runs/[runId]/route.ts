@@ -1,7 +1,6 @@
 import { withWorkspaceAuth, workspaceJson } from "@/server/http/workspace-api";
 import { operationRunService } from "@/server/services/operation-run-service";
 
-export const dynamic = "force-dynamic";
 
 export async function GET(
   _request: Request,

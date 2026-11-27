@@ -16,6 +16,8 @@ export const users = sqliteTable(
       .notNull()
       .default(false),
     image: text("image"),
+    handle: text("handle").unique(),
+    bio: text("bio"),
     role: text("role", { enum: USER_ROLES }).notNull().default("user"),
     isSuspended: integer("is_suspended", { mode: "boolean" })
       .notNull()

@@ -3,7 +3,6 @@ import { OPERATION_DOMAINS, type OperationDomain } from "@/server/db/schema";
 import { withWorkspaceAuth, workspaceJson } from "@/server/http/workspace-api";
 import { operationService } from "@/server/services/operation-service";
 
-export const dynamic = "force-dynamic";
 
 export async function GET(request: NextRequest) {
   return withWorkspaceAuth(async ({ user }) => {

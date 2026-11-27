@@ -8,7 +8,6 @@ import { APP_NAME } from "@/lib/constants";
 import { auth, isEmailPasswordAuthEnabled } from "@/server/auth";
 import { habitMonitorService } from "@/server/services/habit-monitor-service";
 
-export const dynamic = "force-dynamic";
 
 export const metadata: Metadata = {
   title: "Habit Monitor Invitation",

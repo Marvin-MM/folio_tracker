@@ -42,9 +42,16 @@ export function proxy(request: NextRequest) {
     return response;
   }
 
+  // Unlisted operation token URLs must never be cached by edge/CDN proxies.
+  if (pathname.startsWith("/ops/") && request.nextUrl.searchParams.has("token")) {
+    const response = NextResponse.next();
+    response.headers.set("Cache-Control", "private, no-store");
+    return response;
+  }
+
   return NextResponse.next();
 }
 
 export const config = {
-  matcher: ["/app", "/app/:path*", "/invite/:path*"],
+  matcher: ["/app", "/app/:path*", "/invite/:path*", "/ops/:path*"],
 };

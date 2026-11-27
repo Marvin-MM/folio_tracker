@@ -16,7 +16,7 @@ Designed around a tactile **Warm Paper (Light)** and **Carbon Ink (Dark)** aesth
 - **Durable Hybrid Reminders & PWA Push:** 14-day scheduling horizon, 5-minute Outbox Reconciliation, optimistic version locking, Service Worker push quick actions (`Snooze 15m`, `Mark Done`), automatic `404`/`410` endpoint pruning, and Resend email fallback.
 - **Real-Calendar Habit Tracking, Dynamic Month Locking & Timeout-Proof History Import:** Full 28–31 day monthly calendar matrix with optimistic cell cycling (`done` / `skipped` / `missed`), elapsed-to-date scoring, mid-month `startDate` support, weekly-target habits, rest passes that protect streaks, per-month curated habit rosters (`habit_month_rosters`) with 1-click previous-month carry-over & editing, strict future-month lock (months unlock when they begin), deterministic month locking (`habit_month_locks`) with configurable grace window (default 3 days, manual lock on month-end or during grace, automatic view-only lock after grace, optional scrypt-hashed 4–6 digit Accountability PIN with 5-attempt lockout & 30-minute timed temporary unlock), 2-phase chunked multi-year history import (`POST /api/workspace/habits/import-history`, `.xlsx`/`.csv`/`.txt` up to 50,000 marks streamed in 1,500-mark Turso `db.batch()` chunks with live progress & idempotent retry), monochrome Recharts trend visualizations, bidirectional ACID Task ↔ Habit sync, and 15-minute timezone-aware habit nudges.
 - **Accountability Circle & Dynamic Review Windows:** Invite accountability monitors via Quick-Pick collaborators or anti-enumeration email/token links (`/invite/habit/[token]`), share all or strictly selected habits (zero-leak DAL projection), enforce global or per-monitor commenting cadences (`weekly_window`, `interval_days`, or `anytime`) evaluated in the owner's IANA timezone, exchange threaded cycle reviews and monochrome reactions (`ack`, `solid`, `push`), and send automated hourly review-open digests.
-- **Universal Operations Blueprints & Guided Execution Runner (`/app/operations` — Phase 1):** Domain-adaptive playbooks supporting `general`, `tech`, `cooking`, `fitness`, `diy`, `business`, and `study` with immutable version snapshots (`operation_versions`), atomic optimistic concurrency locking (`editVersion`), audit-preserving rollback, pre-publish secret scanning (`secret-scanner.ts` blocking PEM keys, DB credentials, API tokens, and literal passwords before public/unlisted publishing, with SHA-256 `unlisted_token_hash`), single-pass non-recursive `{{variable}}` interpolation, RAM-only `secret` variables (never saved to Turso or `localStorage`), XSS-safe GFM Markdown (`SafeMarkdown` with `skipHtml={true}` and strict `https:`/`http:`/`mailto:` `urlTransform`), interactive countdown step timers (`StepTimer` with subtle Web Audio chime), offline-resilient execution cache + automatic reconnect sync (purged on sign-out), 1-click **Schedule Run as Task + Reminder**, 1-click **Create Follow-up Task from Blocked Step**, and atomic run completion → linked Habit auto-logging.
+- **Universal Operations Blueprints, Collaboration, Public Explore & Guided Runner (`/app/operations`, `/explore`, `/ops/[slug]`, `/u/[handle]` — Phases 1 & 2):** Domain-adaptive playbooks supporting `general`, `tech`, `cooking`, `fitness`, `diy`, `business`, and `study` with immutable version snapshots (`operation_versions`), atomic optimistic concurrency locking (`editVersion`), audit-preserving rollback, pre-publish secret scanning (`secret-scanner.ts` hard-blocking PEM keys, DB credentials, API tokens, and literal passwords + explicit warning-ack gate for advisories), 3-state visibility (`private` / `unlisted` with timing-safe SHA-256 `?token=` + rotation / `public`), **Next.js 16 native `'use cache'`** (`cacheComponents: true` + `cacheTag`/`updateTag`) powering the Public Explore Directory (`/explore`), Creator Profiles with Follows (`/u/[handle]`, editable `@handle` & `bio` in Settings), and logged-out **Guest Browser Runner** (`/ops/[slug]`), strict direct-Turso Private RBAC (`owner` / `collaborator` / `viewer` + opt-in `share_with_project` Project Team inheritance + `404` private isolation), 3-tab Share Modal with anti-enumeration Smart Dual Invites (`/invite/operation/[token]`), attributed Forking (`forkedFromId` with `ON DELETE SET NULL` + atomic `forkCount`), live Step Flagging & Resolution, daily Inngest Staleness Review Audits, single-pass non-recursive `{{variable}}` interpolation, RAM-only `secret` variables, XSS-safe GFM Markdown (`SafeMarkdown`), interactive countdown step timers (`StepTimer`), offline-resilient execution cache + automatic reconnect sync, Task/Reminder scheduling, and atomic run completion → linked Habit auto-logging.
 - **Shared Projects, RBAC & Unified Activity Timelines:** Direct-Turso `owner` / `editor` / `viewer` authorization (viewers remain read-only on shared items while still attaching private personal reminders), SHA-256 single-use 7-day email invitations (`/invite/[token]`), and a unified Warm Paper / Carbon Ink day-grouped chronological `<ActivityTimeline />` across Project Activity (with category filters and click-to-inspect Detail Sheet links), Reminders (`Recently triggered`), Accountability Circle cycle reviews, and the Notification Bell popover.
 - **Env-Synced Admin Operations Portal (`/app/admin`):** Configure comma-separated `ADMIN_EMAILS` in your environment to automatically promote matching verified accounts at boot (`src/instrumentation.ts`), on sign-up/update, and at runtime — and automatically demote removed admins with zero delay (fail-closed when empty). Includes instant streaming shell (`loading.tsx`), per-request `React.cache()` auth deduplication, Turso `db.batch()` KPIs + SQL `GROUP BY` 14-day analytics, lazy section-scoped Users & Activity Timeline tabs (`?section=overview|users|timeline`), timed parallel subsystem health probes (Turso/libSQL, Redis, Inngest v4, Auth & Admin Policy, Push/Email), safe session-revoke/suspension controls (blocking self/admin suspension), and an immutable `admin_audit_logs` timeline. Non-admins never see the link and receive HTTP `404` (`Not Found`) on `/app/admin` and `403` on `/api/admin/overview`.
 - **Instant Cached Navigation & State Management:** Hybrid TanStack React Query v5 (user-scoped server cache + hover/focus prefetching across 11 authenticated `/api/workspace/*` read routes + Next.js 16 `staleTimes`) and Zustand v5 (strictly non-PII UI layout preferences), with 0ms client-side Habits scoring toggles, lazy-loaded `⌘K` Quick Capture & Recharts chunks, and full cache/offline-run/session wipe on sign-out.
@@ -44,15 +44,15 @@ Designed around a tactile **Warm Paper (Light)** and **Carbon Ink (Dark)** aesth
 
 ```mermaid
 flowchart LR
-  Browser["Browser / PWA\n(Warm Paper · Carbon Ink)"] --> Edge["Next.js 16 Edge & Proxy\nCSP · private, no-store · force-dynamic"]
+  Browser["Browser / PWA\n(Warm Paper · Carbon Ink)"] --> Edge["Next.js 16 Edge & Proxy\nCSP · cacheComponents ('use cache') · private, no-store on /app, /api, /invite & ?token="]
   Edge --> Core["Server Actions · RSC · API\nZod -> requireSession -> Pure Domain & Services"]
-  Core --> Turso[("Turso / libSQL (31 Tables)\nACID · Direct-Turso RBAC, Admin, Ops & Circle Scope\nCascading FKs · Versions · Runs · Month Locks · Outbox · Audits")]
+  Core --> Turso[("Turso / libSQL (35 Tables)\nACID · Direct-Turso RBAC, Admin, Ops & Circle Scope\nCascading FKs · Versions · Runs · Social/Invites · Flags · Month Locks · Outbox")]
   Core --> Redis[("Upstash / Local Redis\nRateLimiter & UnreadCounter ONLY")]
-  Core -->|"Post-commit deterministic events"| Inngest["Inngest v4 (13 Functions)\nReminders · Nudges · Review Digests\nconcurrency: 5 (env-configurable) · LIMIT 200"]
+  Core -->|"Post-commit deterministic events"| Inngest["Inngest v4 (17 Functions)\nReminders · Nudges · Review Digests · Ops Staleness & Invites\nconcurrency: 5 (env-configurable) · LIMIT 200"]
   Inngest --> Channels["In-App · Web Push · Resend"]
 ```
 
-For full visual flowcharts, the 31-table ER model, Operations Blueprints & Guided Runs, env-synced admin role enforcement, per-month habit rosters & dynamic month locking, timeout-proof chunked imports, reminder state machine, Task ↔ Habit sync, Accountability Circle invite/policy flows, and production invariants, see **[docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)**.
+For full visual flowcharts, the 35-table ER model, Operations Blueprints, Collaboration RBAC & Public Explore caching, env-synced admin role enforcement, per-month habit rosters & dynamic month locking, timeout-proof chunked imports, reminder state machine, Task ↔ Habit sync, Accountability Circle invite/policy flows, and production invariants, see **[docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)**.
 
 ---
 
@@ -151,7 +151,7 @@ pnpm build        # Create optimized production build
 pnpm start        # Serve production build
 pnpm typecheck    # Run TypeScript strict typecheck (tsc --noEmit)
 pnpm lint         # Run ESLint
-pnpm test         # Run all 31 Vitest suites (131 tests, ephemeral SQLite DBs)
+pnpm test         # Run all 33 Vitest suites (137 tests, ephemeral SQLite DBs)
 pnpm db:generate  # Generate Drizzle SQL migrations after schema changes
 pnpm db:migrate   # Apply Drizzle migrations to TURSO_DATABASE_URL
 pnpm db:studio    # Launch Drizzle Studio
@@ -171,20 +171,20 @@ pnpm db:studio    # Launch Drizzle Studio
     ├── instrumentation.ts    # Next.js 16 Node boot hook (automatic ADMIN_EMAILS role reconciliation)
     ├── proxy.ts              # Next.js 16 edge boundary & cache isolation
     ├── actions/              # Validated Server Actions (Zod -> Auth/Admin -> Service)
-    ├── app/                  # App Router pages (/, /login, /offline, /app/*, /app/admin, /invite/*, /api/*)
-    ├── components/           # Warm Paper / Carbon Ink Mira UI primitives, Admin Portal, ActivityTimeline & views
+    ├── app/                  # App Router pages (/, /explore, /ops/[slug], /u/[handle], /login, /offline, /app/*, /invite/*, /api/*)
+    ├── components/           # Warm Paper / Carbon Ink Mira UI primitives, Operations/Explore/Runner, Admin Portal & views
     ├── hooks/                # TanStack Query workspace & admin hooks, prefetchers & targeted invalidation
     ├── stores/               # Zustand v5 client-only UI store (non-PII preferences)
     ├── lib/                  # Pure helpers (query keys/client, site SEO config, chrono NLP, sign-out)
     └── server/
         ├── auth.ts           # Better Auth config, anti-mass-assignment fields & unverified-link policy
         ├── admin-policy.ts   # Fail-closed ADMIN_EMAILS parser & fingerprint helpers
-        ├── db/               # 31 Drizzle tables (incl. operations*, admin_audit_logs, habit_month_rosters, habit_month_locks)
-        ├── domain/           # Pure zero-I/O engines (operations interpolator/scanner/presets, habit analytics, month locks, comment windows)
-        ├── dal/              # Tenant-scoped repos, direct-Turso guards, zero-leak read DAL
-        ├── services/         # ACID domain services + Vitest integration suites
+        ├── db/               # 35 Drizzle tables (incl. operations*, operations-social*, admin_audit_logs, habit_month_*)
+        ├── domain/           # Pure zero-I/O engines (operations interpolator/scanner/DTOs/handles, habit analytics, month locks)
+        ├── dal/              # Tenant-scoped repos, direct-Turso RBAC/operation-auth, 'use cache' public readers, HabitMonitorReadDal
+        ├── services/         # 17 ACID domain services + Vitest integration & security suites
         ├── providers/        # EventBus, NotificationChannels, Redis, Auth Email
-        ├── inngest/          # 13 durable workflows & bounded LIMIT 200 crons
+        ├── inngest/          # 17 durable workflows & bounded LIMIT 200 crons
         └── http/             # Rate-limited HTTP route handlers
 ```
 

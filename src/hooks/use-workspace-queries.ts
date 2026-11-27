@@ -27,6 +27,7 @@ import type {
   OperationDetailPayload,
   OperationsHubPayload,
 } from "@/server/services/operation-service";
+import type { OperationShareDashboardPayload } from "@/server/services/operation-share-service";
 import type { OperationRunDetailPayload } from "@/server/services/operation-run-service";
 import type {
   AdminOverviewPayload,
@@ -414,6 +415,22 @@ export function useOperationDetailQuery(
         signal
       ),
     ...(initialData ? { initialData, initialDataUpdatedAt } : {}),
+  });
+}
+
+export function useOperationShareQuery(
+  userId: string,
+  operationId: string,
+  enabled = true
+) {
+  return useQuery({
+    queryKey: workspaceQueryKeys.operationShare(userId, operationId),
+    queryFn: ({ signal }) =>
+      fetchWorkspaceJson<OperationShareDashboardPayload>(
+        `/api/workspace/operations/${encodeURIComponent(operationId)}/share`,
+        signal
+      ),
+    enabled: Boolean(userId && operationId && enabled),
   });
 }
 

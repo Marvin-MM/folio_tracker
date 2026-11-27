@@ -22,6 +22,8 @@ const cspDirectives = [
 const contentSecurityPolicy = cspDirectives.join("; ");
 
 const nextConfig: NextConfig = {
+  cacheComponents: true,
+  partialPrefetching: true,
   serverExternalPackages: ["@libsql/client", "web-push", "ioredis"],
   images: {
     formats: ["image/avif", "image/webp"],

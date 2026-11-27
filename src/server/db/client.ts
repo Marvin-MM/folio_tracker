@@ -25,9 +25,15 @@ export function createDbConnection(options: DbClientOptions = {}): DbConnection 
   const authToken =
     options.authToken ?? (process.env.TURSO_AUTH_TOKEN || undefined);
 
+  const isLocalFile = url.startsWith("file:");
   const client = createClient({
     url,
     ...(authToken ? { authToken } : {}),
+    // Local file SQLite uses a single serialized connection so concurrent
+    // writes never trigger @libsql/client's multi-handle SQLITE_BUSY pool bug
+    // and per-connection PRAGMAs stay consistent; `withDbRetry` handles
+    // transient TRANSACTION_ACTIVE contention asynchronously.
+    ...(isLocalFile ? { concurrency: 1 } : {}),
   });
 
   const db = drizzle(client, { schema });

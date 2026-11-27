@@ -6,7 +6,6 @@ import { requireSession } from "@/server/dal/auth-guard";
 import { ForbiddenError, NotFoundError } from "@/server/dal/errors";
 import { operationService } from "@/server/services/operation-service";
 
-export const dynamic = "force-dynamic";
 
 interface OperationDetailPageProps {
   params: Promise<{ id: string }>;

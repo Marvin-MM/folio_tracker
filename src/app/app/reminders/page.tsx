@@ -4,7 +4,6 @@ import { getServerTimestampMs } from "@/lib/query/clock";
 import { requireSession } from "@/server/dal/auth-guard";
 import { reminderRepository } from "@/server/dal/reminder-repository";
 
-export const dynamic = "force-dynamic";
 
 export const metadata: Metadata = {
   title: "Reminders",

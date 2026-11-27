@@ -3,7 +3,6 @@ import { redirect } from "next/navigation";
 import { ForgotPasswordForm } from "@/components/auth/forgot-password-form";
 import { isEmailPasswordAuthEnabled } from "@/server/auth";
 
-export const dynamic = "force-dynamic";
 
 export const metadata: Metadata = {
   title: "Forgot password",

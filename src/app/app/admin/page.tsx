@@ -4,7 +4,6 @@ import { AdminPortalView } from "@/components/admin/admin-portal-view";
 import { requireAdmin } from "@/server/dal/auth-guard";
 import { ForbiddenError, UnauthorizedError } from "@/server/dal/errors";
 
-export const dynamic = "force-dynamic";
 
 export const metadata: Metadata = {
   title: "Admin",
