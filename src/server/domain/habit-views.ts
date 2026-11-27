@@ -349,7 +349,11 @@ export function filterHabitsForView<T extends FilterHabitLike>(
       const tags = parseViewTags(habit.tagsJson);
       if (!filter.tags.some((tag) => tags.includes(tag))) return false;
     }
-    if (filter.isCore !== undefined && deriveIsCore(habit.title, habit.category) !== filter.isCore) {
+    if (
+      filter.isCore !== undefined &&
+      deriveIsCore(parseViewTags(habit.tagsJson), habit.category) !==
+        filter.isCore
+    ) {
       return false;
     }
     if (filter.activeToday && !isHabitActiveToday(habit, ctx)) return false;

@@ -88,6 +88,32 @@ describe("Drizzle migrations integrity", () => {
       expect(logColumns).toEqual(
         expect.arrayContaining(["miss_reason", "source"]),
       );
+
+      const schemaRes = await client.execute(
+        "SELECT name, sql FROM sqlite_master WHERE type='table' AND name IN ('habits','habit_logs','habit_saved_views')"
+      );
+      const schemaByTable = new Map(
+        schemaRes.rows.map((row) => [String(row.name), String(row.sql ?? "")])
+      );
+      expect(schemaByTable.get("habits")).toContain(
+        "habits_energy_need_check"
+      );
+      expect(schemaByTable.get("habits")).toContain("habits_place_check");
+      expect(schemaByTable.get("habit_logs")).toContain(
+        "habit_logs_miss_reason_check"
+      );
+      expect(schemaByTable.get("habit_logs")).toContain(
+        "habit_logs_source_check"
+      );
+      expect(schemaByTable.get("habit_saved_views")).toContain(
+        "habit_saved_views_kind_check"
+      );
+      expect(schemaByTable.get("habit_saved_views")).toContain(
+        "habit_saved_views_group_by_check"
+      );
+      expect(schemaByTable.get("habit_saved_views")).toContain(
+        "habit_saved_views_sort_by_check"
+      );
     } finally {
       client.close();
     }

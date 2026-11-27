@@ -51,7 +51,7 @@ export interface HabitViewRepository {
   ): Promise<boolean>;
 }
 
-class DrizzleHabitViewRepository implements HabitViewRepository {
+export class DrizzleHabitViewRepository implements HabitViewRepository {
   constructor(private readonly database: AppDatabase = db) {}
 
   async seedBuiltIns(
@@ -120,7 +120,11 @@ class DrizzleHabitViewRepository implements HabitViewRepository {
       .update(habitSavedViews)
       .set({ ...patch, updatedAt: Date.now() })
       .where(
-        and(eq(habitSavedViews.userId, userId), eq(habitSavedViews.id, viewId))
+        and(
+          eq(habitSavedViews.userId, userId),
+          eq(habitSavedViews.id, viewId),
+          isNull(habitSavedViews.deletedAt)
+        )
       )
       .returning();
 

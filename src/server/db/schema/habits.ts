@@ -211,6 +211,14 @@ export const habits = sqliteTable(
       "habits_weekly_target_check",
       sql`${table.weeklyTargetCount} IS NULL OR (${table.weeklyTargetCount} >= 1 AND ${table.weeklyTargetCount} <= 7)`
     ),
+    check(
+      "habits_energy_need_check",
+      sql`${table.energyNeed} IN ('low', 'medium', 'high')`
+    ),
+    check(
+      "habits_place_check",
+      sql`${table.place} IN ('home', 'commute', 'work', 'anywhere')`
+    ),
   ]
 );
 
@@ -358,6 +366,14 @@ export const habitLogs = sqliteTable(
     check(
       "habit_logs_status_check",
       sql`${table.status} IN ('done', 'missed', 'skipped')`
+    ),
+    check(
+      "habit_logs_miss_reason_check",
+      sql`${table.missReason} IS NULL OR ${table.missReason} IN ('tired', 'work', 'travel', 'forgot', 'sick', 'low_motivation', 'other')`
+    ),
+    check(
+      "habit_logs_source_check",
+      sql`${table.source} IN ('manual', 'rule', 'button', 'range')`
     ),
   ]
 );

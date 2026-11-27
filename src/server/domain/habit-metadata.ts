@@ -47,15 +47,8 @@ export const DEFAULT_HABIT_METADATA: HabitMetadata = {
 const MAX_TAGS = 12;
 const MAX_TAG_LENGTH = 32;
 
-/** Core anchors from the product spec; used as a read-only adapter for `isCore` filters. */
-export const CORE_HABIT_ANCHORS = [
-  "Wake up 4:30",
-  "Hydrate",
-  "Pray·Meditate·Gratitude",
-  "100 push-ups",
-  "Close the day",
-  "Sleep 11pm",
-] as const;
+/** Generic, user-editable marker for the `isCore` saved-view filter. */
+export const CORE_TAG = "core";
 
 function normalizeTitle(title: string): string {
   return title.toLowerCase().replace(/[·•.,!?–—_-]+/g, " ").replace(/\s+/g, " ").trim();
@@ -188,9 +181,17 @@ export function deriveTimeBlock(preferredTime: string | null | undefined): TimeB
   return "evening";
 }
 
-/** Read-only adapter for the spec's `isCore` flag using canonical anchor titles. */
-export function deriveIsCore(title: string, category?: string | null): boolean {
-  const needle = normalizeTitle(title);
-  if ((category ?? "").trim().toLowerCase() === "core") return true;
-  return CORE_HABIT_ANCHORS.some((anchor) => normalizeTitle(anchor) === needle);
+/**
+ * `isCore` is derived from a generic "core" tag (or a legacy "core" category),
+ * never from a hardcoded list of personal habit titles.
+ */
+export function deriveIsCore(
+  tags: string[] | string | null | undefined,
+  category?: string | null
+): boolean {
+  const normalized = normalizeTags(
+    Array.isArray(tags) ? tags : tags ? [tags] : []
+  );
+  if (normalized.includes(CORE_TAG)) return true;
+  return (category ?? "").trim().toLowerCase() === CORE_TAG;
 }

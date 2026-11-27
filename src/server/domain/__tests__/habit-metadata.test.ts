@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
-  CORE_HABIT_ANCHORS,
+  CORE_TAG,
   defaultHabitMetadata,
   deriveIsCore,
   deriveTimeBlock,
@@ -115,16 +115,16 @@ describe("deriveTimeBlock", () => {
 });
 
 describe("deriveIsCore", () => {
-  it("recognizes canonical anchors and core category", () => {
-    for (const anchor of CORE_HABIT_ANCHORS) {
-      expect(deriveIsCore(anchor)).toBe(true);
-    }
-    expect(deriveIsCore("Hydrate!", "Core")).toBe(true);
-    expect(deriveIsCore("Pray · Meditate · Gratitude")).toBe(true);
+  it("recognizes the generic core tag and legacy core category", () => {
+    expect(CORE_TAG).toBe("core");
+    expect(deriveIsCore(["morning", "#Core"])).toBe(true);
+    expect(deriveIsCore(" #Core ")).toBe(true);
+    expect(deriveIsCore([], "Core")).toBe(true);
   });
 
-  it("rejects non-anchors", () => {
-    expect(deriveIsCore("Random chore", "Home")).toBe(false);
-    expect(deriveIsCore("Hydration reminder")).toBe(false);
+  it("does not hardcode personal habit titles", () => {
+    expect(deriveIsCore([], "Home")).toBe(false);
+    expect(deriveIsCore("100 push-ups", "Home")).toBe(false);
+    expect(deriveIsCore(["deep-work"])).toBe(false);
   });
 });

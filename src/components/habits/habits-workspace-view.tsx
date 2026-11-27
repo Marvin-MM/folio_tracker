@@ -191,33 +191,41 @@ export function HabitsWorkspaceView({
   const [modeTouched, setModeTouched] = useState(false);
   const savedViewsEnabled = isFeatureEnabled("savedViews");
   const missReasonEnabled = isFeatureEnabled("missReasonPrompt");
-  const [savedViews, setSavedViews] = useState<HabitSavedView[]>(
-    workspace.savedViews
+  // Saved views and the selected view are derived from server props. Optimistic
+  // overrides live only for the duration of a transition, so no effect ever
+  // synchronizes props into state (which React lint correctly flags as unsafe).
+  const [viewState, applyViewState] = useOptimistic(
+    {
+      savedViews: workspace.savedViews,
+      activeViewId:
+        workspace.savedViews.find((view) => !view.hidden)?.id ?? "",
+    },
+    (
+      state,
+      action: { savedViews?: HabitSavedView[]; activeViewId?: string }
+    ) => ({ ...state, ...action })
   );
-  const [activeViewId, setActiveViewId] = useState(
-    workspace.savedViews.find((view) => !view.hidden)?.id ?? ""
-  );
-
-  useEffect(() => {
-    setSavedViews(workspace.savedViews);
-  }, [workspace.savedViews]);
-
-  useEffect(() => {
-    if (!savedViewsEnabled) return;
-    if (!savedViews.some((view) => view.id === activeViewId && !view.hidden)) {
-      setActiveViewId(savedViews.find((view) => !view.hidden)?.id ?? "");
-    }
-  }, [activeViewId, savedViews, savedViewsEnabled]);
+  const { savedViews } = viewState;
 
   const activeView = savedViewsEnabled
-    ? savedViews.find((view) => view.id === activeViewId && !view.hidden) ?? null
+    ? savedViews.find(
+        (view) => view.id === viewState.activeViewId && !view.hidden
+      ) ??
+      savedViews.find((view) => !view.hidden) ??
+      null
     : null;
+  const activeViewId = activeView?.id ?? "";
 
   const handleViewsChanged = (nextViews: HabitSavedView[]) => {
-    setSavedViews(nextViews);
-    if (!nextViews.some((view) => view.id === activeViewId && !view.hidden)) {
-      setActiveViewId(nextViews.find((view) => !view.hidden)?.id ?? "");
-    }
+    startTransition(() => {
+      applyViewState({ savedViews: nextViews });
+    });
+  };
+
+  const handleSelectView = (nextViewId: string) => {
+    startTransition(() => {
+      applyViewState({ activeViewId: nextViewId });
+    });
   };
 
   // Guarantee persisted scoring mode & archive prefs hydrate cleanly on direct SSR reloads
@@ -683,7 +691,7 @@ export function HabitsWorkspaceView({
             <SavedViewsControl
               views={savedViews}
               activeViewId={activeViewId}
-              onSelect={setActiveViewId}
+              onSelect={handleSelectView}
               onViewsChanged={handleViewsChanged}
             />
           ) : null}

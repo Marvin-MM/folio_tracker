@@ -166,6 +166,18 @@ export const habitSavedViews = sqliteTable(
       "habit_saved_views_name_check",
       sql`length(${table.name}) BETWEEN 1 AND 48`
     ),
+    check(
+      "habit_saved_views_kind_check",
+      sql`${table.kind} IN ('today', 'grid', 'calendar', 'board')`
+    ),
+    check(
+      "habit_saved_views_group_by_check",
+      sql`${table.groupBy} IN ('timeBlock', 'category', 'energyNeed', 'place', 'none')`
+    ),
+    check(
+      "habit_saved_views_sort_by_check",
+      sql`${table.sortBy} IN ('order', 'rate', 'streak')`
+    ),
   ]
 );
 

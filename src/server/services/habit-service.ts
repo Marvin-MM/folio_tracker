@@ -135,6 +135,29 @@ const MERGE_STATUS_PRIORITY: Record<HabitLogStatus, number> = {
   missed: 1,
 };
 
+function isSavedViewNameConflict(error: unknown): boolean {
+  // Drizzle wraps the underlying libSQL error, so inspect the whole cause chain.
+  const seen = new Set<unknown>();
+  let current: unknown = error;
+  while (current instanceof Error && !seen.has(current)) {
+    seen.add(current);
+    const message = current.message.toLowerCase();
+    const code = String(
+      (current as Error & { code?: unknown }).code ?? ""
+    ).toUpperCase();
+    if (
+      message.includes("habit_saved_views_user_name_uq") ||
+      message.includes("sqlite_constraint_unique") ||
+      message.includes("unique constraint failed") ||
+      code === "SQLITE_CONSTRAINT_UNIQUE"
+    ) {
+      return true;
+    }
+    current = (current as Error & { cause?: unknown }).cause;
+  }
+  return false;
+}
+
 export interface CreateHabitInput {
   title: string;
   description?: string | null;
@@ -661,23 +684,56 @@ export class HabitService {
   private metadataPatch(
     input: { energyNeed?: EnergyNeed; place?: Place; tags?: string[] },
     fallbackTitle: string
-  ): { energyNeed: EnergyNeed; place: Place; tagsJson: string } | undefined {
+  ):
+    | { energyNeed?: EnergyNeed; place?: Place; tagsJson?: string }
+    | undefined {
     if (!isFeatureEnabled("habitMetadata")) return undefined;
-    if (
-      input.energyNeed === undefined &&
-      input.place === undefined &&
-      input.tags === undefined
-    ) {
-      return undefined;
+    const patch: { energyNeed?: EnergyNeed; place?: Place; tagsJson?: string } =
+      {};
+    // Only include fields the caller actually provided. Falling back to the
+    // title-derived defaults here would silently wipe a previously saved place
+    // or tag list when the user edits just one metadata field.
+    if (input.energyNeed !== undefined) {
+      patch.energyNeed = isEnergyNeed(input.energyNeed)
+        ? input.energyNeed
+        : defaultHabitMetadata(fallbackTitle).energyNeed;
     }
-    return this.resolveMetadataFields(input, fallbackTitle);
+    if (input.place !== undefined) {
+      patch.place = isPlace(input.place)
+        ? input.place
+        : defaultHabitMetadata(fallbackTitle).place;
+    }
+    if (input.tags !== undefined) {
+      patch.tagsJson = serializeTags(normalizeTags(input.tags));
+    }
+    return Object.keys(patch).length > 0 ? patch : undefined;
+  }
+
+  private async ensureBuiltIns(
+    userId: string,
+    now: number,
+    rows: Awaited<ReturnType<HabitViewRepository["list"]>>
+  ): Promise<void> {
+    // SELECT-first fast path: built-ins are materialized in memory by
+    // mergeHabitViews, so a read only writes when the persisted rows are
+    // genuinely missing. This avoids turning parallel page reads into SQLite
+    // write-lock contention.
+    const liveIds = new Set(
+      rows.filter((row) => row.deletedAt === null).map((row) => row.id)
+    );
+    const missing = seedBuiltInViews(userId, now).filter(
+      (row) => !liveIds.has(row.id)
+    );
+    if (missing.length > 0) {
+      await this.views.seedBuiltIns(userId, missing);
+    }
   }
 
   private async listSavedViews(userId: string): Promise<HabitSavedView[]> {
     if (!isFeatureEnabled("savedViews")) return [];
     const now = this.now();
-    await this.views.seedBuiltIns(userId, seedBuiltInViews(userId, now));
     const rows = await this.views.list(userId);
+    await this.ensureBuiltIns(userId, now, rows);
     return mergeHabitViews(userId, rows, now);
   }
 
@@ -753,7 +809,6 @@ export class HabitService {
       hasAnyMonthRoster,
       previousRoster,
       monthLockRow,
-      savedViews,
     ] = await Promise.all([
       this.habits.getOrCreateSettings(userId),
       this.habits.listHabitsForUser(userId, { includeArchived: true }),
@@ -761,9 +816,6 @@ export class HabitService {
       this.habits.hasAnyMonthRosterForUser(userId),
       this.habits.findLatestMonthRosterBefore(userId, yearMonth),
       this.habits.getMonthLock(userId, yearMonth),
-      isFeatureEnabled("savedViews")
-        ? this.listSavedViews(userId)
-        : Promise.resolve([] as HabitSavedView[]),
     ]);
 
     const monthLock = evaluateMonthLockState({
@@ -798,6 +850,12 @@ export class HabitService {
         calendar.monthEndKey
       ),
     ]);
+
+    // Saved-view seeding may write, so run it only after the read-only work
+    // above has settled. Repeated reads use a SELECT-only fast path.
+    const savedViews = isFeatureEnabled("savedViews")
+      ? await this.listSavedViews(userId)
+      : [];
 
     const logsByKey: Record<string, HabitLogRecord> = {};
     const habitIdsWithLogsInMonth = new Set<string>();
@@ -1874,8 +1932,10 @@ export class HabitService {
                 tx
               )
             : null;
+        // `null`/`""` are meaningful here: they explicitly clear a note even
+        // when an existing log was fetched for miss-reason preservation.
         const resolvedNote: string | null =
-          cleanedNote ?? existingLog?.note ?? null;
+          cleanedNote !== undefined ? cleanedNote : (existingLog?.note ?? null);
         const resolvedMissReason: MissReason | null = missReasonEnabled
           ? input.status === "missed"
             ? input.missReason !== undefined
@@ -1964,27 +2024,32 @@ export class HabitService {
     }
 
     const existing = await this.views.list(userId);
-    if (existing.some((row) => row.name === name && !row.deletedAt)) {
-      throw new ConflictError("A view with that name already exists.");
-    }
     if (existing.filter((row) => !row.builtIn && !row.deletedAt).length >= 30) {
       throw new ValidationError("You can save at most 30 custom views.");
     }
 
-    const now = this.now();
-    const created = await this.views.create({
-      id: ulid(),
-      userId,
-      name,
-      kind: input.kind ?? "today",
-      filterJson: JSON.stringify(
-        normalizeSavedViewFilter(input.filter ?? {})
-      ),
-      groupBy: input.groupBy ?? "none",
-      sortBy: input.sortBy ?? "order",
-      orderIndex: existing.length,
-    });
-    return rowToSavedView(created);
+    // Name uniqueness is enforced by a partial unique index in SQLite; mapping
+    // the constraint error avoids a check-then-insert race between two clients.
+    try {
+      const created = await this.views.create({
+        id: ulid(),
+        userId,
+        name,
+        kind: input.kind ?? "today",
+        filterJson: JSON.stringify(
+          normalizeSavedViewFilter(input.filter ?? {})
+        ),
+        groupBy: input.groupBy ?? "none",
+        sortBy: input.sortBy ?? "order",
+        orderIndex: existing.length,
+      });
+      return rowToSavedView(created);
+    } catch (error) {
+      if (isSavedViewNameConflict(error)) {
+        throw new ConflictError("A view with that name already exists.");
+      }
+      throw error;
+    }
   }
 
   async updateHabitSavedView(
@@ -2006,30 +2071,44 @@ export class HabitService {
       if (patch.hidden === undefined) {
         throw new ValidationError("Built-in views can only be hidden or shown.");
       }
+      try {
+        const updated = await this.views.update(userId, viewId, {
+          hidden: patch.hidden,
+        });
+        if (!updated) throw new NotFoundError("Saved view not found.");
+        return rowToSavedView(updated);
+      } catch (error) {
+        if (isSavedViewNameConflict(error)) {
+          throw new ConflictError("A view with that name already exists.");
+        }
+        throw error;
+      }
+    }
+
+    try {
       const updated = await this.views.update(userId, viewId, {
-        hidden: patch.hidden,
+        ...(patch.name !== undefined
+          ? { name: patch.name.trim().slice(0, 48) || existing.name }
+          : {}),
+        ...(patch.hidden !== undefined ? { hidden: patch.hidden } : {}),
+        ...(patch.filter !== undefined
+          ? {
+              filterJson: JSON.stringify(
+                normalizeSavedViewFilter(patch.filter)
+              ),
+            }
+          : {}),
+        ...(patch.groupBy !== undefined ? { groupBy: patch.groupBy } : {}),
+        ...(patch.sortBy !== undefined ? { sortBy: patch.sortBy } : {}),
       });
       if (!updated) throw new NotFoundError("Saved view not found.");
       return rowToSavedView(updated);
+    } catch (error) {
+      if (isSavedViewNameConflict(error)) {
+        throw new ConflictError("A view with that name already exists.");
+      }
+      throw error;
     }
-
-    const updated = await this.views.update(userId, viewId, {
-      ...(patch.name !== undefined
-        ? { name: patch.name.trim().slice(0, 48) || existing.name }
-        : {}),
-      ...(patch.hidden !== undefined ? { hidden: patch.hidden } : {}),
-      ...(patch.filter !== undefined
-        ? {
-            filterJson: JSON.stringify(
-              normalizeSavedViewFilter(patch.filter)
-            ),
-          }
-        : {}),
-      ...(patch.groupBy !== undefined ? { groupBy: patch.groupBy } : {}),
-      ...(patch.sortBy !== undefined ? { sortBy: patch.sortBy } : {}),
-    });
-    if (!updated) throw new NotFoundError("Saved view not found.");
-    return rowToSavedView(updated);
   }
 
   async deleteHabitSavedView(userId: string, viewId: string): Promise<void> {
