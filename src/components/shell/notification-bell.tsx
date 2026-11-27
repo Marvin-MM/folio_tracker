@@ -45,6 +45,16 @@ function getDeepLink(notif: NotificationRecord): string {
     return "/app/settings/notifications";
   }
   if (
+    notif.entityType === "habit_group" ||
+    notif.type === "habit.group_invited" ||
+    notif.type === "habit.group_joined" ||
+    notif.type === "habit.group_review_posted"
+  ) {
+    return entityId
+      ? `/app/habits/groups/${encodeURIComponent(entityId)}`
+      : "/app/habits/groups";
+  }
+  if (
     notif.entityType === "habit_monitor_request" ||
     notif.type === "habit.monitor_requested" ||
     notif.entityType === "habit_review" ||

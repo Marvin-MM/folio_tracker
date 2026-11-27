@@ -11,6 +11,9 @@ import {
 } from "./habits";
 import {
   habitComments,
+  habitGroupMembers,
+  habitGroups,
+  habitGroupSharedHabits,
   habitMonitorItems,
   habitMonitorRequests,
   habitMonitors,
@@ -74,6 +77,13 @@ export const usersRelations = relations(users, ({ one, many }) => ({
   }),
   habitReactionsAuthored: many(habitReactions, {
     relationName: "habitReactionAuthor",
+  }),
+  ownedHabitGroups: many(habitGroups, { relationName: "habitGroupOwner" }),
+  habitGroupMemberships: many(habitGroupMembers, {
+    relationName: "habitGroupMemberUser",
+  }),
+  sharedGroupHabits: many(habitGroupSharedHabits, {
+    relationName: "habitGroupSharedBy",
   }),
   adminAuditLogs: many(adminAuditLogs),
 }));
@@ -242,6 +252,7 @@ export const habitsRelations = relations(habits, ({ one, many }) => ({
   linkedTasks: many(tasks),
   monitorItems: many(habitMonitorItems),
   comments: many(habitComments),
+  groupShares: many(habitGroupSharedHabits),
 }));
 
 export const habitMonthRostersRelations = relations(
@@ -390,3 +401,47 @@ export const habitReactionsRelations = relations(habitReactions, ({ one }) => ({
     relationName: "habitReactionAuthor",
   }),
 }));
+
+export const habitGroupsRelations = relations(habitGroups, ({ one, many }) => ({
+  owner: one(users, {
+    fields: [habitGroups.ownerId],
+    references: [users.id],
+    relationName: "habitGroupOwner",
+  }),
+  members: many(habitGroupMembers),
+  sharedHabits: many(habitGroupSharedHabits),
+}));
+
+export const habitGroupMembersRelations = relations(
+  habitGroupMembers,
+  ({ one }) => ({
+    group: one(habitGroups, {
+      fields: [habitGroupMembers.groupId],
+      references: [habitGroups.id],
+    }),
+    user: one(users, {
+      fields: [habitGroupMembers.userId],
+      references: [users.id],
+      relationName: "habitGroupMemberUser",
+    }),
+  })
+);
+
+export const habitGroupSharedHabitsRelations = relations(
+  habitGroupSharedHabits,
+  ({ one }) => ({
+    group: one(habitGroups, {
+      fields: [habitGroupSharedHabits.groupId],
+      references: [habitGroups.id],
+    }),
+    habit: one(habits, {
+      fields: [habitGroupSharedHabits.habitId],
+      references: [habits.id],
+    }),
+    sharedBy: one(users, {
+      fields: [habitGroupSharedHabits.sharedBy],
+      references: [users.id],
+      relationName: "habitGroupSharedBy",
+    }),
+  })
+);

@@ -18,7 +18,7 @@ describe("Drizzle migrations integrity", () => {
     const journalPath = path.resolve(process.cwd(), "drizzle/meta/_journal.json");
     const journal = JSON.parse(readFileSync(journalPath, "utf8")) as DrizzleJournal;
 
-    expect(journal.entries.length).toBeGreaterThanOrEqual(8);
+    expect(journal.entries.length).toBeGreaterThanOrEqual(9);
 
     for (let i = 1; i < journal.entries.length; i += 1) {
       const prev = journal.entries[i - 1]!;
@@ -47,7 +47,30 @@ describe("Drizzle migrations integrity", () => {
       expect(tableNames).toContain("admin_audit_logs");
       expect(tableNames).toContain("habit_month_rosters");
       expect(tableNames).toContain("habit_month_locks");
-      expect(tableNames).toHaveLength(26);
+      expect(tableNames).toContain("habit_groups");
+      expect(tableNames).toContain("habit_group_members");
+      expect(tableNames).toContain("habit_group_shared_habits");
+      expect(tableNames).toHaveLength(29);
+    } finally {
+      client.close();
+    }
+  });
+
+  it("allows invited group memberships in the committed schema", async () => {
+    const client = createClient({ url: ":memory:" });
+    try {
+      const db = drizzle(client);
+      await migrate(db, {
+        migrationsFolder: path.resolve(process.cwd(), "drizzle"),
+      });
+
+      const tableRes = await client.execute(
+        "SELECT sql FROM sqlite_master WHERE type='table' AND name='habit_group_members'",
+      );
+      const schemaSql = String(tableRes.rows[0]?.sql ?? "");
+      expect(schemaSql).toContain("'active'");
+      expect(schemaSql).toContain("'invited'");
+      expect(schemaSql).toContain("'left'");
     } finally {
       client.close();
     }
