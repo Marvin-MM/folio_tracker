@@ -4,7 +4,11 @@ import { useState, useTransition, type FormEvent } from "react";
 import Link from "next/link";
 import { Loader2, Plus, Users } from "lucide-react";
 import { toast } from "sonner";
-import { createHabitGroupAction } from "@/actions/habit-groups";
+import {
+  acceptGroupInvitationAction,
+  createHabitGroupAction,
+  declineGroupInvitationAction,
+} from "@/actions/habit-groups";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import {
@@ -24,18 +28,52 @@ import {
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
-import type { GroupSummary } from "@/server/dal/habit-groups";
+import { useInvalidateWorkspace } from "@/hooks/use-workspace-queries";
+import type {
+  GroupInvitationSummary,
+  GroupSummary,
+} from "@/server/dal/habit-groups";
 
 interface GroupsOverviewViewProps {
   groups: GroupSummary[];
+  invitations: GroupInvitationSummary[];
 }
 
-export function GroupsOverviewView({ groups }: GroupsOverviewViewProps) {
+type SimpleActionResult = {
+  ok: boolean;
+  error?: { message: string };
+};
+
+export function GroupsOverviewView({
+  groups,
+  invitations,
+}: GroupsOverviewViewProps) {
   const [open, setOpen] = useState(false);
   const [name, setName] = useState("");
   const [description, setDescription] = useState("");
   const [emails, setEmails] = useState("");
   const [isPending, startTransition] = useTransition();
+  const invalidate = useInvalidateWorkspace();
+
+  const refresh = async () => {
+    await invalidate(["habits", "notifications"]);
+  };
+
+  const run = (
+    action: () => Promise<SimpleActionResult>,
+    successMessage: string,
+    onSuccess?: () => void | Promise<void>
+  ) => {
+    startTransition(async () => {
+      const result = await action();
+      if (!result.ok) {
+        toast.error(result.error?.message ?? "Something went wrong.");
+        return;
+      }
+      toast.success(successMessage);
+      await onSuccess?.();
+    });
+  };
 
   const handleSubmit = (event: FormEvent) => {
     event.preventDefault();
@@ -44,22 +82,22 @@ export function GroupsOverviewView({ groups }: GroupsOverviewViewProps) {
       .map((value) => value.trim())
       .filter(Boolean);
 
-    startTransition(async () => {
-      const result = await createHabitGroupAction({
-        name,
-        description: description.trim() || null,
-        memberEmails,
-      });
-      if (!result.ok) {
-        toast.error(result.error.message);
-        return;
+    run(
+      () =>
+        createHabitGroupAction({
+          name,
+          description: description.trim() || null,
+          memberEmails,
+        }),
+      "Group created. Invitations sent.",
+      async () => {
+        setOpen(false);
+        setName("");
+        setDescription("");
+        setEmails("");
+        await refresh();
       }
-      toast.success("Group created. Share a habit to get started.");
-      setOpen(false);
-      setName("");
-      setDescription("");
-      setEmails("");
-    });
+    );
   };
 
   return (
@@ -74,6 +112,70 @@ export function GroupsOverviewView({ groups }: GroupsOverviewViewProps) {
           New group
         </Button>
       </div>
+
+      {invitations.length > 0 ? (
+        <Card className="border-collab/35">
+          <CardHeader className="pb-2">
+            <CardTitle className="text-base">Group invitations</CardTitle>
+            <CardDescription>
+              Accepting adds you to the group; nothing is shared without your
+              consent.
+            </CardDescription>
+          </CardHeader>
+          <CardContent className="space-y-2">
+            {invitations.map((invitation) => (
+              <div
+                key={invitation.id}
+                className="flex items-center justify-between gap-3 rounded-md border border-border px-3 py-2 text-xs"
+              >
+                <div className="min-w-0">
+                  <p className="truncate font-medium">{invitation.name}</p>
+                  <p className="truncate text-[10px] text-muted-foreground">
+                    Invited by {invitation.inviterName}
+                  </p>
+                </div>
+                <div className="flex shrink-0 gap-1.5">
+                  <Button
+                    type="button"
+                    size="sm"
+                    disabled={isPending}
+                    onClick={() =>
+                      run(
+                        () =>
+                          acceptGroupInvitationAction({
+                            groupId: invitation.id,
+                          }),
+                        "Invitation accepted.",
+                        refresh
+                      )
+                    }
+                  >
+                    Accept
+                  </Button>
+                  <Button
+                    type="button"
+                    variant="ghost"
+                    size="sm"
+                    disabled={isPending}
+                    onClick={() =>
+                      run(
+                        () =>
+                          declineGroupInvitationAction({
+                            groupId: invitation.id,
+                          }),
+                        "Invitation declined.",
+                        refresh
+                      )
+                    }
+                  >
+                    Decline
+                  </Button>
+                </div>
+              </div>
+            ))}
+          </CardContent>
+        </Card>
+      ) : null}
 
       {groups.length === 0 ? (
         <Card>
@@ -120,8 +222,8 @@ export function GroupsOverviewView({ groups }: GroupsOverviewViewProps) {
           <DialogHeader>
             <DialogTitle>Create an accountability group</DialogTitle>
             <DialogDescription>
-              Add at least two verified FOLIO users by email. Everyone can post
-              weekly reviews and send streak nudges.
+              Invite at least two FOLIO users by email. They must accept before
+              they can see shared progress or post weekly reviews.
             </DialogDescription>
           </DialogHeader>
           <form onSubmit={handleSubmit} className="space-y-3">
@@ -155,7 +257,8 @@ export function GroupsOverviewView({ groups }: GroupsOverviewViewProps) {
                 placeholder={"partner@example.com\nsecond@example.com"}
               />
               <p className="text-[11px] text-muted-foreground">
-                Separate with commas, semicolons, or new lines.
+                Separate with commas, semicolons, or new lines. Unknown emails
+                are ignored.
               </p>
             </div>
             <div className="flex justify-end gap-2 pt-1">

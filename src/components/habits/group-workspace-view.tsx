@@ -2,10 +2,12 @@
 
 import { useState, useTransition } from "react";
 import Link from "next/link";
+import { useRouter } from "next/navigation";
 import { ArrowLeft, Share2, UserMinus } from "lucide-react";
 import { toast } from "sonner";
 import {
-  addGroupMemberAction,
+  acceptGroupInvitationAction,
+  inviteGroupMemberAction,
   leaveHabitGroupAction,
   removeGroupMemberAction,
   setGroupMemberRoleAction,
@@ -22,7 +24,6 @@ import {
   CardTitle,
 } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
-import { Label } from "@/components/ui/label";
 import {
   Select,
   SelectContent,
@@ -30,6 +31,7 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
+import { useInvalidateWorkspace } from "@/hooks/use-workspace-queries";
 import type { GroupWorkspace } from "@/server/services/habit-group-service";
 
 interface GroupWorkspaceViewProps {
@@ -37,6 +39,11 @@ interface GroupWorkspaceViewProps {
   myHabits: Array<{ id: string; title: string }>;
   currentUserId: string;
 }
+
+type SimpleActionResult = {
+  ok: boolean;
+  error?: { message: string };
+};
 
 export function GroupWorkspaceView({
   workspace,
@@ -47,11 +54,17 @@ export function GroupWorkspaceView({
   const [memberEmail, setMemberEmail] = useState("");
   const [shareHabitId, setShareHabitId] = useState("");
   const [isPending, startTransition] = useTransition();
+  const invalidate = useInvalidateWorkspace();
+  const router = useRouter();
+
+  const refresh = async () => {
+    await invalidate(["habits", "notifications"]);
+  };
 
   const run = (
-    action: () => Promise<{ ok: boolean; error?: { message: string } }>,
+    action: () => Promise<SimpleActionResult>,
     successMessage: string,
-    onSuccess?: () => void
+    onSuccess?: () => void | Promise<void>
   ) => {
     startTransition(async () => {
       const result = await action();
@@ -60,13 +73,56 @@ export function GroupWorkspaceView({
         return;
       }
       toast.success(successMessage);
-      onSuccess?.();
+      await onSuccess?.();
     });
   };
 
   const sharedIds = new Set(sharedHabits.map((habit) => habit.habitId));
   const shareable = myHabits.filter((habit) => !sharedIds.has(habit.id));
   const isOwner = group.ownerId === currentUserId;
+  const myMembership = members.find((member) => member.userId === currentUserId);
+  const isInvited =
+    myMembership?.status === "invited" &&
+    myMembership.userId === currentUserId;
+
+  if (isInvited) {
+    return (
+      <Card className="mx-auto max-w-lg">
+        <CardHeader>
+          <CardTitle className="text-base">Invitation pending</CardTitle>
+          <CardDescription>
+            You have been invited to join {group.name}. Accept to see shared
+            progress and weekly reviews.
+          </CardDescription>
+        </CardHeader>
+        <CardContent className="flex gap-2">
+          <Button
+            type="button"
+            size="sm"
+            disabled={isPending}
+            onClick={() =>
+              run(
+                () =>
+                  acceptGroupInvitationAction({
+                    groupId: group.id,
+                  }),
+                "Invitation accepted.",
+                async () => {
+                  await refresh();
+                  router.refresh();
+                }
+              )
+            }
+          >
+            Accept invitation
+          </Button>
+          <Button type="button" variant="ghost" size="sm" asChild>
+            <Link href="/app/habits/groups">Back to groups</Link>
+          </Button>
+        </CardContent>
+      </Card>
+    );
+  }
 
   return (
     <div className="space-y-4">
@@ -146,9 +202,10 @@ export function GroupWorkspaceView({
                   </div>
                   <div className="flex shrink-0 items-center gap-1">
                     <Badge variant="outline" className="capitalize">
-                      {member.role}
+                      {member.status === "invited" ? "invited" : member.role}
                     </Badge>
-                    {workspace.canManageMembers &&
+                    {member.status === "active" &&
+                    workspace.canManageMembers &&
                     member.userId !== currentUserId &&
                     member.role !== "owner" ? (
                       <>
@@ -170,7 +227,8 @@ export function GroupWorkspaceView({
                                         ? "member"
                                         : "admin",
                                   }),
-                                "Role updated."
+                                "Role updated.",
+                                refresh
                               )
                             }
                           >
@@ -190,7 +248,8 @@ export function GroupWorkspaceView({
                                   groupId: group.id,
                                   userId: member.userId,
                                 }),
-                              "Member removed."
+                              "Member removed.",
+                              refresh
                             )
                           }
                           aria-label={`Remove ${member.name}`}
@@ -219,16 +278,19 @@ export function GroupWorkspaceView({
                     onClick={() =>
                       run(
                         () =>
-                          addGroupMemberAction({
+                          inviteGroupMemberAction({
                             groupId: group.id,
                             email: memberEmail,
                           }),
-                        "Member added.",
-                        () => setMemberEmail("")
+                        "Invitation sent.",
+                        async () => {
+                          setMemberEmail("");
+                          await refresh();
+                        }
                       )
                     }
                   >
-                    Add
+                    Invite
                   </Button>
                 </div>
               ) : null}
@@ -242,7 +304,12 @@ export function GroupWorkspaceView({
                   onClick={() =>
                     run(
                       () => leaveHabitGroupAction({ groupId: group.id }),
-                      "You left the group."
+                      "You left the group.",
+                      async () => {
+                        await refresh();
+                        router.push("/app/habits/groups");
+                        router.refresh();
+                      }
                     )
                   }
                 >
@@ -293,7 +360,8 @@ export function GroupWorkspaceView({
                                 groupId: group.id,
                                 habitId: habit.habitId,
                               }),
-                            "Habit unshared."
+                            "Habit unshared.",
+                            refresh
                           )
                         }
                       >
@@ -330,7 +398,10 @@ export function GroupWorkspaceView({
                             habitId: shareHabitId,
                           }),
                         "Habit shared with the group.",
-                        () => setShareHabitId("")
+                        async () => {
+                          setShareHabitId("");
+                          await refresh();
+                        }
                       )
                     }
                   >

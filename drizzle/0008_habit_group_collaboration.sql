@@ -8,7 +8,7 @@ CREATE TABLE `habit_group_members` (
 	FOREIGN KEY (`group_id`) REFERENCES `habit_groups`(`id`) ON UPDATE no action ON DELETE cascade,
 	FOREIGN KEY (`user_id`) REFERENCES `users`(`id`) ON UPDATE no action ON DELETE cascade,
 	CONSTRAINT "habit_group_members_role_check" CHECK("habit_group_members"."role" IN ('owner', 'admin', 'member')),
-	CONSTRAINT "habit_group_members_status_check" CHECK("habit_group_members"."status" IN ('active', 'left'))
+	CONSTRAINT "habit_group_members_status_check" CHECK("habit_group_members"."status" IN ('active', 'invited', 'left'))
 );
 --> statement-breakpoint
 CREATE INDEX `habit_group_members_user_status_idx` ON `habit_group_members` (`user_id`,`status`);--> statement-breakpoint

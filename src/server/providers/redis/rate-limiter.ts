@@ -9,6 +9,8 @@ export type RateLimitBucket =
   | "habit_monitor_invite"
   | "habit_history_import"
   | "habit_month_pin"
+  | "habit_group_create"
+  | "habit_group_invite"
   | "test_push";
 
 export interface RateLimitPolicy {
@@ -42,6 +44,16 @@ export const RATE_LIMIT_POLICIES: Record<RateLimitBucket, RateLimitPolicy> = {
     maxRequests: 10,
     windowMs: 15 * 60 * 1000,
     upstashWindow: "15 m",
+  },
+  habit_group_create: {
+    maxRequests: 10,
+    windowMs: 15 * 60 * 1000,
+    upstashWindow: "15 m",
+  },
+  habit_group_invite: {
+    maxRequests: 20,
+    windowMs: 60 * 60 * 1000,
+    upstashWindow: "1 h",
   },
   test_push: {
     maxRequests: 5,
@@ -271,6 +283,22 @@ export class UpstashRateLimiter implements RateLimiter {
           RATE_LIMIT_POLICIES.habit_month_pin.upstashWindow
         ),
         prefix: "folio:rl:habit_month_pin",
+      }),
+      habit_group_create: new Ratelimit({
+        redis,
+        limiter: Ratelimit.slidingWindow(
+          RATE_LIMIT_POLICIES.habit_group_create.maxRequests,
+          RATE_LIMIT_POLICIES.habit_group_create.upstashWindow
+        ),
+        prefix: "folio:rl:habit_group_create",
+      }),
+      habit_group_invite: new Ratelimit({
+        redis,
+        limiter: Ratelimit.slidingWindow(
+          RATE_LIMIT_POLICIES.habit_group_invite.maxRequests,
+          RATE_LIMIT_POLICIES.habit_group_invite.upstashWindow
+        ),
+        prefix: "folio:rl:habit_group_invite",
       }),
       test_push: new Ratelimit({
         redis,

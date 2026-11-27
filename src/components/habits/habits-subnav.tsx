@@ -2,7 +2,7 @@
 
 import Link from "next/link";
 import { usePathname } from "next/navigation";
-import { Repeat2, Users } from "lucide-react";
+import { Repeat2, Users, UsersRound } from "lucide-react";
 import { useWorkspaceChrome } from "@/components/shell/workspace-chrome-context";
 import { usePrefetchWorkspaceView } from "@/hooks/use-workspace-queries";
 import { getCurrentYearMonthForTimezone } from "@/lib/query/clock";
@@ -17,6 +17,7 @@ export function HabitsSubnav({ circleBadgeCount = 0 }: HabitsSubnavProps) {
   const { userId, timezone } = useWorkspaceChrome();
   const prefetch = usePrefetchWorkspaceView(userId);
   const isCircle = pathname.startsWith("/app/habits/circle");
+  const isGroups = pathname.startsWith("/app/habits/groups");
 
   const handlePrefetchTracker = () => {
     prefetch.prefetchHabitsMonth(getCurrentYearMonthForTimezone(timezone));
@@ -31,10 +32,10 @@ export function HabitsSubnav({ circleBadgeCount = 0 }: HabitsSubnavProps) {
         href="/app/habits"
         onMouseEnter={handlePrefetchTracker}
         onFocus={handlePrefetchTracker}
-        aria-current={!isCircle ? "page" : undefined}
+        aria-current={!isCircle && !isGroups ? "page" : undefined}
         className={cn(
           "inline-flex min-h-10 items-center gap-1.5 border-b-2 px-2.5 text-xs font-medium transition-colors md:min-h-9",
-          !isCircle
+          !isCircle && !isGroups
             ? "border-foreground text-foreground"
             : "border-transparent text-muted-foreground hover:text-foreground"
         )}
@@ -66,6 +67,20 @@ export function HabitsSubnav({ circleBadgeCount = 0 }: HabitsSubnavProps) {
             {circleBadgeCount}
           </span>
         ) : null}
+      </Link>
+
+      <Link
+        href="/app/habits/groups"
+        aria-current={isGroups ? "page" : undefined}
+        className={cn(
+          "inline-flex min-h-10 items-center gap-1.5 border-b-2 px-2.5 text-xs font-medium transition-colors md:min-h-9",
+          isGroups
+            ? "border-foreground text-foreground"
+            : "border-transparent text-muted-foreground hover:text-foreground"
+        )}
+      >
+        <UsersRound className="size-3.5" />
+        <span>Groups</span>
       </Link>
     </nav>
   );

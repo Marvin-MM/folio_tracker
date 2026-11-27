@@ -312,7 +312,7 @@ export const habitReactions = sqliteTable(
 export const HABIT_GROUP_ROLES = ["owner", "admin", "member"] as const;
 export type HabitGroupRole = (typeof HABIT_GROUP_ROLES)[number];
 
-export const HABIT_GROUP_MEMBER_STATUSES = ["active", "left"] as const;
+export const HABIT_GROUP_MEMBER_STATUSES = ["active", "invited", "left"] as const;
 export type HabitGroupMemberStatus =
   (typeof HABIT_GROUP_MEMBER_STATUSES)[number];
 
@@ -380,7 +380,7 @@ export const habitGroupMembers = sqliteTable(
     ),
     check(
       "habit_group_members_status_check",
-      sql`${table.status} IN ('active', 'left')`
+      sql`${table.status} IN ('active', 'invited', 'left')`
     ),
   ]
 );

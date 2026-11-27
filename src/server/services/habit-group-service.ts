@@ -1,14 +1,11 @@
-import {
-  ConflictError,
-  NotFoundError,
-  ValidationError,
-} from "@/server/dal/errors";
+import { NotFoundError, RateLimitError, ValidationError } from "@/server/dal/errors";
 import {
   habitRepository,
   type HabitRepository,
 } from "@/server/dal/habits";
 import {
   habitGroupRepository,
+  type GroupInvitationSummary,
   type GroupMemberProfile,
   type GroupSharedHabit,
   type GroupSummary,
@@ -23,12 +20,7 @@ import {
   type NotificationRepository,
 } from "@/server/dal/notification-repository";
 import { db, withDbRetry, type AppDatabase } from "@/server/db";
-import {
-  habitGroupMembers,
-  type HabitGroupRecord,
-  type HabitGroupRole,
-} from "@/server/db/schema";
-import { and, eq } from "drizzle-orm";
+import type { HabitGroupRecord, HabitGroupRole } from "@/server/db/schema";
 import {
   addDaysToDateKey,
   computeHabitStreaks,
@@ -36,9 +28,15 @@ import {
   isHabitScheduledOnDate,
   parseScheduledDaysJson,
 } from "@/server/domain/habit-analytics";
+import {
+  defaultRateLimiter,
+  type RateLimiter,
+} from "@/server/providers/redis/rate-limiter";
 
 const MAX_MEMBERS_PER_GROUP = 50;
 const MAX_GROUPS_PER_USER = 30;
+
+type GroupRateLimitBucket = "habit_group_create" | "habit_group_invite";
 
 export interface CreateGroupInput {
   name: string;
@@ -75,6 +73,7 @@ export interface HabitGroupServiceDeps {
   social?: HabitSocialRepository;
   habits?: HabitRepository;
   notifications?: NotificationRepository;
+  rateLimiter?: RateLimiter;
   now?: () => number;
 }
 
@@ -84,6 +83,7 @@ export class HabitGroupService {
   private readonly social: HabitSocialRepository;
   private readonly habits: HabitRepository;
   private readonly notifications: NotificationRepository;
+  private readonly rateLimiter: RateLimiter;
   private readonly now: () => number;
 
   constructor(deps: HabitGroupServiceDeps = {}) {
@@ -92,11 +92,32 @@ export class HabitGroupService {
     this.social = deps.social ?? habitSocialRepository;
     this.habits = deps.habits ?? habitRepository;
     this.notifications = deps.notifications ?? notificationRepository;
+    this.rateLimiter = deps.rateLimiter ?? defaultRateLimiter;
     this.now = deps.now ?? (() => Date.now());
+  }
+
+  private async enforceRateLimit(
+    bucket: GroupRateLimitBucket,
+    actorId: string
+  ): Promise<void> {
+    const limitResult = await this.rateLimiter.limit(bucket, actorId);
+    if (!limitResult.allowed) {
+      throw new RateLimitError({
+        message: `Group request limit reached. Retry in ${limitResult.retryAfterSeconds}s.`,
+        retryAfterSeconds: limitResult.retryAfterSeconds,
+        limit: limitResult.limit,
+        remaining: limitResult.remaining,
+        resetAtMs: limitResult.resetAtMs,
+      });
+    }
   }
 
   listGroups(userId: string): Promise<GroupSummary[]> {
     return this.groups.listGroupsForUser(userId);
+  }
+
+  listPendingInvitations(userId: string): Promise<GroupInvitationSummary[]> {
+    return this.groups.listPendingInvitationsForUser(userId);
   }
 
   async createGroup(
@@ -108,6 +129,8 @@ export class HabitGroupService {
       throw new ValidationError("Group name must be 2–80 characters.");
     }
 
+    await this.enforceRateLimit("habit_group_create", actorId);
+
     const existing = await this.groups.listGroupsForUser(actorId);
     if (existing.length >= MAX_GROUPS_PER_USER) {
       throw new ValidationError(
@@ -115,31 +138,16 @@ export class HabitGroupService {
       );
     }
 
-    const memberIds: string[] = [];
-    const seen = new Set<string>([actorId]);
+    const invitedUserIds = new Set<string>();
     for (const rawEmail of input.memberEmails) {
-      const email = rawEmail.trim();
+      const email = rawEmail.trim().toLowerCase();
       if (!email) continue;
+      // Unknown and unverified emails are ignored with the same neutral result
+      // as known accounts so invites cannot be used to enumerate FOLIO users.
       const user = await this.social.findUserByNormalizedEmail(email);
-      if (!user || !user.emailVerified) {
-        throw new ValidationError(
-          `No verified FOLIO account found for ${email}.`
-        );
-      }
-      if (seen.has(user.id)) continue;
-      seen.add(user.id);
-      memberIds.push(user.id);
-    }
-
-    if (memberIds.length < 2) {
-      throw new ValidationError(
-        "Add at least two other people — groups are for 3+ members."
-      );
-    }
-    if (memberIds.length + 1 > MAX_MEMBERS_PER_GROUP) {
-      throw new ValidationError(
-        `A group can have at most ${MAX_MEMBERS_PER_GROUP} members.`
-      );
+      if (!user || !user.emailVerified || user.id === actorId) continue;
+      invitedUserIds.add(user.id);
+      if (invitedUserIds.size >= MAX_MEMBERS_PER_GROUP - 1) break;
     }
 
     const nowMs = this.now();
@@ -150,7 +158,7 @@ export class HabitGroupService {
             ownerId: actorId,
             name,
             description: input.description?.trim() || null,
-            memberIds,
+            invitedUserIds: Array.from(invitedUserIds),
             nowMs,
           },
           tx
@@ -158,14 +166,18 @@ export class HabitGroupService {
       )
     );
 
+    const members = await this.groups.listMembers(group.id, actorId);
+    const inviterName =
+      members.find((member) => member.userId === actorId)?.name ??
+      "A FOLIO member";
     await Promise.all(
-      memberIds.map((userId) =>
+      Array.from(invitedUserIds).map((userId) =>
         this.notifications.create({
           userId,
-          type: "habit.group_joined",
-          title: `You joined ${name}`,
-          body: "Share a habit and post your first weekly review to get started.",
-          entityType: "habit_review",
+          type: "habit.group_invited",
+          title: `You're invited to ${name}`,
+          body: `${inviterName} invited you to join an accountability group. Accept the invitation to see shared progress.`,
+          entityType: "habit_group",
           entityId: group.id,
         })
       )
@@ -174,52 +186,86 @@ export class HabitGroupService {
     return group;
   }
 
-  async addMemberByEmail(
+  /**
+   * Invites a verified FOLIO user by email. Unknown, unverified, duplicate, and
+   * self-invites all complete silently to avoid account enumeration.
+   */
+  async inviteMemberByEmail(
     actorId: string,
     groupId: string,
     email: string
-  ): Promise<GroupMemberProfile> {
+  ): Promise<void> {
     const group = await this.groups.getGroupForMember(groupId, actorId);
     if (!group) throw new NotFoundError("Group not found.");
-    const members = await this.groups.listMembers(groupId, actorId);
-    if (members.length >= MAX_MEMBERS_PER_GROUP) {
-      throw new ValidationError(
-        `A group can have at most ${MAX_MEMBERS_PER_GROUP} members.`
-      );
-    }
 
-    const user = await this.social.findUserByNormalizedEmail(email);
-    if (!user || !user.emailVerified) {
-      throw new ValidationError(
-        "No verified FOLIO account found for that email address."
-      );
-    }
+    await this.enforceRateLimit("habit_group_invite", actorId);
 
-    await this.groups.addMember({
+    const normalizedEmail = email.trim().toLowerCase();
+    const user = await this.social.findUserByNormalizedEmail(normalizedEmail);
+    if (!user || !user.emailVerified || user.id === actorId) return;
+
+    const invited = await this.groups.inviteMember({
       groupId,
       actorId,
       userId: user.id,
-      role: "member",
       nowMs: this.now(),
     });
+    if (!invited) return;
+
+    const members = await this.groups.listMembers(groupId, actorId);
+    const inviterName =
+      members.find((member) => member.userId === actorId)?.name ??
+      "A FOLIO member";
     await this.notifications.create({
       userId: user.id,
-      type: "habit.group_joined",
-      title: `You joined ${group.name}`,
-      body: `${members.find((m) => m.userId === actorId)?.name ?? "A partner"} added you to an accountability group.`,
-      entityType: "habit_review",
+      type: "habit.group_invited",
+      title: `You're invited to ${group.name}`,
+      body: `${inviterName} invited you to join an accountability group. Accept the invitation to see shared progress.`,
+      entityType: "habit_group",
       entityId: group.id,
     });
-    return {
+  }
+
+  /** @deprecated Use `inviteMemberByEmail`; invitations always require consent. */
+  addMemberByEmail(
+    actorId: string,
+    groupId: string,
+    email: string
+  ): Promise<void> {
+    return this.inviteMemberByEmail(actorId, groupId, email);
+  }
+
+  async acceptGroupInvitation(
+    actorId: string,
+    groupId: string
+  ): Promise<HabitGroupRecord> {
+    const accepted = await this.groups.acceptInvitation({
       groupId,
-      userId: user.id,
-      role: "member",
-      status: "active",
-      joinedAt: this.now(),
-      name: user.name,
-      email: user.email,
-      timezone: user.timezone,
-    };
+      userId: actorId,
+      nowMs: this.now(),
+    });
+    if (!accepted) throw new NotFoundError("Invitation not found.");
+
+    const group = await this.groups.getGroupForMember(groupId, actorId);
+    if (!group) throw new NotFoundError("Group not found.");
+
+    await this.notifications.create({
+      userId: actorId,
+      type: "habit.group_joined",
+      title: `You joined ${group.name}`,
+      body: "Share a habit and post your first weekly review to get started.",
+      entityType: "habit_group",
+      entityId: group.id,
+    });
+    return group;
+  }
+
+  async declineGroupInvitation(actorId: string, groupId: string): Promise<void> {
+    const declined = await this.groups.declineInvitation({
+      groupId,
+      userId: actorId,
+    });
+    if (!declined) throw new NotFoundError("Invitation not found.");
   }
 
   async setMemberRole(
@@ -240,24 +286,7 @@ export class HabitGroupService {
   }
 
   async leaveGroup(actorId: string, groupId: string): Promise<void> {
-    const group = await this.groups.getGroupForMember(groupId, actorId);
-    if (!group) throw new NotFoundError("Group not found.");
-    if (group.ownerId === actorId) {
-      throw new ValidationError(
-        "The owner cannot leave. Transfer ownership or delete the group."
-      );
-    }
-    const member = await this.groups.getMember(groupId, actorId);
-    if (!member) throw new NotFoundError("Group membership not found.");
-    await this.database
-      .update(habitGroupMembers)
-      .set({ status: "left" })
-      .where(
-        and(
-          eq(habitGroupMembers.groupId, groupId),
-          eq(habitGroupMembers.userId, actorId)
-        )
-      );
+    await this.groups.leaveGroup({ groupId, userId: actorId });
   }
 
   async shareHabit(
@@ -290,16 +319,15 @@ export class HabitGroupService {
       this.groups.listSharedHabits(groupId, actorId),
     ]);
 
-    const periodEndDate = getLocalDateKey(this.now(), "UTC");
+    const myMembership = members.find((member) => member.userId === actorId);
+    const periodEndDate = getLocalDateKey(this.now(), myMembership?.timezone || "UTC");
     const periodStartDate = addDaysToDateKey(periodEndDate, -6);
     const metrics = await this.getMemberMetrics(
-      actorId,
-      groupId,
+      sharedHabits,
       periodStartDate,
       periodEndDate
     );
 
-    const myMembership = members.find((m) => m.userId === actorId);
     return {
       group,
       members,
@@ -313,26 +341,51 @@ export class HabitGroupService {
   }
 
   private async getMemberMetrics(
-    actorId: string,
-    groupId: string,
+    sharedHabits: GroupSharedHabit[],
     periodStartDate: string,
     periodEndDate: string
   ): Promise<GroupMemberMetrics[]> {
-    const sharedHabits = await this.groups.listSharedHabits(groupId, actorId);
+    // One log query per habit owner, never one per shared habit. The query is
+    // intentionally coarse (all habits in the window); filtering below by
+    // habitId is the security boundary that keeps private habits private.
+    const earliestStartDateByOwner = new Map<string, string>();
+    for (const shared of sharedHabits) {
+      const current = earliestStartDateByOwner.get(shared.ownerId);
+      if (!current || shared.startDate < current) {
+        earliestStartDateByOwner.set(shared.ownerId, shared.startDate);
+      }
+    }
+
+    const logsByOwner = new Map<
+      string,
+      Awaited<ReturnType<HabitRepository["listLogsForRange"]>>
+    >();
+    await Promise.all(
+      Array.from(earliestStartDateByOwner.entries()).map(
+        async ([ownerId, startDate]) => {
+          logsByOwner.set(
+            ownerId,
+            await this.habits.listLogsForRange(ownerId, startDate, periodEndDate)
+          );
+        }
+      )
+    );
+
     return Promise.all(
       sharedHabits.map(async (shared): Promise<GroupMemberMetrics> => {
-        const logs = await this.habits.listLogsForRange(
-          shared.ownerId,
-          shared.startDate,
-          periodEndDate
+        const logs = logsByOwner.get(shared.ownerId) ?? [];
+        const logMap = new Map(
+          logs
+            .filter((log) => log.habitId === shared.habitId)
+            .map((log) => [log.dateKey, log.status])
         );
-        const logMap = new Map(logs.map((log) => [log.dateKey, log.status]));
+        const scheduledDays = parseScheduledDaysJson(shared.scheduledDaysJson);
         const streaks = computeHabitStreaks(
           {
             id: shared.habitId,
             title: shared.title,
             cadenceType: shared.cadenceType,
-            scheduledDays: parseScheduledDaysJson(shared.scheduledDaysJson),
+            scheduledDays,
             weeklyTargetCount: shared.weeklyTargetCount,
             startDate: shared.startDate,
           },
@@ -350,7 +403,7 @@ export class HabitGroupService {
             isHabitScheduledOnDate(
               {
                 cadenceType: shared.cadenceType,
-                scheduledDays: parseScheduledDaysJson(shared.scheduledDaysJson),
+                scheduledDays,
                 startDate: shared.startDate,
               },
               cursor

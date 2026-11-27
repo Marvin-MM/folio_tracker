@@ -14,8 +14,9 @@ export const metadata: Metadata = {
 
 export default async function HabitsGroupsPage() {
   const { user } = await requireSession();
-  const [groups, circleBadgeCount] = await Promise.all([
+  const [groups, invitations, circleBadgeCount] = await Promise.all([
     habitGroupService.listGroups(user.id),
+    habitGroupService.listPendingInvitations(user.id),
     habitMonitorService.getCircleBadgeCount(user.id),
   ]);
 
@@ -28,7 +29,7 @@ export default async function HabitsGroupsPage() {
       />
       <HabitsSubnav circleBadgeCount={circleBadgeCount} />
       <div className="mx-auto w-full max-w-4xl min-w-0 p-4 md:p-6">
-        <GroupsOverviewView groups={groups} />
+        <GroupsOverviewView groups={groups} invitations={invitations} />
       </div>
     </div>
   );

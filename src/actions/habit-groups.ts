@@ -26,7 +26,7 @@ const createGroupSchema = z.object({
 
 const groupIdSchema = z.object({ groupId: z.string().min(1) });
 
-const addMemberSchema = groupIdSchema.extend({
+const inviteMemberSchema = groupIdSchema.extend({
   email: emailSchema,
 });
 
@@ -76,22 +76,59 @@ export async function createHabitGroupAction(
   }
 }
 
-export async function addGroupMemberAction(
-  input: z.input<typeof addMemberSchema>
-): Promise<ActionResult<{ userId: string }>> {
-  const parsed = addMemberSchema.safeParse(input);
+export async function inviteGroupMemberAction(
+  input: z.input<typeof inviteMemberSchema>
+): Promise<ActionResult<{ invited: true }>> {
+  const parsed = inviteMemberSchema.safeParse(input);
   if (!parsed.success) {
-    return validationError(parsed.error, "Invalid member.");
+    return validationError(parsed.error, "Invalid invitation.");
   }
   try {
     const { user } = await requireSession();
-    const member = await habitGroupService.addMemberByEmail(
+    await habitGroupService.inviteMemberByEmail(
       user.id,
       parsed.data.groupId,
       parsed.data.email
     );
     revalidateGroupPaths(parsed.data.groupId);
-    return actionOk({ userId: member.userId });
+    return actionOk({ invited: true });
+  } catch (error) {
+    return mapErrorToActionResult(error);
+  }
+}
+
+export async function acceptGroupInvitationAction(
+  input: z.input<typeof groupIdSchema>
+): Promise<ActionResult<{ groupId: string }>> {
+  const parsed = groupIdSchema.safeParse(input);
+  if (!parsed.success) {
+    return validationError(parsed.error, "Invalid invitation.");
+  }
+  try {
+    const { user } = await requireSession();
+    const group = await habitGroupService.acceptGroupInvitation(
+      user.id,
+      parsed.data.groupId
+    );
+    revalidateGroupPaths(group.id);
+    return actionOk({ groupId: group.id });
+  } catch (error) {
+    return mapErrorToActionResult(error);
+  }
+}
+
+export async function declineGroupInvitationAction(
+  input: z.input<typeof groupIdSchema>
+): Promise<ActionResult<{ groupId: string }>> {
+  const parsed = groupIdSchema.safeParse(input);
+  if (!parsed.success) {
+    return validationError(parsed.error, "Invalid invitation.");
+  }
+  try {
+    const { user } = await requireSession();
+    await habitGroupService.declineGroupInvitation(user.id, parsed.data.groupId);
+    revalidateGroupPaths(parsed.data.groupId);
+    return actionOk({ groupId: parsed.data.groupId });
   } catch (error) {
     return mapErrorToActionResult(error);
   }

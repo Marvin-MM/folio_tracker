@@ -57,6 +57,13 @@
       "when": 1795731258413,
       "tag": "0007_habit_month_locks",
       "breakpoints": true
+    },
+    {
+      "idx": 8,
+      "version": "6",
+      "when": 1795777764677,
+      "tag": "0008_habit_group_collaboration",
+      "breakpoints": true
     }
   ]
 }

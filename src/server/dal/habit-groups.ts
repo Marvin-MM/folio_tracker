@@ -30,6 +30,11 @@ export interface GroupMemberProfile extends HabitGroupMemberRecord {
   timezone: string;
 }
 
+export interface GroupInvitationSummary extends HabitGroupRecord {
+  inviterName: string;
+  invitedAt: number;
+}
+
 export interface GroupSharedHabit {
   groupId: string;
   habitId: string;
@@ -48,12 +53,15 @@ export interface CreateGroupRowInput {
   ownerId: string;
   name: string;
   description: string | null;
-  memberIds: string[];
+  invitedUserIds: string[];
   nowMs: number;
 }
 
 export interface HabitGroupRepository {
   listGroupsForUser(userId: string): Promise<GroupSummary[]>;
+  listPendingInvitationsForUser(
+    userId: string
+  ): Promise<GroupInvitationSummary[]>;
   getGroupForMember(
     groupId: string,
     userId: string,
@@ -88,6 +96,23 @@ export interface HabitGroupRepository {
     },
     executor?: DbExecutor
   ): Promise<HabitGroupMemberRecord>;
+  inviteMember(
+    input: {
+      groupId: string;
+      actorId: string;
+      userId: string;
+      nowMs: number;
+    },
+    executor?: DbExecutor
+  ): Promise<HabitGroupMemberRecord | null>;
+  acceptInvitation(
+    input: { groupId: string; userId: string; nowMs: number },
+    executor?: DbExecutor
+  ): Promise<boolean>;
+  declineInvitation(
+    input: { groupId: string; userId: string },
+    executor?: DbExecutor
+  ): Promise<boolean>;
   setMemberRole(
     input: {
       groupId: string;
@@ -101,6 +126,10 @@ export interface HabitGroupRepository {
     input: { groupId: string; actorId: string; userId: string },
     executor?: DbExecutor
   ): Promise<boolean>;
+  leaveGroup(
+    input: { groupId: string; userId: string },
+    executor?: DbExecutor
+  ): Promise<boolean>;
   shareHabit(
     input: { groupId: string; actorId: string; habitId: string; nowMs: number },
     executor?: DbExecutor
@@ -111,6 +140,12 @@ export interface HabitGroupRepository {
   ): Promise<boolean>;
 }
 
+export function maskEmail(email: string): string {
+  const [local, domain] = email.split("@");
+  if (!local || !domain) return "***";
+  return `${local.slice(0, 2)}***@${domain}`;
+}
+
 function assertManager(role: HabitGroupRole) {
   if (role !== "owner" && role !== "admin") {
     throw new ForbiddenError("Only group owners and admins can manage members.");
@@ -119,6 +154,24 @@ function assertManager(role: HabitGroupRole) {
 
 export class DrizzleHabitGroupRepository implements HabitGroupRepository {
   constructor(private readonly database: AppDatabase = db) {}
+
+  private async findMember(
+    groupId: string,
+    userId: string,
+    executor: DbExecutor = this.database
+  ): Promise<HabitGroupMemberRecord | null> {
+    const [row] = await executor
+      .select()
+      .from(habitGroupMembers)
+      .where(
+        and(
+          eq(habitGroupMembers.groupId, groupId),
+          eq(habitGroupMembers.userId, userId)
+        )
+      )
+      .limit(1);
+    return row ?? null;
+  }
 
   async listGroupsForUser(userId: string): Promise<GroupSummary[]> {
     const rows = await this.database
@@ -172,6 +225,33 @@ export class DrizzleHabitGroupRepository implements HabitGroupRepository {
     }));
   }
 
+  async listPendingInvitationsForUser(
+    userId: string
+  ): Promise<GroupInvitationSummary[]> {
+    const rows = await this.database
+      .select({
+        group: habitGroups,
+        inviterName: users.name,
+        invitedAt: habitGroupMembers.joinedAt,
+      })
+      .from(habitGroupMembers)
+      .innerJoin(habitGroups, eq(habitGroupMembers.groupId, habitGroups.id))
+      .innerJoin(users, eq(habitGroups.ownerId, users.id))
+      .where(
+        and(
+          eq(habitGroupMembers.userId, userId),
+          eq(habitGroupMembers.status, "invited")
+        )
+      )
+      .orderBy(desc(habitGroupMembers.joinedAt));
+
+    return rows.map((row) => ({
+      ...row.group,
+      inviterName: row.inviterName,
+      invitedAt: row.invitedAt,
+    }));
+  }
+
   async getGroupForMember(
     groupId: string,
     userId: string,
@@ -222,7 +302,7 @@ export class DrizzleHabitGroupRepository implements HabitGroupRepository {
     const actor = await this.getMember(groupId, actorId, executor);
     if (!actor) throw new ForbiddenError("You are not an active group member.");
 
-    return executor
+    const rows = await executor
       .select({
         groupId: habitGroupMembers.groupId,
         userId: habitGroupMembers.userId,
@@ -238,10 +318,12 @@ export class DrizzleHabitGroupRepository implements HabitGroupRepository {
       .where(
         and(
           eq(habitGroupMembers.groupId, groupId),
-          eq(habitGroupMembers.status, "active")
+          inArray(habitGroupMembers.status, ["active", "invited"])
         )
       )
       .orderBy(asc(users.name));
+
+    return rows.map((row) => ({ ...row, email: maskEmail(row.email) }));
   }
 
   async listSharedHabits(
@@ -294,12 +376,9 @@ export class DrizzleHabitGroupRepository implements HabitGroupRepository {
     input: CreateGroupRowInput,
     executor: DbExecutor = this.database
   ): Promise<HabitGroupRecord> {
-    const uniqueMemberIds = Array.from(
-      new Set([input.ownerId, ...input.memberIds])
+    const invitedUserIds = Array.from(
+      new Set(input.invitedUserIds.filter((userId) => userId !== input.ownerId))
     );
-    if (uniqueMemberIds.length < 3) {
-      throw new ValidationError("A group needs at least three people.");
-    }
 
     const [group] = await executor
       .insert(habitGroups)
@@ -313,18 +392,22 @@ export class DrizzleHabitGroupRepository implements HabitGroupRepository {
       .returning();
     if (!group) throw new Error("Failed to create group.");
 
-    await executor.insert(habitGroupMembers).values(
-      uniqueMemberIds.map((userId) => ({
+    await executor.insert(habitGroupMembers).values([
+      {
+        groupId: group.id,
+        userId: input.ownerId,
+        role: "owner",
+        status: "active",
+        joinedAt: input.nowMs,
+      },
+      ...invitedUserIds.map((userId) => ({
         groupId: group.id,
         userId,
-        role:
-          userId === input.ownerId
-            ? ("owner" as const)
-            : ("member" as const),
-        status: "active" as const,
+        role: "member" as const,
+        status: "invited" as const,
         joinedAt: input.nowMs,
-      }))
-    );
+      })),
+    ]);
 
     return group;
   }
@@ -345,19 +428,12 @@ export class DrizzleHabitGroupRepository implements HabitGroupRepository {
     if (input.role === "owner") {
       throw new ForbiddenError("Group ownership cannot be assigned here.");
     }
+    if (input.userId === input.actorId) {
+      throw new ForbiddenError("You are already a member of this group.");
+    }
 
-    const target = await executor
-      .select()
-      .from(habitGroupMembers)
-      .where(
-        and(
-          eq(habitGroupMembers.groupId, input.groupId),
-          eq(habitGroupMembers.userId, input.userId)
-        )
-      )
-      .limit(1);
-
-    if (target[0]?.status === "active") {
+    const target = await this.findMember(input.groupId, input.userId, executor);
+    if (target?.status === "active") {
       throw new ConflictError("That person is already in the group.");
     }
 
@@ -377,6 +453,78 @@ export class DrizzleHabitGroupRepository implements HabitGroupRepository {
       .returning();
     if (!saved) throw new Error("Failed to add group member.");
     return saved;
+  }
+
+  async inviteMember(
+    input: {
+      groupId: string;
+      actorId: string;
+      userId: string;
+      nowMs: number;
+    },
+    executor: DbExecutor = this.database
+  ): Promise<HabitGroupMemberRecord | null> {
+    const actor = await this.getMember(input.groupId, input.actorId, executor);
+    if (!actor) throw new ForbiddenError("You are not an active group member.");
+    assertManager(actor.role);
+    if (input.userId === input.actorId) return null;
+
+    const target = await this.findMember(input.groupId, input.userId, executor);
+    if (target?.status === "active" || target?.status === "invited") {
+      return null;
+    }
+
+    const [saved] = await executor
+      .insert(habitGroupMembers)
+      .values({
+        groupId: input.groupId,
+        userId: input.userId,
+        role: "member",
+        status: "invited",
+        joinedAt: input.nowMs,
+      })
+      .onConflictDoUpdate({
+        target: [habitGroupMembers.groupId, habitGroupMembers.userId],
+        set: { status: "invited", role: "member", joinedAt: input.nowMs },
+      })
+      .returning();
+    return saved ?? null;
+  }
+
+  async acceptInvitation(
+    input: { groupId: string; userId: string; nowMs: number },
+    executor: DbExecutor = this.database
+  ): Promise<boolean> {
+    const updated = await executor
+      .update(habitGroupMembers)
+      .set({ status: "active", joinedAt: input.nowMs })
+      .where(
+        and(
+          eq(habitGroupMembers.groupId, input.groupId),
+          eq(habitGroupMembers.userId, input.userId),
+          eq(habitGroupMembers.status, "invited")
+        )
+      )
+      .returning({ userId: habitGroupMembers.userId });
+    return updated.length > 0;
+  }
+
+  async declineInvitation(
+    input: { groupId: string; userId: string },
+    executor: DbExecutor = this.database
+  ): Promise<boolean> {
+    const updated = await executor
+      .update(habitGroupMembers)
+      .set({ status: "left" })
+      .where(
+        and(
+          eq(habitGroupMembers.groupId, input.groupId),
+          eq(habitGroupMembers.userId, input.userId),
+          eq(habitGroupMembers.status, "invited")
+        )
+      )
+      .returning({ userId: habitGroupMembers.userId });
+    return updated.length > 0;
   }
 
   async setMemberRole(
@@ -423,6 +571,14 @@ export class DrizzleHabitGroupRepository implements HabitGroupRepository {
     }
     assertManager(actor.role);
 
+    const target = await this.findMember(input.groupId, input.userId, executor);
+    if (target?.role === "owner") {
+      throw new ForbiddenError("The group owner cannot be removed.");
+    }
+    if (actor.role === "admin" && target?.role === "admin") {
+      throw new ForbiddenError("Only the owner can remove another admin.");
+    }
+
     const [updated] = await executor
       .update(habitGroupMembers)
       .set({ status: "left" })
@@ -435,6 +591,32 @@ export class DrizzleHabitGroupRepository implements HabitGroupRepository {
       )
       .returning();
     return Boolean(updated);
+  }
+
+  async leaveGroup(
+    input: { groupId: string; userId: string },
+    executor: DbExecutor = this.database
+  ): Promise<boolean> {
+    const member = await this.getMember(input.groupId, input.userId, executor);
+    if (!member) throw new ForbiddenError("You are not an active group member.");
+    if (member.role === "owner") {
+      throw new ValidationError(
+        "The owner cannot leave. Transfer ownership or delete the group."
+      );
+    }
+
+    const updated = await executor
+      .update(habitGroupMembers)
+      .set({ status: "left" })
+      .where(
+        and(
+          eq(habitGroupMembers.groupId, input.groupId),
+          eq(habitGroupMembers.userId, input.userId),
+          eq(habitGroupMembers.status, "active")
+        )
+      )
+      .returning({ userId: habitGroupMembers.userId });
+    return updated.length > 0;
   }
 
   async shareHabit(
