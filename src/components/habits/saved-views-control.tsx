@@ -133,6 +133,7 @@ export function SavedViewsControl({
   return (
     <div className="flex flex-wrap items-center gap-1.5">
       <Select
+        name="savedHabitView"
         value={activeView?.id ?? visibleViews[0]?.id}
         onValueChange={onSelect}
       >
@@ -235,6 +236,7 @@ export function SavedViewsControl({
                   Energy
                 </Label>
                 <Select
+                  name="savedViewEnergy"
                   value={energyNeed}
                   onValueChange={(value) =>
                     setEnergyNeed(value as EnergyNeed | "any")
@@ -261,6 +263,7 @@ export function SavedViewsControl({
                   Place
                 </Label>
                 <Select
+                  name="savedViewPlace"
                   value={place}
                   onValueChange={(value) => setPlace(value as Place | "any")}
                 >

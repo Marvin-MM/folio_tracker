@@ -534,7 +534,7 @@ export function DayPageClient({
                         }}
                         aria-label="Clear energy"
                         title="Clear energy"
-                        className="inline-flex size-6 items-center justify-center rounded border border-border text-muted-foreground hover:bg-accent hover:text-foreground disabled:opacity-50"
+                        className="inline-flex size-9 items-center justify-center rounded border border-border text-muted-foreground hover:bg-accent hover:text-foreground disabled:opacity-50 md:size-6"
                       >
                         <X className="size-3" />
                       </button>
@@ -548,7 +548,6 @@ export function DayPageClient({
                   min={1}
                   max={10}
                   step={1}
-                  disabled={isPending}
                   value={energy ?? 5}
                   onChange={(event) => setEnergy(Number(event.target.value))}
                   onPointerUp={() => {
@@ -561,7 +560,7 @@ export function DayPageClient({
                       commitEnergy(energy);
                     }
                   }}
-                  className="w-full accent-primary"
+                  className="h-9 w-full cursor-pointer accent-primary md:h-5"
                 />
               </div>
               <div className="space-y-1">
@@ -579,7 +578,6 @@ export function DayPageClient({
                     min={0}
                     max={24}
                     step={0.5}
-                    disabled={isPending}
                     value={sleepHours}
                     placeholder="Optional"
                     onChange={(event) => setSleepHours(event.target.value)}
@@ -614,7 +612,6 @@ export function DayPageClient({
             value={note}
             maxLength={2_000}
             rows={3}
-            disabled={isPending}
             placeholder="Anything worth remembering about this day…"
             onChange={(event) => setNote(event.target.value)}
             className="w-full rounded border border-border bg-background px-2 py-1.5 text-xs leading-relaxed"
@@ -648,7 +645,6 @@ export function DayPageClient({
             value={journalText}
             maxLength={4_000}
             rows={4}
-            disabled={isPending}
             placeholder="Write your answer…"
             onChange={(event) => setJournalText(event.target.value)}
             className="w-full rounded border border-border bg-background px-2 py-1.5 text-xs leading-relaxed"
