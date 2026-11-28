@@ -8,6 +8,7 @@ import {
   gte,
   inArray,
   isNotNull,
+  isNull,
   lt,
   lte,
   or,
@@ -16,6 +17,8 @@ import {
 import { generateEvenPositions } from "@/lib/fractional-index";
 import { db, type AppDatabase, type DbExecutor } from "@/server/db";
 import {
+  habitDayEntries,
+  habitExcuseRanges,
   habitImportAliases,
   habitLogs,
   habitMonthLocks,
@@ -36,6 +39,8 @@ import {
   type HabitMonthLockStatus,
   type HabitPlace,
   type HabitRecord,
+  type HabitDayEntryRecord,
+  type HabitExcuseRangeRecord,
   type HabitTrackerSettingsRecord,
   type TaskStatus,
 } from "@/server/db/schema";
@@ -129,6 +134,18 @@ export interface UpsertHabitLogRowInput {
   source?: HabitLogSource;
   loggedAt: number;
   isBackfilledLate: boolean;
+}
+
+/** Phase C — fields are optional so untouched columns are never overwritten. */
+export interface UpsertHabitDayEntryRowInput {
+  userId: string;
+  dateKey: string;
+  energy?: number | null;
+  sleepHours?: number | null;
+  note?: string | null;
+  journalPromptId?: string | null;
+  journalText?: string | null;
+  updatedAt: number;
 }
 
 export interface HabitNudgeUserCandidate {
@@ -358,6 +375,24 @@ export interface HabitRepository {
     endDateKey: string,
     executor?: DbExecutor
   ): Promise<LinkedHabitTaskSummary[]>;
+  /** Active excuse ranges overlapping an inclusive date range. */
+  listExcuseRangesForRange(
+    userId: string,
+    startDateKey: string,
+    endDateKey: string,
+    executor?: DbExecutor
+  ): Promise<HabitExcuseRangeRecord[]>;
+  /** Read-only lazy lookup: never creates a day row. */
+  getDayEntry(
+    userId: string,
+    dateKey: string,
+    executor?: DbExecutor
+  ): Promise<HabitDayEntryRecord | null>;
+  /** Creates or updates a day row only when the caller actually edits it. */
+  upsertDayEntry(
+    input: UpsertHabitDayEntryRowInput,
+    executor?: DbExecutor
+  ): Promise<HabitDayEntryRecord>;
   listNudgeUserCandidatesPage(
     limit: number,
     offset: number,
@@ -985,6 +1020,81 @@ export class DrizzleHabitRepository implements HabitRepository {
       .returning();
 
     return updated ?? null;
+  }
+
+  async listExcuseRangesForRange(
+    userId: string,
+    startDateKey: string,
+    endDateKey: string,
+    executor: DbExecutor = this.database
+  ): Promise<HabitExcuseRangeRecord[]> {
+    return executor
+      .select()
+      .from(habitExcuseRanges)
+      .where(
+        and(
+          eq(habitExcuseRanges.userId, userId),
+          lte(habitExcuseRanges.startDate, endDateKey),
+          gte(habitExcuseRanges.endDate, startDateKey),
+          isNull(habitExcuseRanges.deletedAt)
+        )
+      )
+      .orderBy(asc(habitExcuseRanges.startDate), asc(habitExcuseRanges.id));
+  }
+
+  async getDayEntry(
+    userId: string,
+    dateKey: string,
+    executor: DbExecutor = this.database
+  ): Promise<HabitDayEntryRecord | null> {
+    const [row] = await executor
+      .select()
+      .from(habitDayEntries)
+      .where(
+        and(
+          eq(habitDayEntries.userId, userId),
+          eq(habitDayEntries.date, dateKey),
+          isNull(habitDayEntries.deletedAt)
+        )
+      )
+      .limit(1);
+    return row ?? null;
+  }
+
+  async upsertDayEntry(
+    input: UpsertHabitDayEntryRowInput,
+    executor: DbExecutor = this.database
+  ): Promise<HabitDayEntryRecord> {
+    const patch: Partial<Omit<UpsertHabitDayEntryRowInput, "userId" | "dateKey" | "updatedAt">> =
+      {};
+    if (input.energy !== undefined) patch.energy = input.energy;
+    if (input.sleepHours !== undefined) patch.sleepHours = input.sleepHours;
+    if (input.note !== undefined) patch.note = input.note;
+    if (input.journalPromptId !== undefined) {
+      patch.journalPromptId = input.journalPromptId;
+    }
+    if (input.journalText !== undefined) patch.journalText = input.journalText;
+
+    const [saved] = await executor
+      .insert(habitDayEntries)
+      .values({
+        userId: input.userId,
+        date: input.dateKey,
+        ...patch,
+        createdAt: input.updatedAt,
+        updatedAt: input.updatedAt,
+      })
+      .onConflictDoUpdate({
+        target: [habitDayEntries.userId, habitDayEntries.date],
+        set: { ...patch, updatedAt: input.updatedAt },
+        setWhere: eq(habitDayEntries.userId, input.userId),
+      })
+      .returning();
+
+    if (!saved) {
+      throw new Error("Failed to save day entry.");
+    }
+    return saved;
   }
 
   async upsertLog(

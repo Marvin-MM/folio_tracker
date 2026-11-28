@@ -227,6 +227,7 @@ export function HabitsWorkspaceView({
   const [modeTouched, setModeTouched] = useState(false);
   const savedViewsEnabled = isFeatureEnabled("savedViews");
   const missReasonEnabled = isFeatureEnabled("missReasonPrompt");
+  const dayPageEnabled = isFeatureEnabled("dayPage");
   // Persist the user's selected view in React state (never useOptimistic, which
   // reverts as soon as the transition finishes). `workspace.savedViews` stays
   // canonical from TanStack Query invalidation.
@@ -1159,6 +1160,11 @@ export function HabitsWorkspaceView({
               onSaveCellDetail={handleSaveCellDetail}
               missReasonPromptEnabled={missReasonEnabled}
               onSetMissReason={handleSetMissReason}
+              onOpenDay={
+                dayPageEnabled
+                  ? (dateKey) => router.push(`/app/day/${dateKey}`)
+                  : undefined
+              }
               onInspectHabit={(habit) =>
                 openDetail({
                   kind: "habit",

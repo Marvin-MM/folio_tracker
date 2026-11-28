@@ -4,6 +4,7 @@ import { formatInTimeZone } from "date-fns-tz";
 import { TodayHabitsStrip } from "@/components/habits/today-habits-strip";
 import { ViewHeader } from "@/components/workspace/view-header";
 import { TaskListView } from "@/components/workspace/workspace-lists";
+import { isFeatureEnabled } from "@/config/features";
 import {
   useTasksViewQuery,
   type TasksViewPayload,
@@ -42,12 +43,18 @@ export function TodayWorkspaceClient({
     );
   }
 
+  const dayMetaHref =
+    isFeatureEnabled("dayPage") && data.habitsStrip
+      ? `/app/day/${data.habitsStrip.todayDateKey}`
+      : undefined;
+
   return (
     <div className="flex flex-1 flex-col">
       <ViewHeader
         title="Today"
         subtitle="Overdue, due today, and tasks with reminders today"
         meta={`${formattedToday} · ${data.items.length}`}
+        metaHref={dayMetaHref}
       />
       <div className="mx-auto w-full max-w-3xl p-4 md:p-6">
         {data.habitsStrip ? (

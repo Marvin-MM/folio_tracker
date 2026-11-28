@@ -35,7 +35,7 @@ flowchart TB
   end
 
   subgraph Infra["Persistence & External Services"]
-    DB[("Turso / libSQL (SQLite WAL) — 35 Tables, ULID PKs, Cascading FKs, CHECK & Partial Unique Indexes")]
+    DB[("Turso / libSQL (SQLite WAL) — 39 Tables, ULID PKs, Cascading FKs, CHECK & Partial Unique Indexes")]
     RDS[("Redis 3-Tier (Upstash -> ioredis -> Memory) — RateLimiter & UnreadCounter ONLY")]
     ING["Inngest v4 Durable Engine — 17 Functions, Plan-Safe Concurrency (default 5, crons 1) & LIMIT 200 Crons"]
     EXT["External Delivery & Identity (Resend, VAPID Web Push, Google OAuth)"]
@@ -70,7 +70,7 @@ flowchart TB
 
 ## 2. SOLID Clean Layering & Dependency Direction
 
-Dependencies point strictly inward toward `src/server/db/` and `src/server/domain/`. Pure domain calculations (`operations/*`, `habit-analytics.ts`, `habit-month-lock.ts`, `comment-window-policy.ts`, `habit-import.ts`, `habit-evolution.ts`) have zero DB or network imports, while every service accepts repositories and providers via constructor injection (DIP) so all 36 Vitest suites (153 tests) execute offline against ephemeral SQLite databases.
+Dependencies point strictly inward toward `src/server/db/` and `src/server/domain/`. Pure domain calculations (`operations/*`, `habit-analytics.ts`, `habit-month-lock.ts`, `habit-metadata.ts`, `habit-views.ts`, `effectiveStatus.ts`, `phase-c-day.ts`, `rollups.ts`, `journal-prompts.ts`, `comment-window-policy.ts`, `habit-import.ts`, `habit-evolution.ts`) have zero DB or network imports, while every service accepts repositories and providers via constructor injection (DIP) so all 45 Vitest suites (214 tests) execute offline against ephemeral SQLite databases.
 
 ```mermaid
 flowchart LR
@@ -95,7 +95,7 @@ flowchart LR
   end
 
   subgraph Foundations["Schema & Concrete Adapters"]
-    SCHEMA["src/server/db/ (35 Drizzle Tables, Migration 0010 Indexes, WAL + Embedded Replica Client, withDbRetry)"]
+    SCHEMA["src/server/db/ (39 Drizzle Tables, Migrations 0000-0012, WAL + Embedded Replica Client, withDbRetry)"]
     ADAPT["External Adapters (Inngest v4, Resend, web-push, Upstash / ioredis / InMemory)"]
   end
 
@@ -123,7 +123,7 @@ flowchart LR
 
 ---
 
-## 3. Unified Entity-Relationship Model (35 Tables)
+## 3. Unified Entity-Relationship Model (39 Tables)
 
 All primary keys are sortable ULIDs (`ulidx`), all timestamps are UTC Unix epoch milliseconds (`integer`) paired with explicit IANA timezone strings and calendar date keys (`YYYY-MM-DD`), and referential integrity is enforced by SQLite/Turso (`PRAGMA foreign_keys = ON`, `CHECK` constraints, partial unique indexes, and cascading deletes).
 
@@ -268,9 +268,9 @@ erDiagram
   users ||--o{ admin_audit_logs : "records"
 ```
 
-### 3B. Habits Ledger, Per-Month Rosters & Accountability Circle (11 Tables)
+### 3B. Habits Ledger, Day Ledger, Saved Views, Per-Month Rosters & Accountability Circle (16 Tables)
 
-Anchored to `users`, `projects`, and `tasks(habit_id)` via strict cascading and `SET NULL` foreign keys.
+Anchored to `users`, `projects`, and `tasks(habit_id)` via strict cascading and `SET NULL` foreign keys. Includes Phase A–C habit extensions (`habit_day_entries` with `0 <= sleep_hours <= 24` & `1 <= energy <= 10` checks, `habit_excuse_ranges`, `habit_saved_views`, `undo_snapshots`, `habits` metadata columns `energy_need`/`place`/`tags_json`, and `habit_logs` `miss_reason`/`source`).
 
 ```mermaid
 erDiagram
@@ -748,7 +748,7 @@ flowchart TB
 
 **Honest Analytics, Per-Month Rosters & History Import Invariants (`habit-analytics.ts`, `habit-import.ts`, `habit-evolution.ts`):**
 - Real calendar lengths (28–31 days with leap-year Feb 29), **elapsed-to-date denominators** (future days excluded), mid-month `startDate` clamping, `'skipped'` rest passes excluded from denominators without breaking streaks, and `'weekly_target'` habits capped at `weeklyTargetCount` per calendar week.
-- **Per-Month Curated Rosters (`habit_month_rosters`), Dynamic Month Locking (`habit_month_locks`) & Future-Month Lock:** Each month (`YYYY-MM`) maintains its own enrolled habit roster so switching between months displays and scores ONLY that month's habits; entering a new month offers 1-click carry-over or customization from the previous month without altering prior months' history; and future months (`> currentMonth`) are strictly clamped/rejected across UI, API, and Service layers until they begin. Completed months can be locked manually on their final day (`closing_today`) or during the configurable grace window (`month_lock_grace_days`, default `3` days, `0–14`), and deterministically auto-lock once the grace window expires (`evaluateMonthLockState`, zero cron drift). Optional 4–6 digit Accountability PINs are hashed server-side with Node `crypto.scryptSync` + per-user CSPRNG salt + 5-attempt / 15-minute lockout (`sanitizeHabitTrackerSettings` never serializes hashes/salts to clients) and gate a timed 30-minute temporary unlock window (`unlocked_temp`) with integrity counters surfaced in Accountability Circle views.
+- **Per-Month Curated Rosters (`habit_month_rosters`), Dynamic Month Locking (`habit_month_locks`), Habit Metadata, Saved Views & `/app/day/[date]` Day Ledger:** Each month (`YYYY-MM`) maintains its own enrolled habit roster so switching between months displays and scores ONLY that month's habits; entering a new month offers 1-click carry-over or customization from the previous month without altering prior months' history; and future months (`> currentMonth`) are strictly clamped/rejected across UI, API, and Service layers until they begin. Habits carry optional metadata (`energy_need`, `place`, `tags_json`) powering 6 read-only built-in + lazily-materialized custom Saved Views (`habit_saved_views`, plus the `Low-energy day` quick filter on `/app/today`), single-tap miss reasons (`habit_logs.miss_reason`), range-based excusing (`habit_excuse_ranges`), and a dedicated `/app/day/[date]` Day Ledger (`habit_day_entries` created lazily only on actual field changes, with energy, sleep hours, day notes, rotating reflection prompts, computed day/month/week rollups, and month-lock enforcement). Completed months can be locked manually on their final day (`closing_today`) or during the configurable grace window (`month_lock_grace_days`, default `3` days, `0–14`), and deterministically auto-lock once the grace window expires (`evaluateMonthLockState`, zero cron drift). Optional 4–6 digit Accountability PINs are hashed server-side with Node `crypto.scryptSync` + per-user CSPRNG salt + 5-attempt / 15-minute lockout (`sanitizeHabitTrackerSettings` never serializes hashes/salts to clients) and gate a timed 30-minute temporary unlock window (`unlocked_temp`) with integrity counters surfaced in Accountability Circle views.
 - **Timeout-Proof Chunked Excel/CSV History Migration (`POST /api/workspace/habits/import-history`, `habit_import_aliases`):** Strictly restricted to validated `.xlsx` (OOXML ZIP magic-byte checked, lazy-loaded `read-excel-file/browser`, CSP `worker-src 'self' blob:`), `.csv`, and `.txt` files (max 10 MB), supporting 1-sheet or multi-year workbooks up to 50,000 marks via a 2-phase pipeline (`phase: "prepare"` reconciles habits, `startDate` backfill, archival & aliases + verifies month locks; `phase: "chunk"` streams ≤ 1,500 compact `[habitId, dateKey, status]` tuples per sub-second Turso `db.batch()` request with non-null micro-note preservation, 1-query linked-task short-circuit, live progress bar, and idempotent resume on failure). Manually locked months always block imports; calendar-age auto-locked months support initial backfill with explicit user confirmation.
 
 ---
@@ -783,7 +783,7 @@ flowchart TB
   subgraph Offboard["Safe Account Offboarding"]
     DelAcc["AccountService.deleteAccount(userId)"] --> Sole{"Sole owner of shared project with members?"}
     Sole -->|Yes| Block["400 ValidationError (transfer or delete shared project first)"]
-    Sole -->|No| Sweep["ACID tx: reassign co-owned projects -> collect scheduled reminders & public slugs -> DELETE user (cascades all 35 tables) -> reset UnreadCounterCache -> bust public 'use cache' -> emit cancellations"]
+    Sole -->|No| Sweep["ACID tx: reassign co-owned projects -> collect scheduled reminders & public slugs -> DELETE user (cascades all 39 tables) -> reset UnreadCounterCache -> bust public 'use cache' -> emit cancellations"]
   end
 ```
 

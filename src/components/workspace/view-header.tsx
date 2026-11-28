@@ -1,5 +1,6 @@
 "use client";
 
+import Link from "next/link";
 import { Plus } from "lucide-react";
 import { NotificationBell } from "@/components/shell/notification-bell";
 import { useWorkspaceChrome } from "@/components/shell/workspace-chrome-context";
@@ -10,10 +11,17 @@ interface ViewHeaderProps {
   title: string;
   subtitle?: string;
   meta?: string;
+  metaHref?: string;
   actions?: React.ReactNode;
 }
 
-export function ViewHeader({ title, subtitle, meta, actions }: ViewHeaderProps) {
+export function ViewHeader({
+  title,
+  subtitle,
+  meta,
+  metaHref,
+  actions,
+}: ViewHeaderProps) {
   const { openQuickCapture, notifications, timezone } = useWorkspaceChrome();
 
   return (
@@ -30,7 +38,15 @@ export function ViewHeader({ title, subtitle, meta, actions }: ViewHeaderProps) 
       </div>
 
       <div className="flex shrink-0 items-center gap-2">
-        {meta ? (
+        {metaHref ? (
+          <Link
+            href={metaHref}
+            aria-label={`Open day page: ${meta ?? ""}`}
+            className="mono-tabular hidden text-[11px] text-muted-foreground underline-offset-2 hover:text-foreground hover:underline sm:inline"
+          >
+            {meta}
+          </Link>
+        ) : meta ? (
           <span className="mono-tabular hidden text-[11px] text-muted-foreground sm:inline">
             {meta}
           </span>

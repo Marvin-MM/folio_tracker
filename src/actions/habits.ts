@@ -105,6 +105,25 @@ const setHabitMissReasonSchema = z.object({
   reason: z.enum(MISS_REASONS).nullable(),
 });
 
+const saveDayEntrySchema = z
+  .object({
+    dateKey: dateKeySchema,
+    energy: z.number().int().min(1).max(10).nullable().optional(),
+    sleepHours: z.number().min(0).max(24).nullable().optional(),
+    note: z.string().max(2_000).nullable().optional(),
+    journalPromptId: z.string().max(64).nullable().optional(),
+    journalText: z.string().max(4_000).nullable().optional(),
+  })
+  .refine(
+    (value) =>
+      value.energy !== undefined ||
+      value.sleepHours !== undefined ||
+      value.note !== undefined ||
+      value.journalPromptId !== undefined ||
+      value.journalText !== undefined,
+    { message: "Nothing to save for this day." }
+  );
+
 const createHabitSchema = z.object({
   title: z.string().trim().min(1, "Habit title is required.").max(120),
   description: z.string().max(1_000).nullable().optional(),
@@ -383,8 +402,8 @@ export async function logHabitDayAction(
 export async function setHabitMissReasonAction(
   input: z.input<typeof setHabitMissReasonSchema>
 ): Promise<ActionResult<HabitLogRecord>> {
-  if (!isFeatureEnabled("missReasonPrompt")) {
-    return actionErr("FEATURE_DISABLED", "Miss-reason prompts are disabled.");
+  if (!isFeatureEnabled("missReasonPrompt") && !isFeatureEnabled("dayPage")) {
+    return actionErr("FEATURE_DISABLED", "Miss reasons are disabled.");
   }
   const parsed = setHabitMissReasonSchema.safeParse(input);
   if (!parsed.success) {
@@ -403,6 +422,40 @@ export async function setHabitMissReasonAction(
     );
     revalidateHabitPaths();
     return actionOk(updated);
+  } catch (error) {
+    return mapErrorToActionResult(error);
+  }
+}
+
+export async function saveDayEntryAction(
+  input: z.input<typeof saveDayEntrySchema>
+): Promise<ActionResult<{ dateKey: string }>> {
+  if (!isFeatureEnabled("dayPage")) {
+    return actionErr("FEATURE_DISABLED", "Day pages are disabled.");
+  }
+  const parsed = saveDayEntrySchema.safeParse(input);
+  if (!parsed.success) {
+    return actionErr(
+      "VALIDATION_ERROR",
+      parsed.error.issues[0]?.message ?? "Invalid day entry."
+    );
+  }
+  if (
+    (parsed.data.energy !== undefined || parsed.data.sleepHours !== undefined) &&
+    !isFeatureEnabled("energySleepInput")
+  ) {
+    return actionErr("FEATURE_DISABLED", "Energy and sleep inputs are disabled.");
+  }
+
+  try {
+    const { user } = await requireSession();
+    const saved = await habitService.saveDayEntry(
+      user.id,
+      user.timezone || "UTC",
+      parsed.data
+    );
+    revalidateHabitPaths();
+    return actionOk({ dateKey: saved.date });
   } catch (error) {
     return mapErrorToActionResult(error);
   }

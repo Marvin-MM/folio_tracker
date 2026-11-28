@@ -15,9 +15,9 @@ export const features = {
   missReasonPrompt: true,
 
   // Phase C — day ledger page, energy/sleep inputs, and computed rollups
-  dayPage: false,
-  energySleepInput: false,
-  rollups: false,
+  dayPage: true,
+  energySleepInput: true,
+  rollups: true,
 } as const;
 
 export type FeatureFlag = keyof typeof features;

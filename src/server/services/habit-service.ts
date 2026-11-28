@@ -1,6 +1,17 @@
 import { fromZonedTime } from "date-fns-tz";
 import { ulid } from "ulidx";
 import { isFeatureEnabled } from "@/config/features";
+import { getJournalPromptForDate } from "@/server/domain/journal-prompts";
+import {
+  computeHabitRate,
+  computeRunsThisWeek,
+  getMonthRangeForDate,
+  getWeekRangeForDate,
+} from "@/server/domain/rollups";
+import {
+  REVIEW_PROMPTS,
+  type ReviewPrompt,
+} from "@/server/domain/review-prompts";
 import {
   generatePositionBetween,
   MAX_POSITION_KEY_LENGTH,
@@ -42,6 +53,7 @@ import { db, withDbRetry, type AppDatabase, type DbExecutor } from "@/server/db"
 import type {
   HabitCadenceType,
   HabitCommentMode,
+  HabitDayEntryRecord,
   HabitLogRecord,
   HabitLogStatus,
   HabitRecord,
@@ -118,6 +130,15 @@ import {
   type ViewKind,
   type ViewSortBy,
 } from "@/server/domain/habit-views";
+import type { EffectiveHabitStatus } from "@/server/domain/effectiveStatus";
+import {
+  applyEffectiveStatusesToLogs,
+  buildDayChecklist,
+  computeDayHighlights,
+  getAdjacentDateKeys,
+  resolveRunHabitIds,
+  type DayHighlights,
+} from "@/server/domain/phase-c-day";
 import {
   defaultRateLimiter,
   type RateLimiter,
@@ -156,6 +177,30 @@ function isSavedViewNameConflict(error: unknown): boolean {
     current = (current as Error & { cause?: unknown }).cause;
   }
   return false;
+}
+
+/**
+ * Excuse ranges persisted before validation may contain malformed JSON. Such
+ * rows are ignored entirely: treating them as `[]` would mean “all habits” and
+ * silently excuse the whole day.
+ */
+function parseHabitIdsJson(value: string): string[] | null {
+  try {
+    const parsed: unknown = JSON.parse(value);
+    return Array.isArray(parsed)
+      ? parsed.filter((id): id is string => typeof id === "string")
+      : null;
+  } catch {
+    return null;
+  }
+}
+
+function enumerateDateKeys(start: string, end: string): string[] {
+  const keys: string[] = [];
+  for (let cursor = start; cursor <= end; cursor = addDaysToDateKey(cursor, 1)) {
+    keys.push(cursor);
+  }
+  return keys;
 }
 
 export interface CreateHabitInput {
@@ -364,6 +409,47 @@ export interface TodayHabitStripItem {
 export interface TodayHabitsStripData {
   todayDateKey: string;
   items: TodayHabitStripItem[];
+}
+
+export interface SaveDayEntryInput {
+  dateKey: string;
+  energy?: number | null;
+  sleepHours?: number | null;
+  note?: string | null;
+  journalPromptId?: string | null;
+  journalText?: string | null;
+}
+
+export interface DayChecklistViewItem {
+  habit: HabitRecord;
+  scheduled: boolean;
+  status: EffectiveHabitStatus;
+  log: HabitLogRecord | null;
+}
+
+export interface DayRollupsView {
+  habitRate: { day: number | null; month: number | null };
+  runsThisWeek: { done: number; target: number | null } | null;
+}
+
+export interface DayWorkspace {
+  dateKey: string;
+  todayDateKey: string;
+  monthLabel: string;
+  weekdayLabel: string;
+  monthLock: MonthLockState;
+  checklist: DayChecklistViewItem[];
+  dayEntry: HabitDayEntryRecord | null;
+  journalPrompt: ReviewPrompt | null;
+  highlights: DayHighlights | null;
+  rollups: DayRollupsView;
+  previousDateKey: string;
+  nextDateKey: string | null;
+  flags: {
+    energySleepInput: boolean;
+    rollups: boolean;
+    missReasons: boolean;
+  };
 }
 
 export interface HabitServiceDeps {
@@ -992,6 +1078,310 @@ export class HabitService {
     });
 
     return { todayDateKey, items };
+  }
+
+  /** Server-owned clock helper: pages never read `Date.now()` directly. */
+  getTodayDateKey(timezone: string): string {
+    return getLocalDateKey(this.now(), timezone);
+  }
+
+  /**
+   * Phase C day workspace. Reads only: a `habit_day_entries` row is created by
+   * `saveDayEntry` only after the user actually edits a field.
+   *
+   * Queries directly in two minimal parallel waves (avoiding duplicate
+   * `listLogsForRange` and `computeHabitMonthAnalytics` work).
+   */
+  async getDayWorkspace(
+    userId: string,
+    timezone: string,
+    dateKey: string
+  ): Promise<DayWorkspace> {
+    if (!isValidDateKey(dateKey)) {
+      throw new ValidationError("Date must be a valid YYYY-MM-DD date.");
+    }
+    const nowMs = this.now();
+    const todayDateKey = getLocalDateKey(nowMs, timezone);
+    if (isFutureDateKey(dateKey, todayDateKey)) {
+      throw new ValidationError("Future days cannot be opened.");
+    }
+
+    const yearMonth = dateKey.slice(0, 7);
+    const monthRange = getMonthRangeForDate(dateKey);
+
+    // Wave 1: lightweight indexed metadata + day entry in parallel
+    const [
+      settings,
+      allUserHabits,
+      explicitMonthHabitIds,
+      hasAnyMonthRoster,
+      monthLockRow,
+      dayEntry,
+    ] = await Promise.all([
+      this.habits.getOrCreateSettings(userId),
+      this.habits.listHabitsForUser(userId, { includeArchived: true }),
+      this.habits.listMonthRosterHabitIds(userId, yearMonth),
+      this.habits.hasAnyMonthRosterForUser(userId),
+      this.habits.getMonthLock(userId, yearMonth),
+      this.habits.getDayEntry(userId, dateKey),
+    ]);
+
+    const monthLock = evaluateMonthLockState({
+      yearMonth,
+      todayDateKey,
+      nowMs,
+      settings,
+      lockRow: monthLockRow,
+    });
+
+    const weekStartsOn: 0 | 1 = settings.weekStartsOn === 0 ? 0 : 1;
+    const calendar = buildMonthCalendar(yearMonth, weekStartsOn);
+    const weekRange = getWeekRangeForDate(dateKey, weekStartsOn);
+
+    // Weeks can straddle months and streaks look backwards, so read a single
+    // consolidated range covering both the viewed month and streak lookback.
+    const defaultLookback = addDaysToDateKey(dateKey, -120);
+    const lookbackStart =
+      weekRange.start < defaultLookback ? weekRange.start : defaultLookback;
+    const lookbackEnd =
+      monthRange.end > weekRange.end ? monthRange.end : weekRange.end;
+
+    // Wave 2: single consolidated logs + excuse-ranges read in parallel
+    const [excuseRanges, lookbackLogs] = await Promise.all([
+      this.habits.listExcuseRangesForRange(userId, lookbackStart, lookbackEnd),
+      this.habits.listLogsForRange(userId, lookbackStart, lookbackEnd),
+    ]);
+
+    const habitIdsWithLogsInMonth = new Set<string>();
+    const rawLogsForDate: HabitLogRecord[] = [];
+    for (const log of lookbackLogs) {
+      if (
+        log.dateKey >= calendar.monthStartKey &&
+        log.dateKey <= calendar.monthEndKey
+      ) {
+        habitIdsWithLogsInMonth.add(log.habitId);
+      }
+      if (log.dateKey === dateKey) {
+        rawLogsForDate.push(log);
+      }
+    }
+
+    // Honor the same per-month roster visibility rule as getMonthWorkspace
+    const explicitSet = new Set(explicitMonthHabitIds);
+    const visibleHabits =
+      explicitSet.size > 0
+        ? allUserHabits.filter((h) => explicitSet.has(h.id))
+        : hasAnyMonthRoster
+          ? allUserHabits.filter((h) => habitIdsWithLogsInMonth.has(h.id))
+          : allUserHabits.filter(
+              (h) => !h.isArchived || habitIdsWithLogsInMonth.has(h.id)
+            );
+
+    const parsedExcuseRanges = excuseRanges.flatMap((range) => {
+      const habitIds = parseHabitIdsJson(range.habitIdsJson);
+      if (habitIds === null) return [];
+      return [
+        {
+          startDate: range.startDate,
+          endDate: range.endDate,
+          habitIds,
+          deletedAt: range.deletedAt,
+        },
+      ];
+    });
+    const effectiveLogs = applyEffectiveStatusesToLogs({
+      habits: visibleHabits,
+      dateKeys: enumerateDateKeys(lookbackStart, lookbackEnd),
+      logs: lookbackLogs,
+      excuseRanges: parsedExcuseRanges,
+    });
+
+    const effectiveAnalytics = computeHabitMonthAnalytics({
+      yearMonth: calendar.yearMonth,
+      todayDateKey,
+      weekStartsOn,
+      scoringMode: "elapsed",
+      habits: visibleHabits.map(toAnalyticsHabit),
+      logs: effectiveLogs,
+    });
+
+    const checklist = buildDayChecklist({
+      habits: visibleHabits,
+      dateKey,
+      logs: rawLogsForDate,
+      excuseRanges: parsedExcuseRanges,
+    }).map((item) => ({
+      ...item,
+      habit: item.habit as HabitRecord,
+      log: item.log as HabitLogRecord | null,
+    }));
+
+    const rollupsEnabled = isFeatureEnabled("rollups");
+    const dayRange = { start: dateKey, end: dateKey };
+    const habitRateMonth = computeHabitRate(effectiveLogs, monthRange);
+    const runHabitIds = resolveRunHabitIds(visibleHabits);
+    const runTargets = visibleHabits
+      .filter((habit) => runHabitIds.includes(habit.id))
+      .map((habit) => habit.weeklyTargetCount)
+      .filter((target): target is number => typeof target === "number");
+    const rollups: DayRollupsView = {
+      habitRate: rollupsEnabled
+        ? {
+            day: computeHabitRate(effectiveLogs, dayRange),
+            month: habitRateMonth,
+          }
+        : { day: null, month: null },
+      runsThisWeek:
+        rollupsEnabled && runHabitIds.length > 0
+          ? computeRunsThisWeek({
+              logs: effectiveLogs,
+              runHabitIds,
+              range: weekRange,
+              target:
+                runTargets.length > 0
+                  ? runTargets.reduce((sum, target) => sum + target, 0)
+                  : null,
+            })
+          : null,
+    };
+
+    const highlights = rollupsEnabled
+      ? computeDayHighlights({
+          checklist,
+          monthAverage: habitRateMonth,
+          streakByHabitId: effectiveAnalytics.byHabitId,
+        })
+      : null;
+
+    const savedPrompt = dayEntry?.journalPromptId
+      ? REVIEW_PROMPTS.find((prompt) => prompt.id === dayEntry.journalPromptId) ??
+        null
+      : null;
+    const { previousDateKey, nextDateKey } = getAdjacentDateKeys(
+      dateKey,
+      todayDateKey
+    );
+
+    return {
+      dateKey,
+      todayDateKey,
+      monthLabel: calendar.monthLabel,
+      weekdayLabel:
+        calendar.days.find((day) => day.dateKey === dateKey)?.weekdayShort ?? "—",
+      monthLock,
+      checklist,
+      dayEntry,
+      journalPrompt:
+        savedPrompt ?? getJournalPromptForDate(dateKey, REVIEW_PROMPTS),
+      highlights,
+      rollups,
+      previousDateKey,
+      nextDateKey,
+      flags: {
+        energySleepInput: isFeatureEnabled("energySleepInput"),
+        rollups: rollupsEnabled,
+        missReasons:
+          isFeatureEnabled("missReasonPrompt") || isFeatureEnabled("dayPage"),
+      },
+    };
+  }
+
+  /** Phase C — lazy, idempotent day-row upsert. Omits untouched columns. */
+  async saveDayEntry(
+    userId: string,
+    timezone: string,
+    input: SaveDayEntryInput
+  ): Promise<HabitDayEntryRecord> {
+    if (!isValidDateKey(input.dateKey)) {
+      throw new ValidationError("Date must be a valid YYYY-MM-DD date.");
+    }
+    const todayDateKey = getLocalDateKey(this.now(), timezone);
+    if (isFutureDateKey(input.dateKey, todayDateKey)) {
+      throw new ValidationError("Cannot edit a future day.");
+    }
+
+    const patch: Omit<SaveDayEntryInput, "dateKey"> = {};
+    const assign = <K extends keyof Omit<SaveDayEntryInput, "dateKey">>(
+      key: K,
+      value: SaveDayEntryInput[K]
+    ) => {
+      if (value !== undefined) patch[key] = value;
+    };
+
+    assign(
+      "note",
+      input.note === undefined
+        ? undefined
+        : input.note === null
+          ? null
+          : input.note.trim() || null
+    );
+    assign(
+      "journalText",
+      input.journalText === undefined
+        ? undefined
+        : input.journalText === null
+          ? null
+          : input.journalText.trim() || null
+    );
+    assign("journalPromptId", input.journalPromptId);
+
+    if (input.energy !== undefined) {
+      if (!isFeatureEnabled("energySleepInput")) {
+        throw new ValidationError("Energy and sleep inputs are disabled.");
+      }
+      if (
+        input.energy !== null &&
+        (!Number.isInteger(input.energy) || input.energy < 1 || input.energy > 10)
+      ) {
+        throw new ValidationError("Energy must be a whole number from 1 to 10.");
+      }
+      assign("energy", input.energy);
+    }
+    if (input.sleepHours !== undefined) {
+      if (!isFeatureEnabled("energySleepInput")) {
+        throw new ValidationError("Energy and sleep inputs are disabled.");
+      }
+      if (
+        input.sleepHours !== null &&
+        (!Number.isFinite(input.sleepHours) ||
+          input.sleepHours < 0 ||
+          input.sleepHours > 24)
+      ) {
+        throw new ValidationError("Sleep hours must be between 0 and 24.");
+      }
+      assign("sleepHours", input.sleepHours);
+    }
+    if (patch.note !== undefined && patch.note !== null && patch.note.length > 2_000) {
+      throw new ValidationError("Day note must be 2,000 characters or fewer.");
+    }
+    if (
+      patch.journalText !== undefined &&
+      patch.journalText !== null &&
+      patch.journalText.length > 4_000
+    ) {
+      throw new ValidationError("Journal text must be 4,000 characters or fewer.");
+    }
+    if (
+      patch.journalPromptId !== undefined &&
+      patch.journalPromptId !== null &&
+      patch.journalPromptId.length > 64
+    ) {
+      throw new ValidationError("Journal prompt id is too long.");
+    }
+
+    if (Object.keys(patch).length === 0) {
+      throw new ValidationError("Nothing to save for this day.");
+    }
+
+    return withDbRetry(() =>
+      this.habits.upsertDayEntry({
+        userId,
+        dateKey: input.dateKey,
+        ...patch,
+        updatedAt: this.now(),
+      })
+    );
   }
 
   async createHabit(
@@ -2021,8 +2411,11 @@ export class HabitService {
     input: { habitId: string; dateKey: string; reason: MissReason | null },
     timezone = "UTC"
   ): Promise<HabitLogRecord> {
-    if (!isFeatureEnabled("missReasonPrompt")) {
-      throw new ValidationError("Miss-reason prompts are disabled.");
+    if (
+      !isFeatureEnabled("missReasonPrompt") &&
+      !isFeatureEnabled("dayPage")
+    ) {
+      throw new ValidationError("Miss reasons are disabled.");
     }
     if (!isValidDateKey(input.dateKey)) {
       throw new ValidationError("Date must be a valid YYYY-MM-DD date.");

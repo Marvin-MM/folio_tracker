@@ -81,6 +81,7 @@ interface HabitsMatrixProps {
     note: string | null
   ) => void;
   onInspectHabit?: (habit: HabitRecord) => void;
+  onOpenDay?: (dateKey: string) => void;
   missReasonPromptEnabled?: boolean;
   onSetMissReason?: (input: {
     habitId: string;
@@ -628,6 +629,7 @@ export function HabitsMatrix({
   onCycleLog,
   onSaveCellDetail,
   onInspectHabit,
+  onOpenDay,
   missReasonPromptEnabled = false,
   onSetMissReason,
 }: HabitsMatrixProps) {
@@ -883,18 +885,37 @@ export function HabitsMatrix({
                         >
                           {day.weekdayLetter}
                         </span>
-                        <span
-                          className={cn(
-                            "mono-tabular mt-1 flex h-4 min-w-4 items-center justify-center rounded px-0.5 text-[10px]",
-                            isToday
-                              ? "bg-primary font-semibold text-primary-foreground"
-                              : isFuture
-                                ? "text-muted-foreground/60"
-                                : "font-medium text-foreground"
-                          )}
-                        >
-                          {day.dayOfMonth}
-                        </span>
+                        {onOpenDay ? (
+                          <button
+                            type="button"
+                            disabled={isFuture}
+                            onClick={() => onOpenDay(day.dateKey)}
+                            aria-label={`Open day ${day.dateKey}`}
+                            className={cn(
+                              "mono-tabular mt-1 flex h-5 min-w-5 items-center justify-center rounded px-0.5 text-[10px] hover:bg-accent focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring disabled:cursor-not-allowed",
+                              isToday
+                                ? "bg-primary font-semibold text-primary-foreground"
+                                : isFuture
+                                  ? "text-muted-foreground/60"
+                                  : "font-medium text-foreground"
+                            )}
+                          >
+                            {day.dayOfMonth}
+                          </button>
+                        ) : (
+                          <span
+                            className={cn(
+                              "mono-tabular mt-1 flex h-4 min-w-4 items-center justify-center rounded px-0.5 text-[10px]",
+                              isToday
+                                ? "bg-primary font-semibold text-primary-foreground"
+                                : isFuture
+                                  ? "text-muted-foreground/60"
+                                  : "font-medium text-foreground"
+                            )}
+                          >
+                            {day.dayOfMonth}
+                          </span>
+                        )}
                       </div>
                     </th>
                   );

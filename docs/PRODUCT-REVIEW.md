@@ -2,7 +2,7 @@
 
 Review of three proposals: a downloadable monthly performance report, the “challenge as rules engine” design, and daily-use improvements. Recommendation: build the report from derived analytics, adopt the challenge model with a leaner MVP, and prioritize friction removal over gamification.
 
-**Status note.** Written against current `main`. **Shipped:** hardened chunked Excel/CSV history import, per-month habit rosters, dynamic month locking & PIN, future-month lock, 15-minute habit nudges, Accountability Circle, Operations Blueprints (Phases 1 & 2 — Explore, Collaboration RBAC, Guest Runner, Staleness Audits), and 5-phase security/performance hardening. **In review:** accountability groups (#2), group weekly reviews (#3), partner streak nudges (#4), and Phase A/B/C habit extensions (#7–#10). Do not treat in-review features as shipped dependencies.
+**Status note.** Written against current `main`. **Shipped:** hardened chunked Excel/CSV history import, per-month habit rosters, dynamic month locking & PIN, future-month lock, 15-minute habit nudges, Accountability Circle, Operations Blueprints (Phases 1 & 2 — Explore, Collaboration RBAC, Guest Runner, Staleness Audits), 5-phase security/performance hardening, and Phase A/B/C habit extensions (metadata, 6 built-in + custom saved views, `Low-energy day` Today filter, miss reasons, excuse-range foundation, `/app/day/[date]` Day Ledger with lazy-written energy/sleep/notes/journal & computed rollups, and local `db:backup`/`db:restore` scripts). **In review:** accountability groups (#2), group weekly reviews (#3), and partner streak nudges (#4). Do not treat in-review features as shipped dependencies.
 
 ---
 

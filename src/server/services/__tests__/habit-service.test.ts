@@ -352,6 +352,10 @@ describe("HabitService ACID sync, tenant isolation, bulk import, and habit nudge
       deleteLogForUser: habitRepo.deleteLogForUser.bind(habitRepo),
       listLinkedTasksForRange:
         habitRepo.listLinkedTasksForRange.bind(habitRepo),
+      listExcuseRangesForRange:
+        habitRepo.listExcuseRangesForRange.bind(habitRepo),
+      getDayEntry: habitRepo.getDayEntry.bind(habitRepo),
+      upsertDayEntry: habitRepo.upsertDayEntry.bind(habitRepo),
       listNudgeUserCandidatesPage:
         habitRepo.listNudgeUserCandidatesPage.bind(habitRepo),
       isUserActive: habitRepo.isUserActive.bind(habitRepo),
