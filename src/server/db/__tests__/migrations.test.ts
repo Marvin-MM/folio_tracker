@@ -18,7 +18,7 @@ describe("Drizzle migrations integrity", () => {
     const journalPath = path.resolve(process.cwd(), "drizzle/meta/_journal.json");
     const journal = JSON.parse(readFileSync(journalPath, "utf8")) as DrizzleJournal;
 
-    expect(journal.entries.length).toBeGreaterThanOrEqual(10);
+    expect(journal.entries.length).toBeGreaterThanOrEqual(12);
 
     for (let i = 1; i < journal.entries.length; i += 1) {
       const prev = journal.entries[i - 1]!;
@@ -30,7 +30,27 @@ describe("Drizzle migrations integrity", () => {
     }
   });
 
-  it("applies every migration cleanly to a fresh database including habit_month_rosters and habit_month_locks", async () => {
+  it("keeps a matching snapshot for every journal entry", () => {
+    const journalPath = path.resolve(process.cwd(), "drizzle/meta/_journal.json");
+    const journal = JSON.parse(readFileSync(journalPath, "utf8")) as DrizzleJournal;
+
+    let previousId = "00000000-0000-0000-0000-000000000000";
+    for (const entry of journal.entries) {
+      const snapshotPath = path.resolve(
+        process.cwd(),
+        `drizzle/meta/${String(entry.idx).padStart(4, "0")}_snapshot.json`
+      );
+      const snapshot = JSON.parse(readFileSync(snapshotPath, "utf8")) as {
+        id: string;
+        prevId: string;
+      };
+
+      expect(snapshot.prevId).toBe(previousId);
+      previousId = snapshot.id;
+    }
+  });
+
+  it("applies every migration cleanly to a fresh database including month locks and Phase A foundations", async () => {
     const client = createClient({ url: ":memory:" });
     try {
       const db = drizzle(client);
@@ -56,7 +76,10 @@ describe("Drizzle migrations integrity", () => {
       expect(tableNames).toContain("operation_members");
       expect(tableNames).toContain("operation_invitations");
       expect(tableNames).toContain("operation_step_flags");
-      expect(tableNames).toHaveLength(35);
+      expect(tableNames).toContain("habit_excuse_ranges");
+      expect(tableNames).toContain("habit_day_entries");
+      expect(tableNames).toContain("undo_snapshots");
+      expect(tableNames).toHaveLength(38);
     } finally {
       client.close();
     }

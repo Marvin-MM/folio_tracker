@@ -5,6 +5,7 @@ export * from "./reminders";
 export * from "./notifications";
 export * from "./habits";
 export * from "./habits-social";
+export * from "./habit-extensions";
 export * from "./operations";
 export * from "./operations-social";
 export * from "./relations";

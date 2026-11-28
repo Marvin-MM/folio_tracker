@@ -22,6 +22,7 @@ local.db-*
 *.db
 *.db-wal
 *.db-shm
+/.backups/
 *.sqlite
 *.sqlite3
 

@@ -2,6 +2,11 @@ import { relations } from "drizzle-orm";
 import { adminAuditLogs } from "./admin";
 import { accounts, sessions, users } from "./auth";
 import {
+  habitDayEntries,
+  habitExcuseRanges,
+  undoSnapshots,
+} from "./habit-extensions";
+import {
   habitImportAliases,
   habitLogs,
   habitMonthLocks,
@@ -63,6 +68,9 @@ export const usersRelations = relations(users, ({ one, many }) => ({
   habitMonthRosters: many(habitMonthRosters),
   habitMonthLocks: many(habitMonthLocks),
   habitLogs: many(habitLogs),
+  habitExcuseRanges: many(habitExcuseRanges),
+  habitDayEntries: many(habitDayEntries),
+  undoSnapshots: many(undoSnapshots),
   habitMonitorsAsOwner: many(habitMonitors, {
     relationName: "habitMonitorOwner",
   }),
@@ -593,3 +601,30 @@ export const operationStepFlagsRelations = relations(
     }),
   })
 );
+
+export const habitExcuseRangesRelations = relations(
+  habitExcuseRanges,
+  ({ one }) => ({
+    user: one(users, {
+      fields: [habitExcuseRanges.userId],
+      references: [users.id],
+    }),
+  })
+);
+
+export const habitDayEntriesRelations = relations(
+  habitDayEntries,
+  ({ one }) => ({
+    user: one(users, {
+      fields: [habitDayEntries.userId],
+      references: [users.id],
+    }),
+  })
+);
+
+export const undoSnapshotsRelations = relations(undoSnapshots, ({ one }) => ({
+  user: one(users, {
+    fields: [undoSnapshots.userId],
+    references: [users.id],
+  }),
+}));
