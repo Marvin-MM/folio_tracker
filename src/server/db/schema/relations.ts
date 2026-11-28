@@ -4,6 +4,7 @@ import { accounts, sessions, users } from "./auth";
 import {
   habitDayEntries,
   habitExcuseRanges,
+  habitSavedViews,
   undoSnapshots,
 } from "./habit-extensions";
 import {
@@ -69,6 +70,7 @@ export const usersRelations = relations(users, ({ one, many }) => ({
   habitMonthLocks: many(habitMonthLocks),
   habitLogs: many(habitLogs),
   habitExcuseRanges: many(habitExcuseRanges),
+  habitSavedViews: many(habitSavedViews),
   habitDayEntries: many(habitDayEntries),
   undoSnapshots: many(undoSnapshots),
   habitMonitorsAsOwner: many(habitMonitors, {
@@ -607,6 +609,16 @@ export const habitExcuseRangesRelations = relations(
   ({ one }) => ({
     user: one(users, {
       fields: [habitExcuseRanges.userId],
+      references: [users.id],
+    }),
+  })
+);
+
+export const habitSavedViewsRelations = relations(
+  habitSavedViews,
+  ({ one }) => ({
+    user: one(users, {
+      fields: [habitSavedViews.userId],
       references: [users.id],
     }),
   })

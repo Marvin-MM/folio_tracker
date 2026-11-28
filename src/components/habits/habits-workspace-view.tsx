@@ -34,8 +34,11 @@ import {
   carryOverHabitMonthRosterAction,
   lockHabitMonthAction,
   logHabitDayAction,
+  setHabitMissReasonAction,
 } from "@/actions/habits";
+import { isFeatureEnabled } from "@/config/features";
 import { HabitsMatrix } from "@/components/habits/habits-matrix";
+import { SavedViewsControl } from "@/components/habits/saved-views-control";
 import { useDetailSheet } from "@/components/shell/detail-sheet-context";
 import { useWorkspaceUserId } from "@/components/shell/workspace-chrome-context";
 import { Badge } from "@/components/ui/badge";
@@ -56,11 +59,14 @@ import type {
 } from "@/server/db/schema";
 import {
   computeHabitMonthAnalytics,
+  isHabitScheduledOnDate,
   parseScheduledDaysJson,
   shiftYearMonth,
   type HabitRankHighlight,
   type ScoringMode,
 } from "@/server/domain/habit-analytics";
+import type { MissReason } from "@/server/domain/habit-metadata";
+import { filterHabitsForView } from "@/server/domain/habit-views";
 import type { HabitMonthWorkspace } from "@/server/services/habit-service";
 import { useWorkspaceUIStore } from "@/stores/workspace-ui-store";
 
@@ -219,6 +225,21 @@ export function HabitsWorkspaceView({
     (s) => s.setHabitsScoringMode
   );
   const [modeTouched, setModeTouched] = useState(false);
+  const savedViewsEnabled = isFeatureEnabled("savedViews");
+  const missReasonEnabled = isFeatureEnabled("missReasonPrompt");
+  // Persist the user's selected view in React state (never useOptimistic, which
+  // reverts as soon as the transition finishes). `workspace.savedViews` stays
+  // canonical from TanStack Query invalidation.
+  const [selectedViewId, setSelectedViewId] = useState<string | null>(null);
+  const savedViews = workspace.savedViews;
+  const activeView = savedViewsEnabled
+    ? savedViews.find(
+        (view) => view.id === selectedViewId && !view.hidden
+      ) ??
+      savedViews.find((view) => !view.hidden) ??
+      null
+    : null;
+  const activeViewId = activeView?.id ?? "";
 
   // Guarantee persisted scoring mode & archive prefs hydrate cleanly on direct SSR reloads
   useEffect(() => {
@@ -258,6 +279,10 @@ export function HabitsWorkspaceView({
         note: action.preserveNote
           ? existing?.note ?? null
           : action.note ?? null,
+        missReason: action.preserveNote
+          ? existing?.missReason ?? null
+          : null,
+        source: existing?.source ?? "manual",
         loggedAt: existing?.loggedAt ?? 0,
         isBackfilledLate: existing?.isBackfilledLate ?? false,
       },
@@ -300,6 +325,59 @@ export function HabitsWorkspaceView({
 
     return recomputed;
   }, [activeScoringMode, optimisticDirty, optimisticLogsByKey, workspace]);
+
+  const savedViewContext = useMemo(() => {
+    const rateByHabitId: Record<string, number | null> = {};
+    const streakByHabitId: Record<string, number> = {};
+    for (const [habitId, summary] of Object.entries(analytics.byHabitId)) {
+      rateByHabitId[habitId] = summary.completionRate;
+      streakByHabitId[habitId] = summary.currentStreak;
+    }
+
+    const missReasonByHabitId: Record<string, MissReason | null> = {};
+    const todaySuffix = `::${workspace.todayDateKey}`;
+    for (const [key, log] of Object.entries(optimisticLogsByKey)) {
+      if (key.endsWith(todaySuffix)) {
+        missReasonByHabitId[log.habitId] = log.missReason ?? null;
+      }
+    }
+
+    const activeTodayIds = new Set(
+      workspace.habits
+        .filter((habit) =>
+          isHabitScheduledOnDate(
+            {
+              cadenceType: habit.cadenceType,
+              scheduledDays: parseScheduledDaysJson(habit.scheduledDaysJson),
+              startDate: habit.startDate,
+            },
+            workspace.todayDateKey
+          )
+        )
+        .map((habit) => habit.id)
+    );
+
+    return {
+      rateByHabitId,
+      streakByHabitId,
+      missReasonByHabitId,
+      activeTodayIds,
+      weekday: new Date(`${workspace.todayDateKey}T12:00:00Z`).getUTCDay(),
+    };
+  }, [
+    analytics.byHabitId,
+    optimisticLogsByKey,
+    workspace.habits,
+    workspace.todayDateKey,
+  ]);
+
+  const matrixHabits = useMemo(
+    () =>
+      activeView
+        ? filterHabitsForView(workspace.habits, activeView, savedViewContext)
+        : workspace.habits,
+    [activeView, savedViewContext, workspace.habits]
+  );
 
   const currentMonth = workspace.todayDateKey.slice(0, 7);
   const isAtCurrentMonth = workspace.yearMonth >= currentMonth;
@@ -370,6 +448,7 @@ export function HabitsWorkspaceView({
             habitId: habit.id,
             dateKey,
             status: nextStatus,
+            ...(missReasonEnabled ? { source: "button" as const } : {}),
           });
 
           if (!result.ok) {
@@ -390,7 +469,7 @@ export function HabitsWorkspaceView({
         }
       });
     },
-    [applyOptimisticLog, invalidate]
+    [applyOptimisticLog, invalidate, missReasonEnabled]
   );
 
   const handleSaveCellDetail = useCallback(
@@ -418,6 +497,7 @@ export function HabitsWorkspaceView({
             dateKey,
             status: nextStatus,
             note: nextNote,
+            ...(missReasonEnabled ? { source: "button" as const } : {}),
           });
 
           if (!result.ok) {
@@ -438,7 +518,21 @@ export function HabitsWorkspaceView({
         }
       });
     },
-    [applyOptimisticLog, invalidate]
+    [applyOptimisticLog, invalidate, missReasonEnabled]
+  );
+
+  const handleSetMissReason = useCallback(
+    (input: { habitId: string; dateKey: string; reason: MissReason }) => {
+      startTransition(async () => {
+        const result = await setHabitMissReasonAction(input);
+        if (!result.ok) {
+          toast.error(result.error.message);
+          return;
+        }
+        await invalidate(["habits", "today"]);
+      });
+    },
+    [invalidate]
   );
 
   const handleRestoreArchived = (habit: HabitRecord) => {
@@ -653,6 +747,14 @@ export function HabitsWorkspaceView({
               Full Month
             </button>
           </div>
+
+          {savedViewsEnabled && savedViews.length > 0 ? (
+            <SavedViewsControl
+              views={savedViews}
+              activeViewId={activeViewId}
+              onSelect={setSelectedViewId}
+            />
+          ) : null}
         </div>
 
         {/* Right Actions */}
@@ -1034,27 +1136,41 @@ export function HabitsWorkspaceView({
         )
       ) : (
         <>
-          <HabitsMatrix
-            calendar={analytics.calendar}
-            todayDateKey={workspace.todayDateKey}
-            habits={workspace.habits}
-            logsByKey={optimisticLogsByKey}
-            linkedTaskByKey={workspace.linkedTaskByKey}
-            summaryByHabitId={analytics.byHabitId}
-            readOnly={isMonthLocked}
-            onCycleLog={handleCycleLog}
-            onSaveCellDetail={handleSaveCellDetail}
-            onInspectHabit={(habit) =>
-              openDetail({
-                kind: "habit",
-                data: {
-                  habit,
-                  summary: analytics.byHabitId[habit.id] ?? null,
-                  projects,
-                },
-              })
-            }
-          />
+          {activeView && matrixHabits.length === 0 ? (
+            <div className="rounded-md border border-dashed border-border bg-card px-6 py-8 text-center">
+              <p className="text-sm font-medium text-foreground">
+                No habits match “{activeView.name}”
+              </p>
+              <p className="mt-1 text-xs text-muted-foreground">
+                Pick another saved view, or adjust habit metadata from the habit
+                inspector.
+              </p>
+            </div>
+          ) : (
+            <HabitsMatrix
+              calendar={analytics.calendar}
+              todayDateKey={workspace.todayDateKey}
+              habits={matrixHabits}
+              logsByKey={optimisticLogsByKey}
+              linkedTaskByKey={workspace.linkedTaskByKey}
+              summaryByHabitId={analytics.byHabitId}
+              readOnly={isMonthLocked}
+              onCycleLog={handleCycleLog}
+              onSaveCellDetail={handleSaveCellDetail}
+              missReasonPromptEnabled={missReasonEnabled}
+              onSetMissReason={handleSetMissReason}
+              onInspectHabit={(habit) =>
+                openDetail({
+                  kind: "habit",
+                  data: {
+                    habit,
+                    summary: analytics.byHabitId[habit.id] ?? null,
+                    projects,
+                  },
+                })
+              }
+            />
+          )}
 
           <HabitsAnalyticsCharts
             monthLabel={analytics.calendar.monthLabel}

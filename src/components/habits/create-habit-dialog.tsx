@@ -4,6 +4,7 @@ import { useState, useTransition, type FormEvent } from "react";
 import { Loader2 } from "lucide-react";
 import { toast } from "sonner";
 import { createHabitAction } from "@/actions/habits";
+import { isFeatureEnabled } from "@/config/features";
 import { useInvalidateWorkspace } from "@/hooks/use-workspace-queries";
 import { Button } from "@/components/ui/button";
 import {
@@ -27,6 +28,12 @@ import { Textarea } from "@/components/ui/textarea";
 import { cn } from "@/lib/utils";
 import type { SidebarProjectItem } from "@/server/dal/workspace-repository";
 import type { HabitCadenceType } from "@/server/db/schema";
+import {
+  ENERGY_NEEDS,
+  PLACES,
+  type EnergyNeed,
+  type Place,
+} from "@/server/domain/habit-metadata";
 
 interface CreateHabitDialogProps {
   open: boolean;
@@ -61,6 +68,10 @@ export function CreateHabitDialog({
   const [weeklyTargetCount, setWeeklyTargetCount] = useState(4);
   const [startDate, setStartDate] = useState(todayDateKey);
   const [preferredTime, setPreferredTime] = useState("");
+  const [energyNeed, setEnergyNeed] = useState<EnergyNeed>("medium");
+  const [place, setPlace] = useState<Place>("anywhere");
+  const [tagsDraft, setTagsDraft] = useState("");
+  const metadataEnabled = isFeatureEnabled("habitMetadata");
   const [linkedProjectId, setLinkedProjectId] = useState("none");
   const [autoSyncDailyTask, setAutoSyncDailyTask] = useState(false);
   const [isPending, startTransition] = useTransition();
@@ -80,6 +91,9 @@ export function CreateHabitDialog({
       setWeeklyTargetCount(4);
       setStartDate(todayDateKey);
       setPreferredTime("");
+      setEnergyNeed("medium");
+      setPlace("anywhere");
+      setTagsDraft("");
       setLinkedProjectId("none");
       setAutoSyncDailyTask(false);
     }
@@ -112,6 +126,16 @@ export function CreateHabitDialog({
         startDate,
         targetYearMonth,
         preferredTime: preferredTime.trim() || null,
+        ...(metadataEnabled
+          ? {
+              energyNeed,
+              place,
+              tags: tagsDraft
+                .split(",")
+                .map((tag) => tag.trim())
+                .filter(Boolean),
+            }
+          : {}),
         linkedProjectId: linkedProjectId === "none" ? null : linkedProjectId,
         autoSyncDailyTask,
       });
@@ -321,6 +345,74 @@ export function CreateHabitDialog({
               </Select>
             </div>
           </div>
+
+          {metadataEnabled ? (
+            <div className="space-y-2 rounded-md border border-border bg-background p-2.5">
+              <p className="text-[11px] font-medium uppercase tracking-wider text-muted-foreground">
+                Low-energy planning
+              </p>
+              <div className="grid grid-cols-2 gap-2.5">
+                <div className="space-y-1.5">
+                  <Label htmlFor="new-habit-energy" className="text-xs">
+                    Energy need
+                  </Label>
+                  <Select
+                    value={energyNeed}
+                    onValueChange={(value) => setEnergyNeed(value as EnergyNeed)}
+                  >
+                    <SelectTrigger
+                      id="new-habit-energy"
+                      className="mira-row bg-background text-xs"
+                    >
+                      <SelectValue />
+                    </SelectTrigger>
+                    <SelectContent>
+                      {ENERGY_NEEDS.map((value) => (
+                        <SelectItem key={value} value={value} className="text-xs">
+                          {value}
+                        </SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                </div>
+                <div className="space-y-1.5">
+                  <Label htmlFor="new-habit-place" className="text-xs">
+                    Place
+                  </Label>
+                  <Select
+                    value={place}
+                    onValueChange={(value) => setPlace(value as Place)}
+                  >
+                    <SelectTrigger
+                      id="new-habit-place"
+                      className="mira-row bg-background text-xs"
+                    >
+                      <SelectValue />
+                    </SelectTrigger>
+                    <SelectContent>
+                      {PLACES.map((value) => (
+                        <SelectItem key={value} value={value} className="text-xs">
+                          {value}
+                        </SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                </div>
+              </div>
+              <div className="space-y-1.5">
+                <Label htmlFor="new-habit-tags" className="text-xs">
+                  Tags (comma separated)
+                </Label>
+                <Input
+                  id="new-habit-tags"
+                  value={tagsDraft}
+                  onChange={(e) => setTagsDraft(e.target.value)}
+                  placeholder="core, morning"
+                  className="mira-row bg-background text-xs"
+                />
+              </div>
+            </div>
+          ) : null}
 
           <div className="flex items-center justify-between rounded-md border border-border bg-background px-3 py-2">
             <div className="space-y-0.5 pr-3">

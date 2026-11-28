@@ -116,9 +116,80 @@ export const undoSnapshots = sqliteTable(
   ]
 );
 
+/**
+ * Phase B saved views. Built-ins use deterministic ids (`builtin:<userId>:<slug>`)
+ * and are seeded idempotently; user rows may hide/reorder them but never delete
+ * them. Custom rows are soft-deleted only.
+ */
+export const HABIT_VIEW_KINDS = ["today", "grid", "calendar", "board"] as const;
+export const HABIT_VIEW_GROUP_BY = [
+  "timeBlock",
+  "category",
+  "energyNeed",
+  "place",
+  "none",
+] as const;
+export const HABIT_VIEW_SORT_BY = ["order", "rate", "streak"] as const;
+
+export const habitSavedViews = sqliteTable(
+  "habit_saved_views",
+  {
+    id: text("id").primaryKey(),
+    userId: text("user_id")
+      .notNull()
+      .references(() => users.id, { onDelete: "cascade" }),
+    name: text("name").notNull(),
+    kind: text("kind", { enum: HABIT_VIEW_KINDS }).notNull().default("today"),
+    builtIn: integer("built_in", { mode: "boolean" }).notNull().default(false),
+    hidden: integer("hidden", { mode: "boolean" }).notNull().default(false),
+    orderIndex: integer("order_index", { mode: "number" }).notNull().default(0),
+    filterJson: text("filter_json").notNull().default("{}"),
+    groupBy: text("group_by", { enum: HABIT_VIEW_GROUP_BY })
+      .notNull()
+      .default("none"),
+    sortBy: text("sort_by", { enum: HABIT_VIEW_SORT_BY })
+      .notNull()
+      .default("order"),
+    createdAt: integer("created_at", { mode: "number" })
+      .notNull()
+      .$defaultFn(() => Date.now()),
+    updatedAt: integer("updated_at", { mode: "number" })
+      .notNull()
+      .$defaultFn(() => Date.now()),
+    deletedAt: integer("deleted_at", { mode: "number" }),
+  },
+  (table) => [
+    uniqueIndex("habit_saved_views_user_name_uq")
+      .on(table.userId, table.name)
+      .where(sql`${table.deletedAt} IS NULL`),
+    index("habit_saved_views_user_deleted_idx").on(
+      table.userId,
+      table.deletedAt
+    ),
+    check(
+      "habit_saved_views_name_check",
+      sql`length(${table.name}) BETWEEN 1 AND 48`
+    ),
+    check(
+      "habit_saved_views_kind_check",
+      sql`${table.kind} IN ('today', 'grid', 'calendar', 'board')`
+    ),
+    check(
+      "habit_saved_views_group_by_check",
+      sql`${table.groupBy} IN ('timeBlock', 'category', 'energyNeed', 'place', 'none')`
+    ),
+    check(
+      "habit_saved_views_sort_by_check",
+      sql`${table.sortBy} IN ('order', 'rate', 'streak')`
+    ),
+  ]
+);
+
 export type HabitExcuseRangeRecord = typeof habitExcuseRanges.$inferSelect;
 export type NewHabitExcuseRangeRecord = typeof habitExcuseRanges.$inferInsert;
 export type HabitDayEntryRecord = typeof habitDayEntries.$inferSelect;
 export type NewHabitDayEntryRecord = typeof habitDayEntries.$inferInsert;
 export type UndoSnapshotRecord = typeof undoSnapshots.$inferSelect;
 export type NewUndoSnapshotRecord = typeof undoSnapshots.$inferInsert;
+export type HabitSavedViewRecord = typeof habitSavedViews.$inferSelect;
+export type NewHabitSavedViewRecord = typeof habitSavedViews.$inferInsert;

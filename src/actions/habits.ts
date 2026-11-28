@@ -1,6 +1,7 @@
 "use server";
 
 import { z } from "zod";
+import { isFeatureEnabled } from "@/config/features";
 import { requireSession } from "@/server/dal/auth-guard";
 import { RateLimitError } from "@/server/dal/errors";
 import { defaultRateLimiter } from "@/server/providers/redis/rate-limiter";
@@ -14,10 +15,23 @@ import {
 } from "@/server/db/schema";
 import { parseHabitHistoryImport } from "@/server/domain/habit-import";
 import { getLocalDateKey } from "@/server/domain/habit-analytics";
+import {
+  ENERGY_NEEDS,
+  LOG_SOURCES,
+  MISS_REASONS,
+  PLACES,
+  TIME_BLOCKS,
+} from "@/server/domain/habit-metadata";
 import type {
   ClientHabitTrackerSettings,
   MonthLockState,
 } from "@/server/domain/habit-month-lock";
+import {
+  VIEW_GROUP_BY,
+  VIEW_KINDS,
+  VIEW_SORT_BY,
+  type HabitSavedView,
+} from "@/server/domain/habit-views";
 import { habitService } from "@/server/services/habit-service";
 import {
   actionErr,
@@ -43,6 +57,54 @@ const yearMonthSchema = z
   .string()
   .regex(/^\d{4}-(0[1-9]|1[0-2])$/, "Month must be in YYYY-MM format.");
 
+const habitMetadataFields = {
+  energyNeed: z.enum(ENERGY_NEEDS).optional(),
+  place: z.enum(PLACES).optional(),
+  tags: z.array(z.string().max(32)).max(12).optional(),
+};
+
+const savedViewFilterSchema = z
+  .object({
+    categories: z.array(z.string().max(48)).max(12).optional(),
+    timeBlocks: z.array(z.enum(TIME_BLOCKS)).max(4).optional(),
+    energyNeeds: z.array(z.enum(ENERGY_NEEDS)).max(3).optional(),
+    places: z.array(z.enum(PLACES)).max(4).optional(),
+    tags: z.array(z.string().max(32)).max(12).optional(),
+    isCore: z.boolean().optional(),
+    activeToday: z.boolean().optional(),
+    minRate: z.number().min(0).max(1).optional(),
+    maxRate: z.number().min(0).max(1).optional(),
+    hasMissReason: z.enum(MISS_REASONS).optional(),
+  })
+  .default({});
+
+const createSavedViewSchema = z.object({
+  name: z.string().trim().min(1).max(48),
+  kind: z.enum(VIEW_KINDS).optional(),
+  filter: savedViewFilterSchema.optional(),
+  groupBy: z.enum(VIEW_GROUP_BY).optional(),
+  sortBy: z.enum(VIEW_SORT_BY).optional(),
+});
+
+const updateSavedViewSchema = z.object({
+  viewId: z.string().min(1),
+  name: z.string().trim().min(1).max(48).optional(),
+  hidden: z.boolean().optional(),
+  filter: savedViewFilterSchema.optional(),
+  groupBy: z.enum(VIEW_GROUP_BY).optional(),
+  sortBy: z.enum(VIEW_SORT_BY).optional(),
+});
+
+const deleteSavedViewSchema = z.object({
+  viewId: z.string().min(1),
+});
+
+const setHabitMissReasonSchema = z.object({
+  habitId: z.string().min(1),
+  dateKey: dateKeySchema,
+  reason: z.enum(MISS_REASONS).nullable(),
+});
+
 const createHabitSchema = z.object({
   title: z.string().trim().min(1, "Habit title is required.").max(120),
   description: z.string().max(1_000).nullable().optional(),
@@ -53,6 +115,7 @@ const createHabitSchema = z.object({
   startDate: dateKeySchema.optional(),
   targetYearMonth: yearMonthSchema.optional(),
   preferredTime: optionalTimeSchema,
+  ...habitMetadataFields,
   linkedProjectId: z.string().min(1).nullable().optional(),
   autoSyncDailyTask: z.boolean().optional(),
 });
@@ -67,6 +130,7 @@ const updateHabitSchema = z.object({
   weeklyTargetCount: z.number().int().min(1).max(7).nullable().optional(),
   startDate: dateKeySchema.optional(),
   preferredTime: optionalTimeSchema,
+  ...habitMetadataFields,
   linkedProjectId: z.string().min(1).nullable().optional(),
   autoSyncDailyTask: z.boolean().optional(),
   isArchived: z.boolean().optional(),
@@ -86,6 +150,8 @@ const logHabitDaySchema = z.object({
   dateKey: dateKeySchema,
   status: z.enum(HABIT_LOG_STATUSES).nullable(),
   note: z.string().max(280, "Micro-note must be 280 characters or fewer.").nullable().optional(),
+  missReason: z.enum(MISS_REASONS).nullable().optional(),
+  source: z.enum(LOG_SOURCES).optional(),
 });
 
 const updateHabitSettingsSchema = z.object({
@@ -309,6 +375,125 @@ export async function logHabitDayAction(
     );
     revalidateHabitPaths();
     return actionOk(result);
+  } catch (error) {
+    return mapErrorToActionResult(error);
+  }
+}
+
+export async function setHabitMissReasonAction(
+  input: z.input<typeof setHabitMissReasonSchema>
+): Promise<ActionResult<HabitLogRecord>> {
+  if (!isFeatureEnabled("missReasonPrompt")) {
+    return actionErr("FEATURE_DISABLED", "Miss-reason prompts are disabled.");
+  }
+  const parsed = setHabitMissReasonSchema.safeParse(input);
+  if (!parsed.success) {
+    return actionErr(
+      "VALIDATION_ERROR",
+      parsed.error.issues[0]?.message ?? "Invalid miss reason."
+    );
+  }
+
+  try {
+    const { user } = await requireSession();
+    const updated = await habitService.setHabitMissReason(
+      user.id,
+      parsed.data,
+      user.timezone || "UTC"
+    );
+    revalidateHabitPaths();
+    return actionOk(updated);
+  } catch (error) {
+    return mapErrorToActionResult(error);
+  }
+}
+
+export async function listHabitSavedViewsAction(): Promise<
+  ActionResult<HabitSavedView[]>
+> {
+  if (!isFeatureEnabled("savedViews")) {
+    return actionErr("FEATURE_DISABLED", "Saved views are disabled.");
+  }
+  try {
+    const { user } = await requireSession();
+    return actionOk(await habitService.listHabitSavedViews(user.id));
+  } catch (error) {
+    return mapErrorToActionResult(error);
+  }
+}
+
+export async function createHabitSavedViewAction(
+  input: z.input<typeof createSavedViewSchema>
+): Promise<ActionResult<HabitSavedView>> {
+  if (!isFeatureEnabled("savedViews")) {
+    return actionErr("FEATURE_DISABLED", "Saved views are disabled.");
+  }
+  const parsed = createSavedViewSchema.safeParse(input);
+  if (!parsed.success) {
+    return actionErr(
+      "VALIDATION_ERROR",
+      parsed.error.issues[0]?.message ?? "Invalid saved view."
+    );
+  }
+
+  try {
+    const { user } = await requireSession();
+    const created = await habitService.createHabitSavedView(
+      user.id,
+      parsed.data
+    );
+    revalidateHabitPaths();
+    return actionOk(created);
+  } catch (error) {
+    return mapErrorToActionResult(error);
+  }
+}
+
+export async function updateHabitSavedViewAction(
+  input: z.input<typeof updateSavedViewSchema>
+): Promise<ActionResult<HabitSavedView>> {
+  if (!isFeatureEnabled("savedViews")) {
+    return actionErr("FEATURE_DISABLED", "Saved views are disabled.");
+  }
+  const parsed = updateSavedViewSchema.safeParse(input);
+  if (!parsed.success) {
+    return actionErr(
+      "VALIDATION_ERROR",
+      parsed.error.issues[0]?.message ?? "Invalid saved view update."
+    );
+  }
+
+  try {
+    const { user } = await requireSession();
+    const { viewId, ...patch } = parsed.data;
+    const updated = await habitService.updateHabitSavedView(
+      user.id,
+      viewId,
+      patch
+    );
+    revalidateHabitPaths();
+    return actionOk(updated);
+  } catch (error) {
+    return mapErrorToActionResult(error);
+  }
+}
+
+export async function deleteHabitSavedViewAction(
+  input: z.input<typeof deleteSavedViewSchema>
+): Promise<ActionResult<{ viewId: string }>> {
+  if (!isFeatureEnabled("savedViews")) {
+    return actionErr("FEATURE_DISABLED", "Saved views are disabled.");
+  }
+  const parsed = deleteSavedViewSchema.safeParse(input);
+  if (!parsed.success) {
+    return actionErr("VALIDATION_ERROR", "Invalid saved view identifier.");
+  }
+
+  try {
+    const { user } = await requireSession();
+    await habitService.deleteHabitSavedView(user.id, parsed.data.viewId);
+    revalidateHabitPaths();
+    return actionOk({ viewId: parsed.data.viewId });
   } catch (error) {
     return mapErrorToActionResult(error);
   }

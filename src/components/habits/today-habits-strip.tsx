@@ -1,6 +1,6 @@
 "use client";
 
-import { useOptimistic, useState, useTransition } from "react";
+import { useMemo, useOptimistic, useState, useTransition } from "react";
 import Link from "next/link";
 import {
   Check,
@@ -9,12 +9,19 @@ import {
   Flame,
   Minus,
   Repeat2,
+  Zap,
 } from "lucide-react";
 import { toast } from "sonner";
 import { logHabitDayAction } from "@/actions/habits";
+import { isFeatureEnabled } from "@/config/features";
 import { useInvalidateWorkspace } from "@/hooks/use-workspace-queries";
 import { cn } from "@/lib/utils";
 import type { HabitLogStatus } from "@/server/db/schema";
+import {
+  BUILT_IN_VIEWS,
+  filterHabitsForView,
+  type HabitSavedView,
+} from "@/server/domain/habit-views";
 import type { TodayHabitStripItem } from "@/server/services/habit-service";
 
 interface TodayHabitsStripProps {
@@ -27,8 +34,28 @@ export function TodayHabitsStrip({
   initialItems,
 }: TodayHabitsStripProps) {
   const [expanded, setExpanded] = useState(true);
+  const [lowEnergyOnly, setLowEnergyOnly] = useState(false);
   const invalidate = useInvalidateWorkspace();
   const [, startTransition] = useTransition();
+  const missReasonEnabled = isFeatureEnabled("missReasonPrompt");
+
+  const lowEnergyView = useMemo<HabitSavedView | null>(() => {
+    if (!isFeatureEnabled("savedViews")) return null;
+    const seed = BUILT_IN_VIEWS.find((view) => view.slug === "low-energy-day");
+    if (!seed) return null;
+    return {
+      id: `builtin:low-energy-day`,
+      name: seed.name,
+      kind: seed.kind,
+      builtIn: true,
+      hidden: false,
+      order: 0,
+      filter: seed.filter,
+      groupBy: seed.groupBy,
+      sortBy: seed.sortBy,
+      updatedAt: 0,
+    };
+  }, []);
 
   const [optimisticItems, applyOptimistic] = useOptimistic<
     TodayHabitStripItem[],
@@ -50,6 +77,8 @@ export function TodayHabitsStrip({
               dateKey: todayDateKey,
               status: action.status,
               note: null,
+              missReason: null,
+              source: "manual",
               loggedAt: 0,
               isBackfilledLate: false,
             },
@@ -57,11 +86,23 @@ export function TodayHabitsStrip({
     })
   );
 
-  const visibleItems = optimisticItems.filter(
+  const baseVisibleItems = optimisticItems.filter(
     (item) => item.scheduledToday || item.log !== null
   );
+  const lowEnergyIds =
+    lowEnergyView && lowEnergyOnly
+      ? new Set(
+          filterHabitsForView(
+            baseVisibleItems.map((item) => item.habit),
+            lowEnergyView
+          ).map((habit) => habit.id)
+        )
+      : null;
+  const visibleItems = lowEnergyIds
+    ? baseVisibleItems.filter((item) => lowEnergyIds.has(item.habit.id))
+    : baseVisibleItems;
 
-  if (visibleItems.length === 0) {
+  if (baseVisibleItems.length === 0) {
     return null;
   }
 
@@ -84,6 +125,7 @@ export function TodayHabitsStrip({
         habitId: item.habit.id,
         dateKey: todayDateKey,
         status: resolved,
+        ...(missReasonEnabled ? { source: "button" as const } : {}),
       });
 
       if (!result.ok) {
@@ -118,15 +160,40 @@ export function TodayHabitsStrip({
           </span>
         </button>
 
-        <Link
-          href="/app/habits"
-          className="inline-flex min-h-9 items-center px-1 text-[11px] font-medium text-muted-foreground underline-offset-2 hover:text-foreground hover:underline md:min-h-6"
-        >
-          Matrix →
-        </Link>
+        <div className="flex items-center gap-1">
+          {lowEnergyView ? (
+            <button
+              type="button"
+              onClick={() => setLowEnergyOnly((value) => !value)}
+              aria-pressed={lowEnergyOnly}
+              title="Show only low-energy habits"
+              className={cn(
+                "inline-flex min-h-9 items-center gap-1 rounded border px-2 text-[11px] font-medium transition-colors md:min-h-7",
+                lowEnergyOnly
+                  ? "border-primary bg-primary/10 text-primary"
+                  : "border-border bg-background text-muted-foreground hover:text-foreground"
+              )}
+            >
+              <Zap className="size-3" />
+              Low-energy day
+            </button>
+          ) : null}
+          <Link
+            href="/app/habits"
+            className="inline-flex min-h-9 items-center px-1 text-[11px] font-medium text-muted-foreground underline-offset-2 hover:text-foreground hover:underline md:min-h-6"
+          >
+            Matrix →
+          </Link>
+        </div>
       </div>
 
       {expanded ? (
+        visibleItems.length === 0 ? (
+          <p className="border-t border-border px-3 py-2.5 text-[11px] text-muted-foreground">
+            No low-energy habits scheduled today. Tap “Low-energy day” again to
+            show everything.
+          </p>
+        ) : (
         <div className="flex flex-wrap gap-1.5 border-t border-border px-3 py-2.5">
           {visibleItems.map((item) => {
             const status = item.log?.status ?? null;
@@ -208,6 +275,7 @@ export function TodayHabitsStrip({
             );
           })}
         </div>
+        )
       ) : null}
     </section>
   );

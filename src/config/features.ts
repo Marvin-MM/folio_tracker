@@ -10,9 +10,9 @@ export const features = {
   undoStack: true,
 
   // Phase B — habit metadata, saved views, and miss reasons
-  habitMetadata: false,
-  savedViews: false,
-  missReasonPrompt: false,
+  habitMetadata: true,
+  savedViews: true,
+  missReasonPrompt: true,
 
   // Phase C — day ledger page, energy/sleep inputs, and computed rollups
   dayPage: false,

@@ -1,6 +1,14 @@
 "use client";
 
-import { memo, useCallback, useMemo, useRef, useState } from "react";
+import {
+  memo,
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+} from "react";
+import { createPortal } from "react-dom";
 import {
   Check,
   Clock,
@@ -30,6 +38,28 @@ import {
   type HabitRowSummary,
   type MonthCalendar,
 } from "@/server/domain/habit-analytics";
+import type { MissReason } from "@/server/domain/habit-metadata";
+
+const MISS_REASON_CHIPS: ReadonlyArray<{
+  reason: MissReason;
+  label: string;
+}> = [
+  { reason: "tired", label: "Tired" },
+  { reason: "work", label: "Work" },
+  { reason: "travel", label: "Travel" },
+  { reason: "forgot", label: "Forgot" },
+  { reason: "sick", label: "Sick" },
+  { reason: "low_motivation", label: "Low drive" },
+  { reason: "other", label: "Other" },
+];
+
+interface MissPromptState {
+  habitId: string;
+  dateKey: string;
+  x: number;
+  y: number;
+  above: boolean;
+}
 
 interface HabitsMatrixProps {
   calendar: MonthCalendar;
@@ -51,6 +81,12 @@ interface HabitsMatrixProps {
     note: string | null
   ) => void;
   onInspectHabit?: (habit: HabitRecord) => void;
+  missReasonPromptEnabled?: boolean;
+  onSetMissReason?: (input: {
+    habitId: string;
+    dateKey: string;
+    reason: MissReason;
+  }) => void;
 }
 
 const WEEKDAY_TINY = ["Su", "Mo", "Tu", "We", "Th", "Fr", "Sa"] as const;
@@ -239,7 +275,12 @@ interface HabitMatrixCellProps {
   status: HabitLogStatus | null;
   note: string | null;
   isLate: boolean;
-  onCycle: (habit: HabitRecord, dateKey: string, nextStatus: HabitLogStatus | null) => void;
+  onCycle: (
+    habit: HabitRecord,
+    dateKey: string,
+    nextStatus: HabitLogStatus | null,
+    anchorEl: HTMLButtonElement
+  ) => void;
   onOpenPopover: (
     habit: HabitRecord,
     dateKey: string,
@@ -317,7 +358,7 @@ const HabitMatrixCell = memo(function HabitMatrixCell({
             onOpenPopover(habit, dateKey, event.currentTarget);
             return;
           }
-          onCycle(habit, dateKey, nextCycleStatus(status));
+          onCycle(habit, dateKey, nextCycleStatus(status), event.currentTarget);
         }}
         onContextMenu={(event) => {
           if (isDisabled) return;
@@ -397,7 +438,12 @@ interface HabitMatrixRowProps {
   summary: HabitRowSummary | undefined;
   hasLinkedTask: boolean;
   readOnly: boolean;
-  onCycle: (habit: HabitRecord, dateKey: string, nextStatus: HabitLogStatus | null) => void;
+  onCycle: (
+    habit: HabitRecord,
+    dateKey: string,
+    nextStatus: HabitLogStatus | null,
+    anchorEl: HTMLButtonElement
+  ) => void;
   onOpenPopover: (
     habit: HabitRecord,
     dateKey: string,
@@ -582,15 +628,39 @@ export function HabitsMatrix({
   onCycleLog,
   onSaveCellDetail,
   onInspectHabit,
+  missReasonPromptEnabled = false,
+  onSetMissReason,
 }: HabitsMatrixProps) {
   // Hoisted single shared Popover state (replaces 300-930+ per-cell Radix Popovers!)
   const [activeCell, setActiveCell] = useState<{
     habit: HabitRecord;
     dateKey: string;
   } | null>(null);
+  const [missPrompt, setMissPrompt] = useState<MissPromptState | null>(null);
+  const [missPromptPaused, setMissPromptPaused] = useState(false);
+  const showMissPrompt =
+    !readOnly && missReasonPromptEnabled && Boolean(onSetMissReason);
   const anchorRef = useRef<{ getBoundingClientRect: () => DOMRect } | null>(
     null
   );
+
+  useEffect(() => {
+    if (!missPrompt) return;
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key === "Escape") {
+        setMissPrompt(null);
+      }
+    };
+    window.addEventListener("keydown", onKeyDown);
+    if (missPromptPaused) {
+      return () => window.removeEventListener("keydown", onKeyDown);
+    }
+    const timer = window.setTimeout(() => setMissPrompt(null), 4_000);
+    return () => {
+      window.clearTimeout(timer);
+      window.removeEventListener("keydown", onKeyDown);
+    };
+  }, [missPrompt, missPromptPaused]);
 
   const flatDays = useMemo<FlatCalendarDay[]>(
     () =>
@@ -615,10 +685,47 @@ export function HabitsMatrix({
   }, [linkedTaskByKey]);
 
   const handleCycle = useCallback(
-    (habit: HabitRecord, dateKey: string, nextStatus: HabitLogStatus | null) => {
+    (
+      habit: HabitRecord,
+      dateKey: string,
+      nextStatus: HabitLogStatus | null,
+      anchorEl: HTMLButtonElement
+    ) => {
+      if (showMissPrompt && nextStatus === "missed") {
+        const rect = anchorEl.getBoundingClientRect();
+        const halfWidth = 168;
+        const x = Math.min(
+          Math.max(rect.left + rect.width / 2, halfWidth + 8),
+          window.innerWidth - halfWidth - 8
+        );
+        const above = rect.bottom > window.innerHeight - 132;
+        setMissPromptPaused(false);
+        setMissPrompt({
+          habitId: habit.id,
+          dateKey,
+          x,
+          y: above ? rect.top - 6 : rect.bottom + 6,
+          above,
+        });
+      } else {
+        setMissPrompt(null);
+      }
       onCycleLog?.(habit, dateKey, nextStatus);
     },
-    [onCycleLog]
+    [onCycleLog, showMissPrompt]
+  );
+
+  const handleMissReason = useCallback(
+    (reason: MissReason) => {
+      if (!missPrompt) return;
+      onSetMissReason?.({
+        habitId: missPrompt.habitId,
+        dateKey: missPrompt.dateKey,
+        reason,
+      });
+      setMissPrompt(null);
+    },
+    [missPrompt, onSetMissReason]
   );
 
   const handleOpenPopover = useCallback(
@@ -853,6 +960,55 @@ export function HabitsMatrix({
             : "Click to cycle · Right-click or Shift+click for note"}
         </span>
       </div>
+
+      {showMissPrompt && missPrompt
+        ? createPortal(
+            <div
+              role="region"
+              aria-label="Why was this habit missed?"
+              onMouseEnter={() => setMissPromptPaused(true)}
+              onMouseLeave={() => setMissPromptPaused(false)}
+              onFocus={() => setMissPromptPaused(true)}
+              onBlur={() => setMissPromptPaused(false)}
+              className="fixed z-[80] w-[336px] max-w-[calc(100vw-16px)] rounded-md border border-border bg-popover p-2 shadow-lg"
+              style={{
+                left: missPrompt.x,
+                top: missPrompt.y,
+                transform: missPrompt.above
+                  ? "translate(-50%, -100%)"
+                  : "translateX(-50%)",
+              }}
+            >
+              <div className="mb-1.5 flex items-center justify-between gap-2 px-0.5">
+                <span className="text-[11px] font-medium text-muted-foreground">
+                  Why? (optional)
+                </span>
+                <button
+                  type="button"
+                  onClick={() => setMissPrompt(null)}
+                  aria-label="Skip miss reason"
+                  className="min-h-8 rounded px-2 text-[11px] text-muted-foreground hover:bg-accent hover:text-foreground md:min-h-6 md:px-1.5"
+                >
+                  Skip
+                </button>
+              </div>
+              <div className="flex flex-wrap gap-1">
+                {MISS_REASON_CHIPS.map((chip) => (
+                  <button
+                    key={chip.reason}
+                    type="button"
+                    onClick={() => handleMissReason(chip.reason)}
+                    data-miss-reason={chip.reason}
+                    className="min-h-9 rounded border border-border bg-background px-2.5 text-[11px] text-foreground transition-colors hover:border-primary hover:bg-primary/10 md:min-h-7 md:px-2"
+                  >
+                    {chip.label}
+                  </button>
+                ))}
+              </div>
+            </div>,
+            document.body
+          )
+        : null}
     </section>
   );
 }
