@@ -261,6 +261,7 @@ export async function dispatchHabitReviewDigestBatch(
   params: {
     limit?: number;
     offset?: number;
+    afterId?: string | null;
     nowMs?: number;
     lookbackMs?: number;
   } = {},
@@ -268,7 +269,11 @@ export async function dispatchHabitReviewDigestBatch(
     social?: HabitSocialRepository;
     eventBus?: EventBus;
   } = {}
-): Promise<{ pairsChecked: number; eventsEmitted: number }> {
+): Promise<{
+  pairsChecked: number;
+  eventsEmitted: number;
+  lastId: string | null;
+}> {
   const limit = params.limit ?? DIGEST_BATCH_SIZE;
   const offset = params.offset ?? 0;
   const nowMs = params.nowMs ?? Date.now();
@@ -276,9 +281,13 @@ export async function dispatchHabitReviewDigestBatch(
   const social = deps.social ?? habitSocialRepository;
   const eventBus = deps.eventBus ?? defaultEventBus;
 
-  const pairs = await social.listActiveMonitorPairsPage(limit, offset);
+  const pairs = await social.listActiveMonitorPairsPage(
+    limit,
+    offset,
+    params.afterId ?? null
+  );
   if (pairs.length === 0) {
-    return { pairsChecked: 0, eventsEmitted: 0 };
+    return { pairsChecked: 0, eventsEmitted: 0, lastId: null };
   }
 
   const events: AppDomainEvent[] = [];
@@ -321,6 +330,7 @@ export async function dispatchHabitReviewDigestBatch(
   return {
     pairsChecked: pairs.length,
     eventsEmitted: events.length,
+    lastId: pairs[pairs.length - 1]?.monitor.id ?? null,
   };
 }
 
@@ -372,7 +382,9 @@ export async function executeHabitReviewDigestDelivery(
         ? social.listAllowedHabitIdsForMonitor(monitor.id)
         : Promise.resolve(null),
     ]);
-    if (!owner || !monitorUser) return null;
+    if (!owner || !monitorUser || owner.isSuspended || monitorUser.isSuspended) {
+      return null;
+    }
 
     let snapshot = await social.getWeeklySnapshot(
       input.ownerId,
@@ -472,27 +484,33 @@ export const habitReviewDigestCronFn = inngest.createFunction(
     triggers: [{ cron: "0 * * * *" }],
   },
   async ({ step }) => {
-    const nowMs = Date.now();
+    const nowMs = await step.run("capture-clock", () => Date.now());
     let totalChecked = 0;
     let totalEmitted = 0;
     let batchNumber = 0;
+    let cursor: string | null = null;
 
     while (batchNumber < MAX_BATCHES_PER_INVOCATION) {
-      const offset = batchNumber * DIGEST_BATCH_SIZE;
+      const batchCursor: string | null = cursor;
       batchNumber += 1;
 
-      const batchResult = await step.run(`batch-${batchNumber}`, () =>
+      const batchResult: {
+        pairsChecked: number;
+        eventsEmitted: number;
+        lastId: string | null;
+      } = await step.run(`batch-${batchNumber}`, () =>
         dispatchHabitReviewDigestBatch({
           limit: DIGEST_BATCH_SIZE,
-          offset,
+          afterId: batchCursor,
           nowMs,
         })
       );
 
       totalChecked += batchResult.pairsChecked;
       totalEmitted += batchResult.eventsEmitted;
+      cursor = batchResult.lastId;
 
-      if (batchResult.pairsChecked < DIGEST_BATCH_SIZE) {
+      if (batchResult.pairsChecked < DIGEST_BATCH_SIZE || !cursor) {
         break;
       }
     }
@@ -602,8 +620,33 @@ export const sendHabitCommentNotificationFn = inngest.createFunction(
     triggers: [habitCommentPostedEvent],
   },
   async ({ event, step }) => {
-    const { commentId, authorName, recipientUserId, bodyPreview, deepLink } =
-      event.data;
+    const {
+      commentId,
+      ownerId,
+      authorName,
+      recipientUserId,
+      bodyPreview,
+      deepLink,
+    } = event.data;
+
+    // Live Turso re-verification: never deliver comment previews to a revoked monitor or suspended user
+    const allowed = await step.run("verify-comment-recipient", async () => {
+      const recipient = await habitSocialRepository.findUserById(recipientUserId);
+      if (!recipient || recipient.isSuspended) return false;
+      if (recipientUserId !== ownerId) {
+        const activeMonitor = await habitSocialRepository.getActiveMonitor(
+          ownerId,
+          recipientUserId
+        );
+        if (!activeMonitor) return false;
+      }
+      return true;
+    });
+
+    if (!allowed) {
+      return { dispatched: false, skipped: true };
+    }
+
     const payload: NotificationPayload = {
       userId: recipientUserId,
       type: "habit.comment_posted",

@@ -9,6 +9,9 @@ import {
 } from "@/actions/types";
 import type { SweepExpiredSummary } from "@/server/dal/admin-repository";
 import { requireAdmin } from "@/server/dal/auth-guard";
+import { operationsSocialRepository } from "@/server/dal/operations-social";
+import { invalidatePublicOperationTags } from "@/server/dal/public-operations-cache";
+import { userRepository } from "@/server/dal/user-repository";
 import type { AdminRoleSyncResult } from "@/server/services/admin-role-sync";
 import { adminService } from "@/server/services/admin-service";
 
@@ -107,6 +110,15 @@ export async function adminToggleUserSuspensionAction(
       parsed.data.userId,
       parsed.data.suspended
     );
+    const [targetProfile, publicSlugs] = await Promise.all([
+      userRepository.getById(parsed.data.userId),
+      operationsSocialRepository.listPublicSlugsForOwner(parsed.data.userId),
+    ]);
+    invalidatePublicOperationTags({
+      ownerHandle: targetProfile?.handle ?? null,
+      extraSlugs: publicSlugs,
+      affectsExplore: publicSlugs.length > 0,
+    });
     return actionOk(result);
   } catch (error) {
     return mapErrorToActionResult(error);

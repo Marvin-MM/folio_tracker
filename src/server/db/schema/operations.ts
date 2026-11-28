@@ -124,6 +124,26 @@ export const operations = sqliteTable(
     ),
     index("operations_project_id_idx").on(table.projectId),
     index("operations_linked_habit_id_idx").on(table.linkedHabitId),
+    index("operations_forked_from_id_idx").on(table.forkedFromId),
+    index("operations_vis_arch_updated_idx").on(
+      table.visibility,
+      table.isArchived,
+      table.updatedAt
+    ),
+    index("operations_vis_arch_forks_idx").on(
+      table.visibility,
+      table.isArchived,
+      table.forkCount
+    ),
+    index("operations_proj_share_arch_idx").on(
+      table.projectId,
+      table.shareWithProject,
+      table.isArchived
+    ),
+    index("operations_arch_review_idx").on(
+      table.isArchived,
+      table.reviewCycleDays
+    ),
     check(
       "operations_domain_check",
       sql`${table.domain} IN ('general', 'tech', 'cooking', 'fitness', 'diy', 'business', 'study')`
@@ -179,6 +199,7 @@ export const operationVersions = sqliteTable(
       table.operationId,
       table.versionNumber
     ),
+    index("operation_versions_created_by_id_idx").on(table.createdById),
     check(
       "operation_versions_version_number_check",
       sql`${table.versionNumber} >= 1`
@@ -242,6 +263,16 @@ export const operationRuns = sqliteTable(
     index("operation_runs_operation_runner_idx").on(
       table.operationId,
       table.runnerId
+    ),
+    index("operation_runs_version_id_idx").on(table.versionId),
+    index("operation_runs_runner_updated_idx").on(
+      table.runnerId,
+      table.updatedAt
+    ),
+    index("operation_runs_runner_op_updated_idx").on(
+      table.runnerId,
+      table.operationId,
+      table.updatedAt
     ),
     check(
       "operation_runs_status_check",

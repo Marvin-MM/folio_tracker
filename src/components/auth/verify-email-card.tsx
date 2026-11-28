@@ -10,7 +10,6 @@ import {
   CardDescription,
   CardFooter,
   CardHeader,
-  CardTitle,
 } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -64,9 +63,9 @@ export function VerifyEmailCard({
         <CardHeader className="space-y-1">
           <div className="flex items-center gap-2 text-done">
             <CheckCircle2 className="size-4" />
-            <CardTitle className="text-base font-semibold tracking-tight text-foreground">
+            <h1 className="text-base font-semibold leading-none tracking-tight text-foreground">
               Email verified
-            </CardTitle>
+            </h1>
           </div>
           <CardDescription className="text-xs text-muted-foreground">
             Your email address is confirmed and ready to use.
@@ -86,9 +85,9 @@ export function VerifyEmailCard({
       <CardHeader className="space-y-1">
         <div className="flex items-center gap-2 text-muted-foreground">
           <Mail className="size-4" />
-          <CardTitle className="text-base font-semibold tracking-tight text-foreground">
+          <h1 className="text-base font-semibold leading-none tracking-tight text-foreground">
             Verify your email
-          </CardTitle>
+          </h1>
         </div>
         <CardDescription className="text-xs text-muted-foreground">
           Check your inbox and follow the verification link before signing in.

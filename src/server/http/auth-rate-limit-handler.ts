@@ -17,9 +17,17 @@ const RATE_LIMITED_AUTH_PATHS = [
   "/sign-in/email",
   "/sign-up/email",
   "/request-password-reset",
+  "/forget-password",
   "/reset-password",
   "/send-verification-email",
+  "/change-password",
+  "/delete-user",
 ];
+
+function normalizeAuthPathname(pathname: string): string {
+  const trimmed = pathname.replace(/\/+$/, "");
+  return trimmed || "/";
+}
 
 function buildAuthMethodDisabledResponse(): Response {
   return NextResponse.json(
@@ -87,7 +95,8 @@ export async function handleAuthGet(
   delegate: (req: NextRequest) => Promise<Response> = authHandler.GET,
   emailPasswordEnabled: boolean = isEmailPasswordAuthEnabled()
 ): Promise<Response> {
-  if (!emailPasswordEnabled && isEmailPasswordAuthPath(request.nextUrl.pathname)) {
+  const pathname = normalizeAuthPathname(request.nextUrl.pathname);
+  if (!emailPasswordEnabled && isEmailPasswordAuthPath(pathname)) {
     return buildAuthMethodDisabledResponse();
   }
 
@@ -101,7 +110,7 @@ export async function handleRateLimitedAuthPost(
   delegate: (req: NextRequest) => Promise<Response> = authHandler.POST,
   emailPasswordEnabled: boolean = isEmailPasswordAuthEnabled()
 ): Promise<Response> {
-  const pathname = request.nextUrl.pathname;
+  const pathname = normalizeAuthPathname(request.nextUrl.pathname);
 
   if (!emailPasswordEnabled && isEmailPasswordAuthPath(pathname)) {
     return buildAuthMethodDisabledResponse();
@@ -114,21 +123,32 @@ export async function handleRateLimitedAuthPost(
   if (shouldRateLimit) {
     const ip = extractClientIp(request);
     const identifier = await extractEmailIdentifier(request);
-    const key = `${ip}:${pathname}:${identifier}`;
-    const limitResult = await limiter.limit("auth", key);
+    const ipBucket = await limiter.limit("auth", `ip:${ip}:${pathname}`);
+    let effectiveLimit = ipBucket;
+
+    if (ipBucket.allowed && identifier !== "anon") {
+      const emailBucket = await limiter.limit(
+        "auth",
+        `email:${pathname}:${identifier}`
+      );
+      if (!emailBucket.allowed || emailBucket.remaining < ipBucket.remaining) {
+        effectiveLimit = emailBucket;
+      }
+    }
+
     const headers = {
       "Cache-Control": "private, no-store",
-      ...buildRateLimitHeaders(limitResult),
+      ...buildRateLimitHeaders(effectiveLimit),
     };
 
-    if (!limitResult.allowed) {
+    if (!effectiveLimit.allowed) {
       return NextResponse.json(
         {
           ok: false,
           error: {
             code: "RATE_LIMITED",
-            message: `Too many authentication attempts. Please retry in ${limitResult.retryAfterSeconds}s.`,
-            retryAfterSeconds: limitResult.retryAfterSeconds,
+            message: `Too many authentication attempts. Please retry in ${effectiveLimit.retryAfterSeconds}s.`,
+            retryAfterSeconds: effectiveLimit.retryAfterSeconds,
           },
         },
         { status: 429, headers }

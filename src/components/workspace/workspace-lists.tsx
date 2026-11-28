@@ -1316,7 +1316,7 @@ export function NoteListView({
             </kbd>{" "}
             then{" "}
             <kbd className="mono-tabular rounded border border-border bg-background px-1.5 py-0.5 text-[10px] text-foreground">
-              Tab
+              Alt+M
             </kbd>{" "}
             to capture a note from anywhere
           </p>

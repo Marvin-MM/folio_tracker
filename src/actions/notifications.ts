@@ -1,7 +1,7 @@
 "use server";
 
-import { revalidatePath } from "next/cache";
 import { z } from "zod";
+import { isAllowedWebPushEndpoint } from "@/lib/web-push-endpoint";
 import { requireSession } from "@/server/dal/auth-guard";
 import { RateLimitError } from "@/server/dal/errors";
 import { notificationRepository } from "@/server/dal/notification-repository";
@@ -19,15 +19,23 @@ import {
   type ActionResult,
 } from "./types";
 
+const pushEndpointSchema = z
+  .string()
+  .url()
+  .max(2048)
+  .refine(isAllowedWebPushEndpoint, {
+    message: "Push subscription endpoint must use a trusted HTTPS push service.",
+  });
+
 const savePushSubscriptionSchema = z.object({
-  endpoint: z.string().url(),
-  p256dh: z.string().min(1),
-  auth: z.string().min(1),
+  endpoint: pushEndpointSchema,
+  p256dh: z.string().min(1).max(512),
+  auth: z.string().min(1).max(512),
   userAgent: z.string().max(512).nullable().optional(),
 });
 
 const removePushSubscriptionSchema = z.object({
-  endpoint: z.string().url(),
+  endpoint: z.string().url().max(2048),
 });
 
 const markNotificationReadSchema = z.object({
@@ -51,7 +59,6 @@ export async function savePushSubscriptionAction(
       auth: parsed.data.auth,
       userAgent: parsed.data.userAgent ?? null,
     });
-    revalidatePath("/app/settings/notifications");
     return actionOk(saved);
   } catch (error) {
     return mapErrorToActionResult(error);
@@ -72,7 +79,6 @@ export async function removePushSubscriptionAction(
       user.id,
       parsed.data.endpoint
     );
-    revalidatePath("/app/settings/notifications");
     return actionOk({ removed: true });
   } catch (error) {
     return mapErrorToActionResult(error);
@@ -99,8 +105,6 @@ export async function sendTestReminderAction(): Promise<
       user.id,
       user.timezone || "UTC"
     );
-    revalidatePath("/app", "layout");
-    revalidatePath("/app/settings/notifications");
     return actionOk({ results });
   } catch (error) {
     return mapErrorToActionResult(error);

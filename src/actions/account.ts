@@ -3,6 +3,7 @@
 import { revalidatePath } from "next/cache";
 import { z } from "zod";
 import { requireSession } from "@/server/dal/auth-guard";
+import { invalidatePublicOperationTags } from "@/server/dal/public-operations-cache";
 import {
   accountService,
   type DeleteAccountResult,
@@ -42,6 +43,11 @@ export async function deleteAccountAction(
     }
 
     const result = await accountService.deleteAccount(user.id);
+    invalidatePublicOperationTags({
+      ownerHandle: result.deletedHandle,
+      extraSlugs: result.deletedPublicSlugs,
+      affectsExplore: (result.deletedPublicSlugs?.length ?? 0) > 0,
+    });
     revalidatePath("/", "layout");
     return actionOk(result);
   } catch (error) {

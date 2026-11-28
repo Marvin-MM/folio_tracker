@@ -1,6 +1,7 @@
 "use client";
 
-import { useMemo, useState, useTransition } from "react";
+import { useEffect, useMemo, useState, useTransition } from "react";
+import dynamic from "next/dynamic";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { formatInTimeZone } from "date-fns-tz";
@@ -34,7 +35,6 @@ import {
   publishOperationVersionAction,
   rollbackOperationVersionAction,
 } from "@/actions/operations";
-import { SafeMarkdown } from "@/components/operations/safe-markdown";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -84,6 +84,14 @@ import type {
   OperationDetailPayload,
   OperationLinkOptions,
 } from "@/server/services/operation-service";
+
+const SafeMarkdown = dynamic(
+  () =>
+    import("@/components/operations/safe-markdown").then(
+      (mod) => mod.SafeMarkdown
+    ),
+  { ssr: false }
+);
 
 interface OperationBuilderViewProps {
   mode: "create" | "edit";
@@ -265,29 +273,53 @@ export function OperationBuilderView({
     }));
   }, [steps, preset.defaultCodeLanguage]);
 
-  const liveScanReport = useMemo(
-    () =>
-      scanOperationForSecrets({
-        title,
-        summary,
-        variables,
-        prerequisites,
-        steps: cleanStepsForSubmit,
-      }),
-    [title, summary, variables, prerequisites, cleanStepsForSubmit]
+  const [liveScanReport, setLiveScanReport] = useState(() =>
+    scanOperationForSecrets({
+      title,
+      summary,
+      variables,
+      prerequisites,
+      steps: cleanStepsForSubmit,
+    })
   );
+
+  // Debounce live secret scanning (300ms) so typing in large playbooks stays 60fps
+  useEffect(() => {
+    const timer = window.setTimeout(() => {
+      setLiveScanReport(
+        scanOperationForSecrets({
+          title,
+          summary,
+          variables,
+          prerequisites,
+          steps: cleanStepsForSubmit,
+        })
+      );
+    }, 300);
+    return () => window.clearTimeout(timer);
+  }, [title, summary, variables, prerequisites, cleanStepsForSubmit]);
 
   const draftFingerprint = useMemo(
     () =>
-      JSON.stringify({
-        title,
-        summary,
-        visibility,
-        variables,
-        prerequisites,
-        steps: cleanStepsForSubmit,
-      }),
-    [title, summary, visibility, variables, prerequisites, cleanStepsForSubmit]
+      serverSecretState
+        ? JSON.stringify({
+            title,
+            summary,
+            visibility,
+            variables,
+            prerequisites,
+            steps: cleanStepsForSubmit,
+          })
+        : "",
+    [
+      serverSecretState,
+      title,
+      summary,
+      visibility,
+      variables,
+      prerequisites,
+      cleanStepsForSubmit,
+    ]
   );
 
   const isSharedVisibility =
@@ -1082,6 +1114,8 @@ export function OperationBuilderView({
         <div className="grid grid-cols-1 gap-2 rounded-md border border-dashed border-border bg-background/60 p-3 sm:grid-cols-12">
           <div className="sm:col-span-3">
             <Input
+              id="op-new-var-key"
+              name="newVarKey"
               value={newVarKey}
               onChange={(e) => setNewVarKey(e.target.value)}
               placeholder="key (e.g. servings)"
@@ -1091,6 +1125,8 @@ export function OperationBuilderView({
           </div>
           <div className="sm:col-span-3">
             <Input
+              id="op-new-var-label"
+              name="newVarLabel"
               value={newVarLabel}
               onChange={(e) => setNewVarLabel(e.target.value)}
               placeholder="Label (e.g. Servings)"
@@ -1103,7 +1139,7 @@ export function OperationBuilderView({
               value={newVarType}
               onValueChange={(v) => setNewVarType(v as OperationVariableType)}
             >
-              <SelectTrigger aria-label="Variable type" className="h-9 text-xs md:h-8">
+              <SelectTrigger id="op-new-var-type" aria-label="Variable type" className="h-9 text-xs md:h-8">
                 <SelectValue />
               </SelectTrigger>
               <SelectContent>
@@ -1118,6 +1154,8 @@ export function OperationBuilderView({
           <div className="sm:col-span-3">
             {newVarType === "select" ? (
               <Input
+                id="op-new-var-options"
+                name="newVarOptions"
                 value={newVarOptions}
                 onChange={(e) => setNewVarOptions(e.target.value)}
                 placeholder="opt1, opt2, opt3"
@@ -1126,6 +1164,8 @@ export function OperationBuilderView({
               />
             ) : (
               <Input
+                id="op-new-var-default"
+                name="newVarDefault"
                 value={newVarType === "secret" ? "" : newVarDefault}
                 disabled={newVarType === "secret"}
                 onChange={(e) => setNewVarDefault(e.target.value)}
@@ -1173,6 +1213,9 @@ export function OperationBuilderView({
                 className="flex items-center gap-2 rounded-md border border-border bg-background px-2.5 py-1.5"
               >
                 <Input
+                  id={`op-prereq-${item.id}`}
+                  name={`prereq-${item.id}`}
+                  aria-label={`Checklist item ${item.label || item.id}`}
                   value={item.label}
                   onChange={(e) =>
                     setPrerequisites((prev) =>
@@ -1204,6 +1247,8 @@ export function OperationBuilderView({
 
         <div className="flex items-center gap-2">
           <Input
+            id="op-new-prereq"
+            name="newPrereq"
             value={newPrereqLabel}
             onChange={(e) => setNewPrereqLabel(e.target.value)}
             onKeyDown={(e) => {
@@ -1273,6 +1318,8 @@ export function OperationBuilderView({
                       {index + 1}
                     </span>
                     <Input
+                      id={`op-step-${step.key}-title`}
+                      name={`step-${step.key}-title`}
                       value={step.title}
                       onChange={(e) =>
                         updateStep(step.key, (prev) => ({
@@ -1358,7 +1405,10 @@ export function OperationBuilderView({
                 {/* Instructions Markdown + Live Preview toggle */}
                 <div className="space-y-1.5">
                   <div className="flex items-center justify-between">
-                    <Label className="text-[11px] text-muted-foreground">
+                    <Label
+                      htmlFor={`op-step-${step.key}-body`}
+                      className="text-[11px] text-muted-foreground"
+                    >
                       Instructions (Markdown &amp; {`{{variables}}`} supported)
                     </Label>
                     <button
@@ -1388,6 +1438,8 @@ export function OperationBuilderView({
                     </div>
                   ) : (
                     <Textarea
+                      id={`op-step-${step.key}-body`}
+                      name={`step-${step.key}-body`}
                       rows={3}
                       value={step.bodyMarkdown}
                       onChange={(e) =>
@@ -1515,10 +1567,15 @@ export function OperationBuilderView({
                 {step.showCode ? (
                   <div className="space-y-1.5 rounded-md border border-border bg-muted/60 p-3">
                     <div className="flex items-center justify-between gap-2">
-                      <Label className="text-[11px] text-muted-foreground">
+                      <Label
+                        htmlFor={`op-step-${step.key}-code-body`}
+                        className="text-[11px] text-muted-foreground"
+                      >
                         {preset.codeBlockLabel}
                       </Label>
                       <Input
+                        id={`op-step-${step.key}-code-lang`}
+                        name={`step-${step.key}-code-lang`}
                         value={
                           step.codeBlock?.language ?? preset.defaultCodeLanguage
                         }
@@ -1536,6 +1593,8 @@ export function OperationBuilderView({
                       />
                     </div>
                     <Textarea
+                      id={`op-step-${step.key}-code-body`}
+                      name={`step-${step.key}-code-body`}
                       rows={3}
                       value={step.codeBlock?.content ?? ""}
                       onChange={(e) =>
@@ -1563,6 +1622,8 @@ export function OperationBuilderView({
                     </span>
                     <div className="flex items-center gap-1.5">
                       <Input
+                        id={`op-step-${step.key}-timer-min`}
+                        name={`step-${step.key}-timer-min`}
                         type="number"
                         min={0}
                         max={1440}
@@ -1582,6 +1643,8 @@ export function OperationBuilderView({
                       />
                       <span className="text-muted-foreground">min</span>
                       <Input
+                        id={`op-step-${step.key}-timer-sec`}
+                        name={`step-${step.key}-timer-sec`}
                         type="number"
                         min={0}
                         max={59}
@@ -1609,10 +1672,15 @@ export function OperationBuilderView({
 
                 {step.showVerification ? (
                   <div className="space-y-1">
-                    <Label className="text-[11px] text-done">
+                    <Label
+                      htmlFor={`op-step-${step.key}-verify`}
+                      className="text-[11px] text-done"
+                    >
                       {preset.verificationLabel}
                     </Label>
                     <Input
+                      id={`op-step-${step.key}-verify`}
+                      name={`step-${step.key}-verify`}
                       value={step.verificationCue ?? ""}
                       onChange={(e) =>
                         updateStep(step.key, (prev) => ({
@@ -1628,10 +1696,15 @@ export function OperationBuilderView({
 
                 {step.showBranch ? (
                   <div className="space-y-1">
-                    <Label className="text-[11px] text-collab">
+                    <Label
+                      htmlFor={`op-step-${step.key}-branch`}
+                      className="text-[11px] text-collab"
+                    >
                       Decision / branch cue
                     </Label>
                     <Input
+                      id={`op-step-${step.key}-branch`}
+                      name={`step-${step.key}-branch`}
                       value={step.branchHint ?? ""}
                       onChange={(e) =>
                         updateStep(step.key, (prev) => ({
@@ -1647,10 +1720,15 @@ export function OperationBuilderView({
 
                 {step.showRollback ? (
                   <div className="space-y-1">
-                    <Label className="text-[11px] text-overdue">
+                    <Label
+                      htmlFor={`op-step-${step.key}-rollback`}
+                      className="text-[11px] text-overdue"
+                    >
                       {preset.rollbackLabel}
                     </Label>
                     <Input
+                      id={`op-step-${step.key}-rollback`}
+                      name={`step-${step.key}-rollback`}
                       value={step.rollbackHint ?? ""}
                       onChange={(e) =>
                         updateStep(step.key, (prev) => ({

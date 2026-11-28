@@ -1,10 +1,13 @@
 "use server";
 
-import { revalidatePath } from "next/cache";
 import { z } from "zod";
 import { requireSession } from "@/server/dal/auth-guard";
+import { operationsSocialRepository } from "@/server/dal/operations-social";
 import { invalidatePublicOperationTags } from "@/server/dal/public-operations-cache";
-import type { UserPreferencesRecord } from "@/server/dal/user-repository";
+import {
+  userRepository,
+  type UserPreferencesRecord,
+} from "@/server/dal/user-repository";
 import { MAX_USER_BIO_LENGTH } from "@/server/domain/operations";
 import { userPreferencesService } from "@/server/services/user-preferences-service";
 import {
@@ -59,7 +62,6 @@ export async function syncUserTimezoneAction(
       user.id,
       parsed.data.timezone
     );
-    revalidatePath("/app", "layout");
     return actionOk(updated);
   } catch (error) {
     return mapErrorToActionResult(error);
@@ -80,8 +82,12 @@ export async function updateUserPreferencesAction(
 
   try {
     const { user } = await requireSession();
-    const previousHandle =
-      typeof user.handle === "string" ? user.handle : null;
+    // Read live DB record before update so `previousHandle` is always authoritative
+    const [existingUser, publicSlugs] = await Promise.all([
+      userRepository.getById(user.id),
+      operationsSocialRepository.listPublicSlugsForOwner(user.id),
+    ]);
+    const previousHandle = existingUser?.handle ?? null;
     const updated = await userPreferencesService.updatePreferences(
       user.id,
       parsed.data
@@ -89,13 +95,9 @@ export async function updateUserPreferencesAction(
     invalidatePublicOperationTags({
       ownerHandle: updated.handle,
       previousHandle,
+      extraSlugs: publicSlugs,
+      affectsExplore: publicSlugs.length > 0,
     });
-    revalidatePath("/app", "layout");
-    revalidatePath("/app/settings");
-    if (updated.handle) revalidatePath(`/u/${updated.handle}`);
-    if (previousHandle && previousHandle !== updated.handle) {
-      revalidatePath(`/u/${previousHandle}`);
-    }
     return actionOk(updated);
   } catch (error) {
     return mapErrorToActionResult(error);

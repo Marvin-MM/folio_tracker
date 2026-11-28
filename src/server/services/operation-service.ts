@@ -6,7 +6,7 @@ import {
 } from "@/lib/fractional-index";
 import {
   assertProjectRole,
-  canUserReadEntity,
+  canUserReadAllNotes,
   createDrizzleMembershipLookup,
   type ProjectMembershipLookup,
 } from "@/server/dal/auth-guard";
@@ -41,6 +41,7 @@ import {
   type OperationsSocialRepository,
   type SharedOperationListItem,
 } from "@/server/dal/operations-social";
+import { getCachedPublicExploreOperations } from "@/server/dal/public-operations-cache";
 import {
   projectRepository,
   type ProjectRepository,
@@ -223,6 +224,8 @@ export interface OperationMutationResult {
   secretScanWarnings: SecretScanFinding[];
   mintedUnlistedToken: string | null;
   ownerHandle: string | null;
+  affectsPublicCache?: boolean;
+  forkSlugs?: string[];
 }
 
 export interface OperationVisibilityMutationResult {
@@ -230,6 +233,8 @@ export interface OperationVisibilityMutationResult {
   secretScanWarnings: SecretScanFinding[];
   mintedUnlistedToken: string | null;
   ownerHandle: string | null;
+  affectsPublicCache?: boolean;
+  forkSlugs?: string[];
 }
 
 export interface OperationServiceDeps {
@@ -494,13 +499,15 @@ export class OperationService {
     }
 
     if (links.referenceNoteIds && links.referenceNoteIds.length > 0) {
-      for (const noteId of links.referenceNoteIds) {
-        const readable = await canUserReadEntity(userId, { noteId }, tx);
-        if (!readable) {
-          throw new ForbiddenError(
-            "One or more linked reference notes are not accessible."
-          );
-        }
+      const allReadable = await canUserReadAllNotes(
+        userId,
+        links.referenceNoteIds,
+        tx
+      );
+      if (!allReadable) {
+        throw new ForbiddenError(
+          "One or more linked reference notes are not accessible."
+        );
       }
     }
 
@@ -525,28 +532,12 @@ export class OperationService {
     return appendSlugSuffix(base, randomBytes(4).toString("hex"));
   }
 
-  private async loadLinkOptions(userId: string): Promise<OperationLinkOptions> {
-    const [sidebar, habitRows, noteRows] = await Promise.all([
-      this.workspace.getSidebarSummary(userId, "UTC"),
-      this.habits.listHabitsForUser(userId, { includeArchived: false }),
-      this.workspace.listNotes(userId),
-    ]);
+  async getLinkOptions(userId: string): Promise<OperationLinkOptions> {
+    return this.operations.listLinkOptionsForUser(userId);
+  }
 
-    return {
-      projects: sidebar.projects
-        .filter((p) => p.role === "owner" || p.role === "editor")
-        .map((p) => ({ id: p.id, name: p.name, colorToken: p.colorToken })),
-      habits: habitRows.map((h) => ({
-        id: h.id,
-        title: h.title,
-        category: h.category,
-      })),
-      notes: noteRows.map((n) => ({
-        id: n.id,
-        title: n.title,
-        projectId: n.projectId,
-      })),
-    };
+  private async loadLinkOptions(userId: string): Promise<OperationLinkOptions> {
+    return this.operations.listLinkOptionsForUser(userId);
   }
 
   async createOperation(
@@ -570,8 +561,8 @@ export class OperationService {
 
     const { operation, version, ownerHandle } = await withDbRetry(() =>
       this.database.transaction(async (tx) => {
-        const [{ projectId, linkedHabitId }, ownerRow] = await Promise.all([
-          this.validateCrossModuleLinks(
+        const { projectId, linkedHabitId } =
+          await this.validateCrossModuleLinks(
             userId,
             {
               projectId: input.projectId,
@@ -579,9 +570,8 @@ export class OperationService {
               referenceNoteIds: normalized.referenceNoteIds,
             },
             tx
-          ),
-          this.users.getById(userId, tx),
-        ]);
+          );
+        const ownerRow = await this.users.getById(userId, tx);
 
         const slug = await this.allocateUniqueSlug(normalized.title, tx);
         const created = await this.operations.createOperation(
@@ -661,8 +651,15 @@ export class OperationService {
     const normalized = this.validateAndNormalizeBlueprintInput(input);
     const nowMs = this.now();
 
-    const { operation, version, mintedUnlistedToken, warnings, ownerHandle } =
-      await withDbRetry(() =>
+    const {
+      operation,
+      version,
+      mintedUnlistedToken,
+      warnings,
+      ownerHandle,
+      affectsPublicCache,
+      forkSlugs,
+    } = await withDbRetry(() =>
         this.database.transaction(async (tx) => {
           const access = await resolveOperationAccess(
             { operationId, sessionUserId: userId },
@@ -815,6 +812,10 @@ export class OperationService {
           }
 
           const ownerRow = await this.users.getById(updated.ownerId, tx);
+          const forkSlugs =
+            existing.visibility === "public" || updated.visibility === "public"
+              ? await this.social.listPublicForkSlugs(updated.id, tx)
+              : [];
 
           return {
             operation: updated,
@@ -822,6 +823,9 @@ export class OperationService {
             mintedUnlistedToken: newRawToken,
             warnings: scanWarnings,
             ownerHandle: ownerRow?.handle ?? null,
+            affectsPublicCache:
+              existing.visibility === "public" || updated.visibility === "public",
+            forkSlugs,
           };
         })
       );
@@ -832,6 +836,8 @@ export class OperationService {
       secretScanWarnings: warnings,
       mintedUnlistedToken,
       ownerHandle,
+      affectsPublicCache,
+      forkSlugs,
     };
   }
 
@@ -907,11 +913,18 @@ export class OperationService {
         }
 
         const ownerRow = await this.users.getById(existing.ownerId, tx);
+        const affectsPublicCache =
+          existing.visibility === "public" || updated.visibility === "public";
+        const forkSlugs = affectsPublicCache
+          ? await this.social.listPublicForkSlugs(updated.id, tx)
+          : [];
         return {
           operation: updated,
           secretScanWarnings: warnings,
           mintedUnlistedToken: rawToken,
           ownerHandle: ownerRow?.handle ?? null,
+          affectsPublicCache,
+          forkSlugs,
         };
       })
     );
@@ -1169,7 +1182,7 @@ export class OperationService {
 
         const scanWarnings = this.enforceSecretGate({
           visibility: existing.visibility,
-          acknowledgeWarnings: input.acknowledgeWarnings ?? true,
+          acknowledgeWarnings: input.acknowledgeWarnings ?? false,
           title: existing.title,
           summary: existing.summary,
           variables: parseVariablesSchemaJson(targetVersion.variablesSchemaJson),
@@ -1258,7 +1271,12 @@ export class OperationService {
   async deleteOperation(
     userId: string,
     operationId: string
-  ): Promise<{ slug: string; ownerHandle: string | null }> {
+  ): Promise<{
+    slug: string;
+    ownerHandle: string | null;
+    wasPublic: boolean;
+    forkSlugs: string[];
+  }> {
     const access = await resolveOperationAccess(
       { operationId, sessionUserId: userId },
       this.database
@@ -1268,7 +1286,13 @@ export class OperationService {
       "canDelete",
       "Only the operation owner can delete this operation."
     );
-    const ownerRow = await this.users.getById(access.operation.ownerId);
+    const wasPublic = access.operation.visibility === "public";
+    const [ownerRow, forkSlugs] = await Promise.all([
+      this.users.getById(access.operation.ownerId),
+      wasPublic
+        ? this.social.listPublicForkSlugs(access.operation.id)
+        : Promise.resolve([]),
+    ]);
     const deleted = await withDbRetry(() =>
       this.operations.deleteOperationForOwner(
         operationId,
@@ -1281,6 +1305,8 @@ export class OperationService {
     return {
       slug: access.operation.slug,
       ownerHandle: ownerRow?.handle ?? null,
+      wasPublic,
+      forkSlugs,
     };
   }
 
@@ -1336,10 +1362,14 @@ export class OperationService {
               nowMs
             )
           : Promise.resolve([]),
-        this.social.listPublicExploreOperations({
-          domain: filters.domain,
-          limit: 30,
-        }),
+        this.database === db
+          ? getCachedPublicExploreOperations({
+              domain: filters.domain,
+            }).then((rows) => rows.slice(0, 30))
+          : this.social.listPublicExploreOperations({
+              domain: filters.domain,
+              limit: 30,
+            }),
         this.loadLinkOptions(userId),
       ]);
 

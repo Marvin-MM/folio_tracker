@@ -10,7 +10,6 @@ import {
   CardDescription,
   CardFooter,
   CardHeader,
-  CardTitle,
 } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -41,9 +40,9 @@ export function ForgotPasswordForm() {
   return (
     <Card className="border-border bg-card shadow-none">
       <CardHeader className="space-y-1">
-        <CardTitle className="text-base font-semibold tracking-tight">
+        <h1 className="text-base font-semibold leading-none tracking-tight text-foreground">
           Reset password
-        </CardTitle>
+        </h1>
         <CardDescription className="text-xs text-muted-foreground">
           Enter your email address and we will send a password reset link.
         </CardDescription>

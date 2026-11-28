@@ -131,7 +131,7 @@ export function BulkImportHabitsDialog({
         toast.error(result.error.message);
         return;
       }
-      await invalidate(["habits", "today", "sidebar", "admin"]);
+      await invalidate(["habits", "today", "sidebar"]);
       toast.success(
         `Imported ${result.data.importedCount} habit${result.data.importedCount === 1 ? "" : "s"}.`
       );

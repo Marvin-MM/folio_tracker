@@ -146,6 +146,7 @@ export interface UpdateHabitSettingsInput {
   eveningCheckinTime?: string | null;
   monthLockEnabled?: boolean;
   monthLockGraceDays?: number;
+  currentPin?: string;
 }
 
 export interface LogHabitDayInput {
@@ -412,10 +413,8 @@ export class HabitService {
   ): Promise<void> {
     const nowMs = this.now();
     const todayDateKey = getLocalDateKey(nowMs, timezone);
-    const [settings, lockRow] = await Promise.all([
-      this.habits.getOrCreateSettings(userId, executor),
-      this.habits.getMonthLock(userId, yearMonth, executor),
-    ]);
+    const settings = await this.habits.getOrCreateSettings(userId, executor);
+    const lockRow = await this.habits.getMonthLock(userId, yearMonth, executor);
     const state = evaluateMonthLockState({
       yearMonth,
       todayDateKey,
@@ -450,10 +449,12 @@ export class HabitService {
 
     const nowMs = this.now();
     const todayDateKey = getLocalDateKey(nowMs, timezone);
-    const [settings, lockRows] = await Promise.all([
-      this.habits.getOrCreateSettings(userId, executor),
-      this.habits.listMonthLocksForMonths(userId, uniqueMonths, executor),
-    ]);
+    const settings = await this.habits.getOrCreateSettings(userId, executor);
+    const lockRows = await this.habits.listMonthLocksForMonths(
+      userId,
+      uniqueMonths,
+      executor
+    );
     const lockByMonth = new Map(lockRows.map((row) => [row.yearMonth, row]));
 
     for (const ym of uniqueMonths) {
@@ -539,29 +540,31 @@ export class HabitService {
       );
 
     if (!valid) {
-      const nextAttempts = (settings.monthLockPinFailedAttempts ?? 0) + 1;
-      const shouldLock = nextAttempts >= PIN_LOCKOUT_THRESHOLD;
-      const lockedUntil = shouldLock ? nowMs + PIN_LOCKOUT_DURATION_MS : null;
-      await this.habits.updatePinFailureState(
-        userId,
-        {
-          failedAttempts: shouldLock ? 0 : nextAttempts,
-          lockedUntil,
-          nowMs,
-        },
-        executor
+      const failure = await withDbRetry(() =>
+        this.habits.recordPinFailureAtomically(
+          userId,
+          {
+            threshold: PIN_LOCKOUT_THRESHOLD,
+            lockDurationMs: PIN_LOCKOUT_DURATION_MS,
+            nowMs,
+          },
+          executor
+        )
       );
-      if (shouldLock) {
+      if (failure.lockedOut) {
         throw new RateLimitError({
           message:
             "Too many incorrect PIN attempts. PIN entry is locked for 15 minutes.",
           retryAfterSeconds: Math.ceil(PIN_LOCKOUT_DURATION_MS / 1000),
           limit: PIN_LOCKOUT_THRESHOLD,
           remaining: 0,
-          resetAtMs: lockedUntil!,
+          resetAtMs: failure.lockedUntil ?? nowMs + PIN_LOCKOUT_DURATION_MS,
         });
       }
-      const attemptsLeft = PIN_LOCKOUT_THRESHOLD - nextAttempts;
+      const attemptsLeft = Math.max(
+        1,
+        PIN_LOCKOUT_THRESHOLD - failure.failedAttempts
+      );
       throw new ValidationError(
         `Incorrect Accountability PIN (${attemptsLeft} attempt${attemptsLeft === 1 ? "" : "s"} remaining).`
       );
@@ -571,14 +574,16 @@ export class HabitService {
       settings.monthLockPinFailedAttempts > 0 ||
       settings.monthLockPinLockedUntil !== null
     ) {
-      await this.habits.updatePinFailureState(
-        userId,
-        {
-          failedAttempts: 0,
-          lockedUntil: null,
-          nowMs,
-        },
-        executor
+      await withDbRetry(() =>
+        this.habits.updatePinFailureState(
+          userId,
+          {
+            failedAttempts: 0,
+            lockedUntil: null,
+            nowMs,
+          },
+          executor
+        )
       );
     }
   }
@@ -1480,6 +1485,29 @@ export class HabitService {
       patch.monthLockGraceDays = clampGraceDays(input.monthLockGraceDays);
     }
 
+    // Security: when an Accountability PIN is configured, require PIN verification
+    // before disabling month locks or extending the auto-lock grace window.
+    if (
+      patch.monthLockEnabled === false ||
+      patch.monthLockGraceDays !== undefined
+    ) {
+      const currentSettings = await this.habits.getOrCreateSettings(userId);
+      const hasPin = Boolean(
+        currentSettings.monthLockPinHash && currentSettings.monthLockPinSalt
+      );
+      const weakeningLock =
+        (patch.monthLockEnabled === false && currentSettings.monthLockEnabled) ||
+        (patch.monthLockGraceDays !== undefined &&
+          patch.monthLockGraceDays > currentSettings.monthLockGraceDays);
+      if (hasPin && weakeningLock) {
+        await this.verifyPinWithBruteForceProtection(
+          userId,
+          currentSettings,
+          input.currentPin
+        );
+      }
+    }
+
     const updated = await withDbRetry(() =>
       this.habits.updateSettings(userId, patch)
     );
@@ -1505,10 +1533,12 @@ export class HabitService {
 
     return withDbRetry(() =>
       this.database.transaction(async (tx) => {
-        const [settings, existingLock] = await Promise.all([
-          this.habits.getOrCreateSettings(userId, tx),
-          this.habits.getMonthLock(userId, yearMonth, tx),
-        ]);
+        const settings = await this.habits.getOrCreateSettings(userId, tx);
+        const existingLock = await this.habits.getMonthLock(
+          userId,
+          yearMonth,
+          tx
+        );
         const currentState = evaluateMonthLockState({
           yearMonth,
           todayDateKey,
@@ -1586,21 +1616,28 @@ export class HabitService {
     }
 
     const cleanedReason = input.reason?.trim().slice(0, 200) || null;
-    const preservedManualLockedAt =
-      existingLock?.lockedAt ??
-      (currentState.phase === "locked_manual" ? nowMs : null);
-
     const saved = await withDbRetry(() =>
-      this.habits.upsertMonthLock({
-        userId,
-        yearMonth: input.yearMonth,
-        status: "unlocked_override",
-        lockedAt: preservedManualLockedAt,
-        unlockedAt: nowMs,
-        unlockedUntil: nowMs + TEMP_UNLOCK_DURATION_MS,
-        unlockReason: cleanedReason,
-        unlockCount: (existingLock?.unlockCount ?? 0) + 1,
-        updatedAt: nowMs,
+      this.database.transaction(async (tx) => {
+        const latestLock = await this.habits.getMonthLock(
+          userId,
+          input.yearMonth,
+          tx
+        );
+        const preservedManualLockedAt =
+          latestLock?.lockedAt ??
+          (currentState.phase === "locked_manual" ? nowMs : null);
+        return this.habits.unlockMonthAtomically(
+          {
+            userId,
+            yearMonth: input.yearMonth,
+            lockedAt: preservedManualLockedAt,
+            unlockedAt: nowMs,
+            unlockedUntil: nowMs + TEMP_UNLOCK_DURATION_MS,
+            unlockReason: cleanedReason,
+            updatedAt: nowMs,
+          },
+          tx
+        );
       })
     );
 
@@ -1905,6 +1942,12 @@ export class HabitService {
 
         let initialLog: HabitLogRecord | null = null;
         if (taskMeta.status === "done") {
+          await this.assertMonthEditable(
+            userId,
+            timezone,
+            habitDateKey.slice(0, 7),
+            tx
+          );
           const loggedAt = taskMeta.completedAt ?? nowMs;
           initialLog = await this.habits.upsertLog(
             {

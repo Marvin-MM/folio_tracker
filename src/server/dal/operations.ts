@@ -4,6 +4,7 @@ import {
   desc,
   eq,
   inArray,
+  isNull,
   sql,
 } from "drizzle-orm";
 import { db, type AppDatabase, type DbExecutor } from "@/server/db";
@@ -15,6 +16,7 @@ import {
   operationRunSteps,
   operations,
   operationVersions,
+  projectMembers,
   projects,
   type OperationDifficulty,
   type OperationDomain,
@@ -190,6 +192,11 @@ export interface OperationRepository {
     options?: { includeArchived?: boolean; domain?: OperationDomain },
     executor?: DbExecutor
   ): Promise<OperationListRow[]>;
+  listLinkOptionsForUser(userId: string): Promise<{
+    projects: Array<{ id: string; name: string; colorToken: string }>;
+    habits: Array<{ id: string; title: string; category: string | null }>;
+    notes: Array<{ id: string; title: string; projectId: string | null }>;
+  }>;
   createOperation(
     input: CreateOperationRowInput,
     executor?: DbExecutor
@@ -310,6 +317,16 @@ export interface OperationRepository {
     nowMs: number,
     executor?: DbExecutor
   ): Promise<OperationRunStepRecord[]>;
+  updateSeededRunStep(
+    params: {
+      runId: string;
+      stepKey: string;
+      status: OperationRunStepStatus;
+      note?: string | null;
+      nowMs: number;
+    },
+    executor?: DbExecutor
+  ): Promise<OperationRunStepRecord | null>;
   upsertRunStep(
     params: {
       runId: string;
@@ -320,15 +337,6 @@ export interface OperationRepository {
     },
     executor?: DbExecutor
   ): Promise<OperationRunStepRecord>;
-}
-
-function countStepsFromJson(stepsSnapshotJson: string): number {
-  try {
-    const parsed: unknown = JSON.parse(stepsSnapshotJson);
-    return Array.isArray(parsed) ? parsed.length : 0;
-  } catch {
-    return 0;
-  }
 }
 
 export class DrizzleOperationRepository implements OperationRepository {
@@ -411,19 +419,26 @@ export class DrizzleOperationRepository implements OperationRepository {
       )
     );
 
-    const [versionRows, runRows, projectRows, habitRows] = await Promise.all([
+    const [versionRows, runStatsRows, projectRows, habitRows] = await Promise.all([
       executor
         .select({
           operationId: operationVersions.operationId,
-          versionNumber: operationVersions.versionNumber,
-          stepsSnapshotJson: operationVersions.stepsSnapshotJson,
+          stepCount: sql<number>`COALESCE(json_array_length(${operationVersions.stepsSnapshotJson}), 0)`,
         })
         .from(operationVersions)
+        .innerJoin(
+          operations,
+          and(
+            eq(operationVersions.operationId, operations.id),
+            eq(operationVersions.versionNumber, operations.currentVersion)
+          )
+        )
         .where(inArray(operationVersions.operationId, opIds)),
       executor
         .select({
           operationId: operationRuns.operationId,
-          status: operationRuns.status,
+          totalRuns: sql<number>`COUNT(*)`,
+          activeRuns: sql<number>`SUM(CASE WHEN ${operationRuns.status} = 'in_progress' THEN 1 ELSE 0 END)`,
         })
         .from(operationRuns)
         .where(
@@ -431,7 +446,8 @@ export class DrizzleOperationRepository implements OperationRepository {
             eq(operationRuns.runnerId, ownerId),
             inArray(operationRuns.operationId, opIds)
           )
-        ),
+        )
+        .groupBy(operationRuns.operationId),
       projectIds.length > 0
         ? executor
             .select({
@@ -454,31 +470,15 @@ export class DrizzleOperationRepository implements OperationRepository {
     ]);
 
     const stepCountByOp = new Map<string, number>();
-    const currentVersionByOp = new Map(
-      opRows.map((o) => [o.id, o.currentVersion])
-    );
     for (const ver of versionRows) {
-      if (ver.versionNumber === currentVersionByOp.get(ver.operationId)) {
-        stepCountByOp.set(
-          ver.operationId,
-          countStepsFromJson(ver.stepsSnapshotJson)
-        );
-      }
+      stepCountByOp.set(ver.operationId, Number(ver.stepCount ?? 0));
     }
 
     const activeRunsByOp = new Map<string, number>();
     const totalRunsByOp = new Map<string, number>();
-    for (const run of runRows) {
-      totalRunsByOp.set(
-        run.operationId,
-        (totalRunsByOp.get(run.operationId) ?? 0) + 1
-      );
-      if (run.status === "in_progress") {
-        activeRunsByOp.set(
-          run.operationId,
-          (activeRunsByOp.get(run.operationId) ?? 0) + 1
-        );
-      }
+    for (const stat of runStatsRows) {
+      totalRunsByOp.set(stat.operationId, Number(stat.totalRuns ?? 0));
+      activeRunsByOp.set(stat.operationId, Number(stat.activeRuns ?? 0));
     }
 
     const projectMap = new Map(projectRows.map((p) => [p.id, p]));
@@ -500,6 +500,60 @@ export class DrizzleOperationRepository implements OperationRepository {
         totalRunsCount: totalRunsByOp.get(operation.id) ?? 0,
       };
     });
+  }
+
+  /**
+   * Lean 1-RTT batched projection for Operation Builder / Detail cross-module
+   * link pickers — avoids calling `getSidebarSummary()` or downloading note bodies.
+   */
+  async listLinkOptionsForUser(userId: string): Promise<{
+    projects: Array<{ id: string; name: string; colorToken: string }>;
+    habits: Array<{ id: string; title: string; category: string | null }>;
+    notes: Array<{ id: string; title: string; projectId: string | null }>;
+  }> {
+    const [projectRows, habitRows, noteRows] = await this.database.batch([
+      this.database
+        .select({
+          id: projects.id,
+          name: projects.name,
+          colorToken: projects.colorToken,
+        })
+        .from(projectMembers)
+        .innerJoin(projects, eq(projectMembers.projectId, projects.id))
+        .where(
+          and(
+            eq(projectMembers.userId, userId),
+            inArray(projectMembers.role, ["owner", "editor"]),
+            eq(projects.isArchived, false)
+          )
+        )
+        .orderBy(asc(projects.name)),
+      this.database
+        .select({
+          id: habits.id,
+          title: habits.title,
+          category: habits.category,
+        })
+        .from(habits)
+        .where(and(eq(habits.userId, userId), eq(habits.isArchived, false)))
+        .orderBy(asc(habits.position), asc(habits.id)),
+      this.database
+        .select({
+          id: notes.id,
+          title: notes.title,
+          projectId: notes.projectId,
+        })
+        .from(notes)
+        .where(and(eq(notes.userId, userId), isNull(notes.projectId)))
+        .orderBy(desc(notes.isPinned), desc(notes.updatedAt), asc(notes.id))
+        .limit(100),
+    ]);
+
+    return {
+      projects: projectRows,
+      habits: habitRows,
+      notes: noteRows,
+    };
   }
 
   async createOperation(
@@ -594,6 +648,7 @@ export class DrizzleOperationRepository implements OperationRepository {
       .update(operations)
       .set({
         ...patch,
+        editVersion: sql`${operations.editVersion} + 1`,
         updatedAt: patch.updatedAt ?? Date.now(),
       })
       .where(
@@ -816,7 +871,7 @@ export class DrizzleOperationRepository implements OperationRepository {
         operationDomain: operations.domain,
         operationSlug: operations.slug,
         versionNumber: operationVersions.versionNumber,
-        stepsSnapshotJson: operationVersions.stepsSnapshotJson,
+        totalSteps: sql<number>`COALESCE(json_array_length(${operationVersions.stepsSnapshotJson}), 0)`,
       })
       .from(operationRuns)
       .innerJoin(operations, eq(operationRuns.operationId, operations.id))
@@ -831,28 +886,27 @@ export class DrizzleOperationRepository implements OperationRepository {
     if (joined.length === 0) return [];
 
     const runIds = joined.map((j) => j.run.id);
-    const stepRows = await executor
+    const stepStatRows = await executor
       .select({
         runId: operationRunSteps.runId,
-        status: operationRunSteps.status,
+        done: sql<number>`SUM(CASE WHEN ${operationRunSteps.status} = 'done' THEN 1 ELSE 0 END)`,
+        skipped: sql<number>`SUM(CASE WHEN ${operationRunSteps.status} = 'skipped' THEN 1 ELSE 0 END)`,
+        blocked: sql<number>`SUM(CASE WHEN ${operationRunSteps.status} = 'blocked' THEN 1 ELSE 0 END)`,
       })
       .from(operationRunSteps)
-      .where(inArray(operationRunSteps.runId, runIds));
+      .where(inArray(operationRunSteps.runId, runIds))
+      .groupBy(operationRunSteps.runId);
 
     const statsByRun = new Map<
       string,
       { done: number; skipped: number; blocked: number }
     >();
-    for (const step of stepRows) {
-      const current = statsByRun.get(step.runId) ?? {
-        done: 0,
-        skipped: 0,
-        blocked: 0,
-      };
-      if (step.status === "done") current.done += 1;
-      else if (step.status === "skipped") current.skipped += 1;
-      else if (step.status === "blocked") current.blocked += 1;
-      statsByRun.set(step.runId, current);
+    for (const row of stepStatRows) {
+      statsByRun.set(row.runId, {
+        done: Number(row.done ?? 0),
+        skipped: Number(row.skipped ?? 0),
+        blocked: Number(row.blocked ?? 0),
+      });
     }
 
     return joined.map((item) => {
@@ -867,7 +921,7 @@ export class DrizzleOperationRepository implements OperationRepository {
         operationDomain: item.operationDomain,
         operationSlug: item.operationSlug,
         versionNumber: item.versionNumber,
-        totalSteps: countStepsFromJson(item.stepsSnapshotJson),
+        totalSteps: Number(item.totalSteps ?? 0),
         doneSteps: stats.done,
         skippedSteps: stats.skipped,
         blockedSteps: stats.blocked,
@@ -992,6 +1046,40 @@ export class DrizzleOperationRepository implements OperationRepository {
         }))
       )
       .returning();
+  }
+
+  async updateSeededRunStep(
+    params: {
+      runId: string;
+      stepKey: string;
+      status: OperationRunStepStatus;
+      note?: string | null;
+      nowMs: number;
+    },
+    executor: DbExecutor = this.database
+  ): Promise<OperationRunStepRecord | null> {
+    const completedAt = params.status === "done" ? params.nowMs : null;
+    const setPatch: Partial<typeof operationRunSteps.$inferInsert> = {
+      status: params.status,
+      completedAt,
+      updatedAt: params.nowMs,
+    };
+    if (params.note !== undefined) {
+      setPatch.note = params.note;
+    }
+
+    const [row] = await executor
+      .update(operationRunSteps)
+      .set(setPatch)
+      .where(
+        and(
+          eq(operationRunSteps.runId, params.runId),
+          eq(operationRunSteps.stepKey, params.stepKey)
+        )
+      )
+      .returning();
+
+    return row ?? null;
   }
 
   async upsertRunStep(

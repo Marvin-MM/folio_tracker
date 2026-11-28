@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { memo, useCallback, useMemo, useRef, useState } from "react";
 import {
   Check,
   Clock,
@@ -70,10 +70,7 @@ function formatCadenceTag(habit: HabitRecord): string {
     return `${habit.weeklyTargetCount ?? 3}×/wk`;
   }
   const days = parseScheduledDaysJson(habit.scheduledDaysJson);
-  if (
-    days.length === 5 &&
-    days.join(",") === "1,2,3,4,5"
-  ) {
+  if (days.length === 5 && days.join(",") === "1,2,3,4,5") {
     return "Mon–Fri";
   }
   if (days.length === 2 && days.join(",") === "0,6") {
@@ -205,7 +202,7 @@ function CellNotePopoverBody({
           variant="ghost"
           size="xs"
           onClick={onClose}
-          className="h-7 px-2 text-xs"
+          className="h-9 px-2.5 text-xs md:h-7 md:px-2"
         >
           Cancel
         </Button>
@@ -213,7 +210,7 @@ function CellNotePopoverBody({
           type="button"
           size="xs"
           onClick={handleSave}
-          className="h-7 px-3 text-xs"
+          className="h-9 px-3 text-xs md:h-7"
         >
           Save
         </Button>
@@ -221,6 +218,358 @@ function CellNotePopoverBody({
     </div>
   );
 }
+
+interface FlatCalendarDay {
+  dateKey: string;
+  isWeekBoundary: boolean;
+  isToday: boolean;
+  isFuture: boolean;
+}
+
+interface HabitMatrixCellProps {
+  habit: HabitRecord;
+  dateKey: string;
+  isWeekBoundary: boolean;
+  isToday: boolean;
+  isDisabled: boolean;
+  isBeforeStart: boolean;
+  isFuture: boolean;
+  isScheduled: boolean;
+  readOnly: boolean;
+  status: HabitLogStatus | null;
+  note: string | null;
+  isLate: boolean;
+  onCycle: (habit: HabitRecord, dateKey: string, nextStatus: HabitLogStatus | null) => void;
+  onOpenPopover: (
+    habit: HabitRecord,
+    dateKey: string,
+    anchorEl: HTMLButtonElement
+  ) => void;
+}
+
+const HabitMatrixCell = memo(function HabitMatrixCell({
+  habit,
+  dateKey,
+  isWeekBoundary,
+  isToday,
+  isDisabled,
+  isBeforeStart,
+  isFuture,
+  isScheduled,
+  readOnly,
+  status,
+  note,
+  isLate,
+  onCycle,
+  onOpenPopover,
+}: HabitMatrixCellProps) {
+  const hasNote = Boolean(note);
+
+  const tooltipParts = [
+    `${habit.title} · ${dateKey}`,
+    isBeforeStart
+      ? `Starts ${habit.startDate}`
+      : isFuture
+        ? "Future date"
+        : status
+          ? status.toUpperCase()
+          : isScheduled
+            ? "Unlogged (click to mark Done)"
+            : "Off-day",
+  ];
+  if (hasNote && note) {
+    tooltipParts.push(`Note: ${note}`);
+  }
+  if (isLate) {
+    tooltipParts.push("Backfilled >48h after date");
+  }
+
+  return (
+    <td
+      className={cn(
+        "border-b border-border p-0.5 text-center align-middle",
+        isWeekBoundary && "border-l border-border",
+        isToday && "bg-reminder/8"
+      )}
+    >
+      <button
+        type="button"
+        disabled={isDisabled || (readOnly && !hasNote)}
+        title={tooltipParts.join(" — ")}
+        aria-label={`${habit.title} on ${dateKey}: ${
+          isBeforeStart
+            ? "before start date"
+            : isFuture
+              ? "future date"
+              : status ?? "unlogged"
+        }`}
+        data-habit-id={habit.id}
+        data-date-key={dateKey}
+        data-status={status ?? "unlogged"}
+        onClick={(event) => {
+          if (isDisabled) return;
+          if (readOnly) {
+            if (hasNote) onOpenPopover(habit, dateKey, event.currentTarget);
+            return;
+          }
+          if (event.shiftKey) {
+            event.preventDefault();
+            onOpenPopover(habit, dateKey, event.currentTarget);
+            return;
+          }
+          onCycle(habit, dateKey, nextCycleStatus(status));
+        }}
+        onContextMenu={(event) => {
+          if (isDisabled) return;
+          if (readOnly) {
+            if (hasNote) {
+              event.preventDefault();
+              onOpenPopover(habit, dateKey, event.currentTarget);
+            }
+            return;
+          }
+          event.preventDefault();
+          onOpenPopover(habit, dateKey, event.currentTarget);
+        }}
+        className={cn(
+          "relative mx-auto flex min-h-9 min-w-9 items-center justify-center rounded border transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring md:min-h-7 md:min-w-7",
+          isDisabled
+            ? "cursor-not-allowed border-transparent bg-transparent opacity-30"
+            : status === "done"
+              ? readOnly
+                ? "border-done/55 bg-done/15 text-done"
+                : "border-done/55 bg-done/15 text-done hover:bg-done/25"
+              : status === "missed"
+                ? readOnly
+                  ? "border-overdue/45 bg-overdue/12 text-overdue"
+                  : "border-overdue/45 bg-overdue/12 text-overdue hover:bg-overdue/20"
+                : status === "skipped"
+                  ? readOnly
+                    ? "border-border bg-muted text-muted-foreground"
+                    : "border-border bg-muted text-muted-foreground hover:bg-accent"
+                  : isScheduled
+                    ? readOnly
+                      ? "border-border/80 bg-background text-muted-foreground/40"
+                      : "border-border/80 bg-background text-muted-foreground/40 hover:border-foreground/35 hover:bg-accent/70"
+                    : readOnly
+                      ? "border-dashed border-border/50 bg-transparent text-muted-foreground/25"
+                      : "border-dashed border-border/50 bg-transparent text-muted-foreground/25 hover:border-border hover:bg-accent/40",
+          readOnly && !hasNote && "cursor-default"
+        )}
+      >
+        {status === "done" ? (
+          <Check className="size-3.5 stroke-[2.4]" />
+        ) : status === "missed" ? (
+          <X className="size-3.5 stroke-[2.2]" />
+        ) : status === "skipped" ? (
+          <Minus className="size-3.5 stroke-[2.2]" />
+        ) : !isDisabled && !isScheduled ? (
+          <span
+            aria-hidden="true"
+            className="size-1 rounded-full bg-muted-foreground/30"
+          />
+        ) : null}
+
+        {/* Tiny corner dot indicating micro-note */}
+        {hasNote ? (
+          <span
+            aria-hidden="true"
+            className="absolute top-0.5 right-0.5 size-1.5 rounded-full bg-foreground"
+          />
+        ) : null}
+
+        {/* Subtle muted clock indicator for >48h retroactive backfills */}
+        {isLate ? (
+          <Clock
+            aria-hidden="true"
+            className="absolute right-0.5 bottom-0.5 size-2.5 text-muted-foreground/75"
+          />
+        ) : null}
+      </button>
+    </td>
+  );
+});
+
+interface HabitMatrixRowProps {
+  habit: HabitRecord;
+  flatDays: FlatCalendarDay[];
+  logsByKey: Record<string, HabitLogRecord>;
+  summary: HabitRowSummary | undefined;
+  hasLinkedTask: boolean;
+  readOnly: boolean;
+  onCycle: (habit: HabitRecord, dateKey: string, nextStatus: HabitLogStatus | null) => void;
+  onOpenPopover: (
+    habit: HabitRecord,
+    dateKey: string,
+    anchorEl: HTMLButtonElement
+  ) => void;
+  onInspectHabit?: (habit: HabitRecord) => void;
+}
+
+const HabitMatrixRow = memo(function HabitMatrixRow({
+  habit,
+  flatDays,
+  logsByKey,
+  summary,
+  hasLinkedTask,
+  readOnly,
+  onCycle,
+  onOpenPopover,
+  onInspectHabit,
+}: HabitMatrixRowProps) {
+  const scheduledDays = useMemo(
+    () => parseScheduledDaysJson(habit.scheduledDaysJson),
+    [habit.scheduledDaysJson]
+  );
+  const cadenceTag = useMemo(() => formatCadenceTag(habit), [habit]);
+  const pctText =
+    summary && summary.completionRate !== null
+      ? `${Math.round(summary.completionRate * 100)}%`
+      : "—";
+
+  return (
+    <tr className="group transition-colors hover:bg-accent/25">
+      {/* Sticky Left Habit Info Column */}
+      <th
+        scope="row"
+        className="sticky left-0 z-10 border-r border-b border-border bg-card px-3 py-1.5 font-normal group-hover:bg-accent/25"
+      >
+        {readOnly ? (
+          <div className="flex min-h-9 w-full flex-col justify-center text-left md:min-h-7">
+            <span className="flex items-center gap-1.5">
+              <span className="max-w-[140px] truncate text-xs font-medium text-foreground sm:max-w-[175px]">
+                {habit.title}
+              </span>
+              {habit.isArchived ? (
+                <span className="shrink-0 rounded border border-border bg-muted px-1 py-0.5 text-[9px] font-medium text-muted-foreground">
+                  Archived
+                </span>
+              ) : null}
+            </span>
+            <span className="mt-0.5 flex items-center gap-1.5 text-[10px] text-muted-foreground">
+              <span className="mono-tabular">{cadenceTag}</span>
+              {habit.category ? (
+                <>
+                  <span>·</span>
+                  <span className="max-w-[80px] truncate">
+                    {habit.category}
+                  </span>
+                </>
+              ) : null}
+            </span>
+          </div>
+        ) : (
+          <button
+            type="button"
+            onClick={() => onInspectHabit?.(habit)}
+            className="flex min-h-9 w-full flex-col justify-center rounded text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring md:min-h-7"
+          >
+            <span className="flex items-center gap-1.5">
+              <span className="max-w-[130px] truncate text-xs font-medium text-foreground sm:max-w-[165px]">
+                {habit.title}
+              </span>
+              {habit.isArchived ? (
+                <span className="shrink-0 rounded border border-border bg-muted px-1 py-0.5 text-[9px] font-medium text-muted-foreground">
+                  Archived
+                </span>
+              ) : null}
+              {hasLinkedTask || habit.autoSyncDailyTask ? (
+                <Link2
+                  aria-label="Linked with tasks"
+                  className="size-3 shrink-0 text-done"
+                />
+              ) : null}
+            </span>
+            <span className="mt-0.5 flex items-center gap-1.5 text-[10px] text-muted-foreground">
+              <span className="mono-tabular">{cadenceTag}</span>
+              {habit.category ? (
+                <>
+                  <span>·</span>
+                  <span className="max-w-[80px] truncate">
+                    {habit.category}
+                  </span>
+                </>
+              ) : null}
+            </span>
+          </button>
+        )}
+      </th>
+
+      {/* Scrollable Real Calendar Day Cells — ZERO per-cell Popover instances! */}
+      {flatDays.map((day) => {
+        const cellKey = `${habit.id}::${day.dateKey}`;
+        const log = logsByKey[cellKey] ?? null;
+        const isBeforeStart = day.dateKey < habit.startDate;
+        const isDisabled = day.isFuture || isBeforeStart;
+        const isScheduled = isHabitScheduledOnDate(
+          {
+            cadenceType: habit.cadenceType,
+            scheduledDays,
+            startDate: habit.startDate,
+          },
+          day.dateKey
+        );
+
+        return (
+          <HabitMatrixCell
+            key={day.dateKey}
+            habit={habit}
+            dateKey={day.dateKey}
+            isWeekBoundary={day.isWeekBoundary}
+            isToday={day.isToday}
+            isDisabled={isDisabled}
+            isBeforeStart={isBeforeStart}
+            isFuture={day.isFuture}
+            isScheduled={isScheduled}
+            readOnly={readOnly}
+            status={log?.status ?? null}
+            note={log?.note ?? null}
+            isLate={Boolean(log?.isBackfilledLate)}
+            onCycle={onCycle}
+            onOpenPopover={onOpenPopover}
+          />
+        );
+      })}
+
+      {/* Sticky Right Streak & Monthly % Summary */}
+      <td className="sticky right-0 z-10 border-b border-l border-border bg-card px-2.5 py-1.5 text-right align-middle group-hover:bg-accent/25">
+        <div className="flex items-center justify-end gap-2">
+          <span
+            title={`Current streak (best: ${summary?.bestStreak ?? 0}${
+              summary?.streakUnit === "weeks" ? "w" : "d"
+            })`}
+            className="mono-tabular inline-flex items-center gap-0.5 text-[11px] text-muted-foreground"
+          >
+            <Flame
+              className={cn(
+                "size-3",
+                (summary?.currentStreak ?? 0) > 0
+                  ? "text-reminder"
+                  : "text-muted-foreground/40"
+              )}
+            />
+            {summary?.currentStreak ?? 0}
+            {summary?.streakUnit === "weeks" ? "w" : "d"}
+          </span>
+          <span
+            className={cn(
+              "mono-tabular min-w-[34px] text-right text-xs font-semibold",
+              summary && summary.completionRate !== null
+                ? summary.completionRate >= 0.75
+                  ? "text-done"
+                  : summary.completionRate < 0.45
+                    ? "text-overdue"
+                    : "text-foreground"
+                : "text-muted-foreground"
+            )}
+          >
+            {pctText}
+          </span>
+        </div>
+      </td>
+    </tr>
+  );
+});
 
 export function HabitsMatrix({
   calendar,
@@ -234,17 +583,120 @@ export function HabitsMatrix({
   onSaveCellDetail,
   onInspectHabit,
 }: HabitsMatrixProps) {
-  const [openCellKey, setOpenCellKey] = useState<string | null>(null);
+  // Hoisted single shared Popover state (replaces 300-930+ per-cell Radix Popovers!)
+  const [activeCell, setActiveCell] = useState<{
+    habit: HabitRecord;
+    dateKey: string;
+  } | null>(null);
+  const anchorRef = useRef<{ getBoundingClientRect: () => DOMRect } | null>(
+    null
+  );
 
-  // Track which habits have at least one linked task in this month for the subtle icon
-  const linkedHabitIds = new Set<string>();
-  for (const key of Object.keys(linkedTaskByKey)) {
-    const habitId = key.split("::")[0];
-    if (habitId) linkedHabitIds.add(habitId);
-  }
+  const flatDays = useMemo<FlatCalendarDay[]>(
+    () =>
+      calendar.weeks.flatMap((week, wIdx) =>
+        week.days.map((day, dIdx) => ({
+          dateKey: day.dateKey,
+          isWeekBoundary: wIdx > 0 && dIdx === 0,
+          isToday: day.dateKey === todayDateKey,
+          isFuture: day.dateKey > todayDateKey,
+        }))
+      ),
+    [calendar.weeks, todayDateKey]
+  );
+
+  const linkedHabitIds = useMemo(() => {
+    const set = new Set<string>();
+    for (const key of Object.keys(linkedTaskByKey)) {
+      const habitId = key.split("::")[0];
+      if (habitId) set.add(habitId);
+    }
+    return set;
+  }, [linkedTaskByKey]);
+
+  const handleCycle = useCallback(
+    (habit: HabitRecord, dateKey: string, nextStatus: HabitLogStatus | null) => {
+      onCycleLog?.(habit, dateKey, nextStatus);
+    },
+    [onCycleLog]
+  );
+
+  const handleOpenPopover = useCallback(
+    (habit: HabitRecord, dateKey: string, anchorEl: HTMLButtonElement) => {
+      anchorRef.current = anchorEl;
+      setActiveCell({ habit, dateKey });
+    },
+    []
+  );
+
+  const activeCellKey = activeCell
+    ? `${activeCell.habit.id}::${activeCell.dateKey}`
+    : null;
+  const activeLog = activeCellKey ? (logsByKey[activeCellKey] ?? null) : null;
+  const activeLinkedTask = activeCellKey
+    ? (linkedTaskByKey[activeCellKey] ?? null)
+    : null;
 
   return (
     <section aria-label="Monthly habit matrix" className="space-y-2">
+      {/* Single Shared Hoisted Popover anchored dynamically to clicked cell */}
+      <Popover
+        open={activeCell !== null}
+        onOpenChange={(nextOpen) => {
+          if (!nextOpen) setActiveCell(null);
+        }}
+      >
+        <PopoverAnchor virtualRef={anchorRef as React.RefObject<HTMLElement>} />
+        {activeCell ? (
+          <PopoverContent
+            align="center"
+            side="bottom"
+            className="w-72 border-border bg-popover p-3 shadow-none"
+          >
+            {readOnly ? (
+              <div className="space-y-1.5">
+                <div className="flex items-center justify-between gap-2">
+                  <span className="truncate text-xs font-semibold text-foreground">
+                    {activeCell.habit.title}
+                  </span>
+                  <span className="mono-tabular text-[11px] text-muted-foreground">
+                    {activeCell.dateKey}
+                  </span>
+                </div>
+                <p className="text-xs leading-relaxed text-foreground">
+                  {activeLog?.note}
+                </p>
+                {activeLog?.isBackfilledLate ? (
+                  <p className="inline-flex items-center gap-1 text-[10px] text-muted-foreground">
+                    <Clock className="size-2.5" />
+                    Backfilled &gt;48h after date
+                  </p>
+                ) : null}
+              </div>
+            ) : (
+              <CellNotePopoverBody
+                key={`${activeCellKey}-${activeLog?.status ?? "none"}-${activeLog?.note ?? ""}`}
+                habit={activeCell.habit}
+                dateKey={activeCell.dateKey}
+                initialStatus={activeLog?.status ?? null}
+                initialNote={activeLog?.note ?? ""}
+                isBackfilledLate={Boolean(activeLog?.isBackfilledLate)}
+                linkedTask={activeLinkedTask}
+                onSave={(nextStatus, nextNote) =>
+                  onSaveCellDetail?.(
+                    activeCell.habit,
+                    activeCell.dateKey,
+                    nextStatus,
+                    nextNote
+                  )
+                }
+                onClose={() => setActiveCell(null)}
+              />
+            )}
+          </PopoverContent>
+        ) : null}
+      </Popover>
+
       <div className="overflow-x-auto rounded-md border border-border bg-card">
         <table className="w-full border-separate border-spacing-0 text-left">
           <thead>
@@ -345,340 +797,20 @@ export function HabitsMatrix({
           </thead>
 
           <tbody>
-            {habits.map((habit) => {
-              const scheduledDays = parseScheduledDaysJson(
-                habit.scheduledDaysJson
-              );
-              const summary = summaryByHabitId[habit.id];
-              const cadenceTag = formatCadenceTag(habit);
-              const hasLinkedTask = linkedHabitIds.has(habit.id);
-              const pctText =
-                summary && summary.completionRate !== null
-                  ? `${Math.round(summary.completionRate * 100)}%`
-                  : "—";
-
-              return (
-                <tr
-                  key={habit.id}
-                  className="group transition-colors hover:bg-accent/25"
-                >
-                  {/* Sticky Left Habit Info Column */}
-                  <th
-                    scope="row"
-                    className="sticky left-0 z-10 border-r border-b border-border bg-card px-3 py-1.5 font-normal group-hover:bg-accent/25"
-                  >
-                    {readOnly ? (
-                      <div className="flex min-h-9 w-full flex-col justify-center text-left md:min-h-7">
-                        <span className="flex items-center gap-1.5">
-                          <span className="max-w-[140px] truncate text-xs font-medium text-foreground sm:max-w-[175px]">
-                            {habit.title}
-                          </span>
-                          {habit.isArchived ? (
-                            <span className="shrink-0 rounded border border-border bg-muted px-1 py-0.5 text-[9px] font-medium text-muted-foreground">
-                              Archived
-                            </span>
-                          ) : null}
-                        </span>
-                        <span className="mt-0.5 flex items-center gap-1.5 text-[10px] text-muted-foreground">
-                          <span className="mono-tabular">{cadenceTag}</span>
-                          {habit.category ? (
-                            <>
-                              <span>·</span>
-                              <span className="max-w-[80px] truncate">
-                                {habit.category}
-                              </span>
-                            </>
-                          ) : null}
-                        </span>
-                      </div>
-                    ) : (
-                      <button
-                        type="button"
-                        onClick={() => onInspectHabit?.(habit)}
-                        className="flex min-h-9 w-full flex-col justify-center text-left focus:outline-none md:min-h-7"
-                      >
-                        <span className="flex items-center gap-1.5">
-                          <span className="max-w-[130px] truncate text-xs font-medium text-foreground sm:max-w-[165px]">
-                            {habit.title}
-                          </span>
-                          {habit.isArchived ? (
-                            <span className="shrink-0 rounded border border-border bg-muted px-1 py-0.5 text-[9px] font-medium text-muted-foreground">
-                              Archived
-                            </span>
-                          ) : null}
-                          {hasLinkedTask || habit.autoSyncDailyTask ? (
-                            <Link2
-                              aria-label="Linked with tasks"
-                              className="size-3 shrink-0 text-done"
-                            />
-                          ) : null}
-                        </span>
-                        <span className="mt-0.5 flex items-center gap-1.5 text-[10px] text-muted-foreground">
-                          <span className="mono-tabular">{cadenceTag}</span>
-                          {habit.category ? (
-                            <>
-                              <span>·</span>
-                              <span className="max-w-[80px] truncate">
-                                {habit.category}
-                              </span>
-                            </>
-                          ) : null}
-                        </span>
-                      </button>
-                    )}
-                  </th>
-
-                  {/* Scrollable Real Calendar Day Cells */}
-                  {calendar.weeks.flatMap((week, wIdx) =>
-                    week.days.map((day, dIdx) => {
-                      const cellKey = `${habit.id}::${day.dateKey}`;
-                      const log = logsByKey[cellKey] ?? null;
-                      const linkedTask = linkedTaskByKey[cellKey] ?? null;
-                      const isToday = day.dateKey === todayDateKey;
-                      const isFuture = day.dateKey > todayDateKey;
-                      const isBeforeStart = day.dateKey < habit.startDate;
-                      const isDisabled = isFuture || isBeforeStart;
-                      const isScheduled = isHabitScheduledOnDate(
-                        {
-                          cadenceType: habit.cadenceType,
-                          scheduledDays,
-                          startDate: habit.startDate,
-                        },
-                        day.dateKey
-                      );
-                      const isPopoverOpen = openCellKey === cellKey;
-                      const status = log?.status ?? null;
-                      const hasNote = Boolean(log?.note);
-                      const isLate = Boolean(log?.isBackfilledLate);
-
-                      const tooltipParts = [
-                        `${habit.title} · ${day.dateKey}`,
-                        isBeforeStart
-                          ? `Starts ${habit.startDate}`
-                          : isFuture
-                            ? "Future date"
-                            : status
-                              ? status.toUpperCase()
-                              : isScheduled
-                                ? "Unlogged (click to mark Done)"
-                                : "Off-day",
-                      ];
-                      if (hasNote && log?.note) {
-                        tooltipParts.push(`Note: ${log.note}`);
-                      }
-                      if (isLate) {
-                        tooltipParts.push("Backfilled >48h after date");
-                      }
-
-                      return (
-                        <td
-                          key={day.dateKey}
-                          className={cn(
-                            "border-b border-border p-0.5 text-center align-middle",
-                            wIdx > 0 && dIdx === 0 && "border-l border-border",
-                            isToday && "bg-reminder/8"
-                          )}
-                        >
-                          <Popover
-                            open={isPopoverOpen}
-                            onOpenChange={(nextOpen) =>
-                              setOpenCellKey(nextOpen ? cellKey : null)
-                            }
-                          >
-                            <PopoverAnchor asChild>
-                              <button
-                                type="button"
-                                disabled={isDisabled || (readOnly && !hasNote)}
-                                title={tooltipParts.join(" — ")}
-                                aria-label={`${habit.title} on ${day.dateKey}: ${
-                                  isBeforeStart
-                                    ? "before start date"
-                                    : isFuture
-                                      ? "future date"
-                                      : status ?? "unlogged"
-                                }`}
-                                data-habit-id={habit.id}
-                                data-date-key={day.dateKey}
-                                data-status={status ?? "unlogged"}
-                                onClick={(event) => {
-                                  if (isDisabled) return;
-                                  if (readOnly) {
-                                    if (hasNote) setOpenCellKey(cellKey);
-                                    return;
-                                  }
-                                  if (event.shiftKey) {
-                                    event.preventDefault();
-                                    setOpenCellKey(cellKey);
-                                    return;
-                                  }
-                                  onCycleLog?.(
-                                    habit,
-                                    day.dateKey,
-                                    nextCycleStatus(status)
-                                  );
-                                }}
-                                onContextMenu={(event) => {
-                                  if (isDisabled) return;
-                                  if (readOnly) {
-                                    if (hasNote) {
-                                      event.preventDefault();
-                                      setOpenCellKey(cellKey);
-                                    }
-                                    return;
-                                  }
-                                  event.preventDefault();
-                                  setOpenCellKey(cellKey);
-                                }}
-                                className={cn(
-                                  "relative mx-auto flex min-h-9 min-w-9 items-center justify-center rounded border transition-colors md:min-h-7 md:min-w-7",
-                                  isDisabled
-                                    ? "cursor-not-allowed border-transparent bg-transparent opacity-30"
-                                    : status === "done"
-                                      ? readOnly
-                                        ? "border-done/55 bg-done/15 text-done"
-                                        : "border-done/55 bg-done/15 text-done hover:bg-done/25"
-                                      : status === "missed"
-                                        ? readOnly
-                                          ? "border-overdue/45 bg-overdue/12 text-overdue"
-                                          : "border-overdue/45 bg-overdue/12 text-overdue hover:bg-overdue/20"
-                                        : status === "skipped"
-                                          ? readOnly
-                                            ? "border-border bg-muted text-muted-foreground"
-                                            : "border-border bg-muted text-muted-foreground hover:bg-accent"
-                                          : isScheduled
-                                            ? readOnly
-                                              ? "border-border/80 bg-background text-muted-foreground/40"
-                                              : "border-border/80 bg-background text-muted-foreground/40 hover:border-foreground/35 hover:bg-accent/70"
-                                            : readOnly
-                                              ? "border-dashed border-border/50 bg-transparent text-muted-foreground/25"
-                                              : "border-dashed border-border/50 bg-transparent text-muted-foreground/25 hover:border-border hover:bg-accent/40",
-                                  readOnly && !hasNote && "cursor-default"
-                                )}
-                              >
-                                {status === "done" ? (
-                                  <Check className="size-3.5 stroke-[2.4]" />
-                                ) : status === "missed" ? (
-                                  <X className="size-3.5 stroke-[2.2]" />
-                                ) : status === "skipped" ? (
-                                  <Minus className="size-3.5 stroke-[2.2]" />
-                                ) : !isDisabled && !isScheduled ? (
-                                  <span
-                                    aria-hidden="true"
-                                    className="size-1 rounded-full bg-muted-foreground/30"
-                                  />
-                                ) : null}
-
-                                {/* Tiny corner dot indicating micro-note */}
-                                {hasNote ? (
-                                  <span
-                                    aria-hidden="true"
-                                    className="absolute top-0.5 right-0.5 size-1.5 rounded-full bg-foreground"
-                                  />
-                                ) : null}
-
-                                {/* Subtle muted clock indicator for >48h retroactive backfills */}
-                                {isLate ? (
-                                  <Clock
-                                    aria-hidden="true"
-                                    className="absolute right-0.5 bottom-0.5 size-2.5 text-muted-foreground/75"
-                                  />
-                                ) : null}
-                              </button>
-                            </PopoverAnchor>
-
-                            {isPopoverOpen ? (
-                              <PopoverContent
-                                align="center"
-                                side="bottom"
-                                className="w-72 border-border bg-popover p-3 shadow-none"
-                              >
-                                {readOnly ? (
-                                  <div className="space-y-1.5">
-                                    <div className="flex items-center justify-between gap-2">
-                                      <span className="truncate text-xs font-semibold text-foreground">
-                                        {habit.title}
-                                      </span>
-                                      <span className="mono-tabular text-[11px] text-muted-foreground">
-                                        {day.dateKey}
-                                      </span>
-                                    </div>
-                                    <p className="text-xs leading-relaxed text-foreground">
-                                      {log?.note}
-                                    </p>
-                                    {isLate ? (
-                                      <p className="inline-flex items-center gap-1 text-[10px] text-muted-foreground">
-                                        <Clock className="size-2.5" />
-                                        Backfilled &gt;48h after date
-                                      </p>
-                                    ) : null}
-                                  </div>
-                                ) : (
-                                  <CellNotePopoverBody
-                                    key={`${cellKey}-${status ?? "none"}-${log?.note ?? ""}`}
-                                    habit={habit}
-                                    dateKey={day.dateKey}
-                                    initialStatus={status}
-                                    initialNote={log?.note ?? ""}
-                                    isBackfilledLate={isLate}
-                                    linkedTask={linkedTask}
-                                    onSave={(nextStatus, nextNote) =>
-                                      onSaveCellDetail?.(
-                                        habit,
-                                        day.dateKey,
-                                        nextStatus,
-                                        nextNote
-                                      )
-                                    }
-                                    onClose={() => setOpenCellKey(null)}
-                                  />
-                                )}
-                              </PopoverContent>
-                            ) : null}
-                          </Popover>
-                        </td>
-                      );
-                    })
-                  )}
-
-                  {/* Sticky Right Streak & Monthly % Summary */}
-                  <td className="sticky right-0 z-10 border-b border-l border-border bg-card px-2.5 py-1.5 text-right align-middle group-hover:bg-accent/25">
-                    <div className="flex items-center justify-end gap-2">
-                      <span
-                        title={`Current streak (best: ${summary?.bestStreak ?? 0}${
-                          summary?.streakUnit === "weeks" ? "w" : "d"
-                        })`}
-                        className="mono-tabular inline-flex items-center gap-0.5 text-[11px] text-muted-foreground"
-                      >
-                        <Flame
-                          className={cn(
-                            "size-3",
-                            (summary?.currentStreak ?? 0) > 0
-                              ? "text-reminder"
-                              : "text-muted-foreground/40"
-                          )}
-                        />
-                        {summary?.currentStreak ?? 0}
-                        {summary?.streakUnit === "weeks" ? "w" : "d"}
-                      </span>
-                      <span
-                        className={cn(
-                          "mono-tabular min-w-[34px] text-right text-xs font-semibold",
-                          summary && summary.completionRate !== null
-                            ? summary.completionRate >= 0.75
-                              ? "text-done"
-                              : summary.completionRate < 0.45
-                                ? "text-overdue"
-                                : "text-foreground"
-                            : "text-muted-foreground"
-                        )}
-                      >
-                        {pctText}
-                      </span>
-                    </div>
-                  </td>
-                </tr>
-              );
-            })}
+            {habits.map((habit) => (
+              <HabitMatrixRow
+                key={habit.id}
+                habit={habit}
+                flatDays={flatDays}
+                logsByKey={logsByKey}
+                summary={summaryByHabitId[habit.id]}
+                hasLinkedTask={linkedHabitIds.has(habit.id)}
+                readOnly={readOnly}
+                onCycle={handleCycle}
+                onOpenPopover={handleOpenPopover}
+                onInspectHabit={onInspectHabit}
+              />
+            ))}
           </tbody>
         </table>
       </div>

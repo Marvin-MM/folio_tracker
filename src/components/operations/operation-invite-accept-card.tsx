@@ -17,6 +17,8 @@ import {
   hardNavigateAfterSignOut,
   performSecureSignOut,
 } from "@/lib/client-sign-out";
+import { getBrowserQueryClient } from "@/lib/query/query-client";
+import { workspaceQueryKeys } from "@/lib/query/query-keys";
 import type { OperationInvitePreview } from "@/server/services/operation-share-service";
 
 interface OperationInviteAcceptCardProps {
@@ -86,6 +88,9 @@ export function OperationInviteAcceptCard({
         toast.error(result.error.message);
         return;
       }
+      await getBrowserQueryClient().invalidateQueries({
+        queryKey: workspaceQueryKeys.all,
+      });
       toast.success(`Access granted to "${preview.operationTitle}".`);
       router.push(`/app/operations/${result.data.operationId}`);
       router.refresh();

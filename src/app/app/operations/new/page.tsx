@@ -18,7 +18,7 @@ export default async function NewOperationPage({
 }: NewOperationPageProps) {
   const [{ user }, query] = await Promise.all([requireSession(), searchParams]);
   const timezone = user.timezone || "UTC";
-  const hub = await operationService.listOperationsHub(user.id);
+  const linkOptions = await operationService.getLinkOptions(user.id);
 
   const initialDomain: OperationDomain =
     query.domain &&
@@ -31,7 +31,7 @@ export default async function NewOperationPage({
       mode="create"
       timezone={timezone}
       initialDomain={initialDomain}
-      linkOptions={hub.linkOptions}
+      linkOptions={linkOptions}
     />
   );
 }

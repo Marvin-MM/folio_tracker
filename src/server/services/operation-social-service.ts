@@ -30,12 +30,20 @@ export class OperationSocialService {
   async followCreator(
     followerId: string,
     targetUserId: string
-  ): Promise<{ following: true; followerCount: number; targetHandle: string | null }> {
+  ): Promise<{
+    following: true;
+    followerCount: number;
+    targetHandle: string | null;
+    actorHandle: string | null;
+  }> {
     if (!followerId || !targetUserId || followerId === targetUserId) {
       throw new ValidationError("You cannot follow your own account.");
     }
 
-    const target = await this.users.getById(targetUserId);
+    const [target, actor] = await Promise.all([
+      this.users.getById(targetUserId),
+      this.users.getById(followerId),
+    ]);
     if (!target || target.isSuspended) {
       throw new NotFoundError("Creator not found.");
     }
@@ -48,23 +56,33 @@ export class OperationSocialService {
       following: true,
       followerCount: counts.followerCount,
       targetHandle: target.handle,
+      actorHandle: actor?.handle ?? null,
     };
   }
 
   async unfollowCreator(
     followerId: string,
     targetUserId: string
-  ): Promise<{ following: false; followerCount: number; targetHandle: string | null }> {
+  ): Promise<{
+    following: false;
+    followerCount: number;
+    targetHandle: string | null;
+    actorHandle: string | null;
+  }> {
     if (!followerId || !targetUserId) {
       throw new ValidationError("Invalid creator ID.");
     }
-    const target = await this.users.getById(targetUserId);
+    const [target, actor] = await Promise.all([
+      this.users.getById(targetUserId),
+      this.users.getById(followerId),
+    ]);
     await withDbRetry(() => this.social.unfollowUser(followerId, targetUserId));
     const counts = await this.social.getFollowCounts(targetUserId);
     return {
       following: false,
       followerCount: counts.followerCount,
       targetHandle: target?.handle ?? null,
+      actorHandle: actor?.handle ?? null,
     };
   }
 

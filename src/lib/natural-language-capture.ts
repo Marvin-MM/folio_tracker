@@ -1,4 +1,4 @@
-import * as chrono from "chrono-node";
+import * as chrono from "chrono-node/en";
 import { fromZonedTime, toZonedTime } from "date-fns-tz";
 
 export type CaptureEntityKind = "task" | "note";

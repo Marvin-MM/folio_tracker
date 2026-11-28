@@ -78,6 +78,7 @@ export const operationMembers = sqliteTable(
   (table) => [
     primaryKey({ columns: [table.operationId, table.userId] }),
     index("operation_members_user_role_idx").on(table.userId, table.role),
+    index("operation_members_granted_by_id_idx").on(table.grantedById),
     check(
       "operation_members_role_check",
       sql`${table.role} IN ('collaborator', 'viewer')`
@@ -125,6 +126,11 @@ export const operationInvitations = sqliteTable(
       table.targetEmail,
       table.status
     ),
+    index("operation_invitations_invited_by_id_idx").on(table.invitedById),
+    index("operation_invitations_status_expires_idx").on(
+      table.status,
+      table.expiresAt
+    ),
     check(
       "operation_invitations_role_check",
       sql`${table.role} IN ('collaborator', 'viewer')`
@@ -168,6 +174,8 @@ export const operationStepFlags = sqliteTable(
       table.status,
       table.createdAt
     ),
+    index("operation_step_flags_reporter_id_idx").on(table.reporterId),
+    index("operation_step_flags_resolved_by_id_idx").on(table.resolvedById),
     check(
       "operation_step_flags_status_check",
       sql`${table.status} IN ('open', 'resolved')`

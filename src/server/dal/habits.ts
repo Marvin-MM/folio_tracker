@@ -3,6 +3,8 @@ import {
   asc,
   desc,
   eq,
+  exists,
+  gt,
   gte,
   inArray,
   isNotNull,
@@ -145,6 +147,11 @@ export interface HabitRepository {
     options?: { includeArchived?: boolean },
     executor?: DbExecutor
   ): Promise<HabitRecord[]>;
+  listHabitsForUsers(
+    userIds: string[],
+    options?: { includeArchived?: boolean },
+    executor?: DbExecutor
+  ): Promise<HabitRecord[]>;
   getHabitForUser(
     userId: string,
     habitId: string,
@@ -226,6 +233,12 @@ export interface HabitRepository {
     endDateKey: string,
     executor?: DbExecutor
   ): Promise<HabitLogRecord[]>;
+  listLogsForUsersInRange(
+    userIds: string[],
+    startDateKey: string,
+    endDateKey: string,
+    executor?: DbExecutor
+  ): Promise<HabitLogRecord[]>;
   listLogNotesForRange(
     userId: string,
     startDateKey: string,
@@ -271,6 +284,18 @@ export interface HabitRepository {
     input: UpsertHabitMonthLockRowInput,
     executor?: DbExecutor
   ): Promise<HabitMonthLockRecord>;
+  unlockMonthAtomically(
+    input: {
+      userId: string;
+      yearMonth: string;
+      lockedAt: number | null;
+      unlockedAt: number;
+      unlockedUntil: number;
+      unlockReason: string | null;
+      updatedAt: number;
+    },
+    executor?: DbExecutor
+  ): Promise<HabitMonthLockRecord>;
   updateMonthLockPin(
     userId: string,
     input: {
@@ -280,6 +305,19 @@ export interface HabitRepository {
     },
     executor?: DbExecutor
   ): Promise<HabitTrackerSettingsRecord>;
+  recordPinFailureAtomically(
+    userId: string,
+    input: {
+      threshold: number;
+      lockDurationMs: number;
+      nowMs: number;
+    },
+    executor?: DbExecutor
+  ): Promise<{
+    failedAttempts: number;
+    lockedUntil: number | null;
+    lockedOut: boolean;
+  }>;
   updatePinFailureState(
     userId: string,
     input: {
@@ -303,8 +341,10 @@ export interface HabitRepository {
   ): Promise<LinkedHabitTaskSummary[]>;
   listNudgeUserCandidatesPage(
     limit: number,
-    offset: number
+    offset: number,
+    afterUserId?: string | null
   ): Promise<HabitNudgeUserCandidate[]>;
+  isUserActive(userId: string, executor?: DbExecutor): Promise<boolean>;
 }
 
 export class DrizzleHabitRepository implements HabitRepository {
@@ -314,7 +354,9 @@ export class DrizzleHabitRepository implements HabitRepository {
     userId: string,
     executor: DbExecutor = this.database
   ): Promise<HabitTrackerSettingsRecord> {
-    // Fast read-only path: avoids acquiring a SQLite write lock when settings already exist
+    // Strictly read-only: returns in-memory defaults when no row exists yet so
+    // read paths (/app/today, /app/habits, Circle views) NEVER acquire a SQLite write lock.
+    // Write methods use atomic `INSERT ... ON CONFLICT(user_id) DO UPDATE`.
     const [existing] = await executor
       .select()
       .from(habitTrackerSettings)
@@ -325,24 +367,27 @@ export class DrizzleHabitRepository implements HabitRepository {
       return existing;
     }
 
-    await executor
-      .insert(habitTrackerSettings)
-      .values({
-        userId,
-        updatedAt: Date.now(),
-      })
-      .onConflictDoNothing({ target: habitTrackerSettings.userId });
-
-    const [row] = await executor
-      .select()
-      .from(habitTrackerSettings)
-      .where(eq(habitTrackerSettings.userId, userId))
-      .limit(1);
-
-    if (!row) {
-      throw new Error("Failed to load habit tracker settings.");
-    }
-    return row;
+    return {
+      userId,
+      weekStartsOn: 1,
+      defaultCommentMode: "weekly_window",
+      defaultWindowStartDay: 6,
+      defaultWindowStartTime: "00:00",
+      defaultWindowEndDay: 0,
+      defaultWindowEndTime: "23:59",
+      defaultIntervalDays: null,
+      defaultIntervalAnchorDate: null,
+      defaultIntervalOpenHours: 24,
+      allowReactionsWhenLocked: true,
+      eveningCheckinTime: null,
+      monthLockEnabled: true,
+      monthLockGraceDays: 3,
+      monthLockPinHash: null,
+      monthLockPinSalt: null,
+      monthLockPinFailedAttempts: 0,
+      monthLockPinLockedUntil: null,
+      updatedAt: 0,
+    };
   }
 
   async updateSettings(
@@ -350,15 +395,21 @@ export class DrizzleHabitRepository implements HabitRepository {
     patch: UpdateHabitSettingsRowInput,
     executor: DbExecutor = this.database
   ): Promise<HabitTrackerSettingsRecord> {
-    await this.getOrCreateSettings(userId, executor);
-
+    const now = Date.now();
     const [updated] = await executor
-      .update(habitTrackerSettings)
-      .set({
+      .insert(habitTrackerSettings)
+      .values({
+        userId,
         ...patch,
-        updatedAt: Date.now(),
+        updatedAt: now,
       })
-      .where(eq(habitTrackerSettings.userId, userId))
+      .onConflictDoUpdate({
+        target: habitTrackerSettings.userId,
+        set: {
+          ...patch,
+          updatedAt: now,
+        },
+      })
       .returning();
 
     if (!updated) {
@@ -375,6 +426,24 @@ export class DrizzleHabitRepository implements HabitRepository {
     const predicate = options.includeArchived
       ? eq(habits.userId, userId)
       : and(eq(habits.userId, userId), eq(habits.isArchived, false));
+
+    return executor
+      .select()
+      .from(habits)
+      .where(predicate)
+      .orderBy(asc(habits.position), asc(habits.id));
+  }
+
+  async listHabitsForUsers(
+    userIds: string[],
+    options: { includeArchived?: boolean } = {},
+    executor: DbExecutor = this.database
+  ): Promise<HabitRecord[]> {
+    const unique = Array.from(new Set(userIds.filter(Boolean)));
+    if (unique.length === 0) return [];
+    const predicate = options.includeArchived
+      ? inArray(habits.userId, unique)
+      : and(inArray(habits.userId, unique), eq(habits.isArchived, false));
 
     return executor
       .select()
@@ -763,15 +832,43 @@ export class DrizzleHabitRepository implements HabitRepository {
 
     const freshKeys = generateEvenPositions(ordered.length);
     const now = Date.now();
+    const chunkSize = 200;
 
-    for (let i = 0; i < ordered.length; i++) {
+    for (let start = 0; start < ordered.length; start += chunkSize) {
+      const slice = ordered.slice(start, start + chunkSize);
+      const ids = slice.map((r) => r.id);
+      const caseParts = slice.map((row, idx) =>
+        sql`WHEN ${habits.id} = ${row.id} THEN ${freshKeys[start + idx]!}`
+      );
+      const caseExpr = sql`CASE ${sql.join(caseParts, sql` `)} ELSE ${habits.position} END`;
       await executor
         .update(habits)
-        .set({ position: freshKeys[i]!, updatedAt: now })
-        .where(and(eq(habits.id, ordered[i]!.id), eq(habits.userId, userId)));
+        .set({ position: caseExpr, updatedAt: now })
+        .where(and(inArray(habits.id, ids), eq(habits.userId, userId)));
     }
 
     return ordered.length;
+  }
+
+  async listLogsForUsersInRange(
+    userIds: string[],
+    startDateKey: string,
+    endDateKey: string,
+    executor: DbExecutor = this.database
+  ): Promise<HabitLogRecord[]> {
+    const unique = Array.from(new Set(userIds.filter(Boolean)));
+    if (unique.length === 0) return [];
+    return executor
+      .select()
+      .from(habitLogs)
+      .where(
+        and(
+          inArray(habitLogs.userId, unique),
+          gte(habitLogs.dateKey, startDateKey),
+          lte(habitLogs.dateKey, endDateKey)
+        )
+      )
+      .orderBy(asc(habitLogs.dateKey));
   }
 
   async listLogsForRange(
@@ -1092,6 +1189,51 @@ export class DrizzleHabitRepository implements HabitRepository {
     return saved;
   }
 
+  async unlockMonthAtomically(
+    input: {
+      userId: string;
+      yearMonth: string;
+      lockedAt: number | null;
+      unlockedAt: number;
+      unlockedUntil: number;
+      unlockReason: string | null;
+      updatedAt: number;
+    },
+    executor: DbExecutor = this.database
+  ): Promise<HabitMonthLockRecord> {
+    const [saved] = await executor
+      .insert(habitMonthLocks)
+      .values({
+        userId: input.userId,
+        yearMonth: input.yearMonth,
+        status: "unlocked_override",
+        lockedAt: input.lockedAt,
+        unlockedAt: input.unlockedAt,
+        unlockedUntil: input.unlockedUntil,
+        unlockReason: input.unlockReason,
+        unlockCount: 1,
+        updatedAt: input.updatedAt,
+      })
+      .onConflictDoUpdate({
+        target: [habitMonthLocks.userId, habitMonthLocks.yearMonth],
+        set: {
+          status: "unlocked_override",
+          lockedAt: sql`COALESCE(${habitMonthLocks.lockedAt}, ${input.lockedAt})`,
+          unlockedAt: input.unlockedAt,
+          unlockedUntil: input.unlockedUntil,
+          unlockReason: input.unlockReason,
+          unlockCount: sql`${habitMonthLocks.unlockCount} + 1`,
+          updatedAt: input.updatedAt,
+        },
+      })
+      .returning();
+
+    if (!saved) {
+      throw new Error("Failed to unlock habit month.");
+    }
+    return saved;
+  }
+
   async updateMonthLockPin(
     userId: string,
     input: {
@@ -1101,23 +1243,74 @@ export class DrizzleHabitRepository implements HabitRepository {
     },
     executor: DbExecutor = this.database
   ): Promise<HabitTrackerSettingsRecord> {
-    await this.getOrCreateSettings(userId, executor);
     const [updated] = await executor
-      .update(habitTrackerSettings)
-      .set({
+      .insert(habitTrackerSettings)
+      .values({
+        userId,
         monthLockPinHash: input.pinHash,
         monthLockPinSalt: input.pinSalt,
         monthLockPinFailedAttempts: 0,
         monthLockPinLockedUntil: null,
         updatedAt: input.nowMs,
       })
-      .where(eq(habitTrackerSettings.userId, userId))
+      .onConflictDoUpdate({
+        target: habitTrackerSettings.userId,
+        set: {
+          monthLockPinHash: input.pinHash,
+          monthLockPinSalt: input.pinSalt,
+          monthLockPinFailedAttempts: 0,
+          monthLockPinLockedUntil: null,
+          updatedAt: input.nowMs,
+        },
+      })
       .returning();
 
     if (!updated) {
       throw new Error("Failed to update habit month-lock PIN.");
     }
     return updated;
+  }
+
+  async recordPinFailureAtomically(
+    userId: string,
+    input: {
+      threshold: number;
+      lockDurationMs: number;
+      nowMs: number;
+    },
+    executor: DbExecutor = this.database
+  ): Promise<{
+    failedAttempts: number;
+    lockedUntil: number | null;
+    lockedOut: boolean;
+  }> {
+    const lockUntilValue = input.nowMs + input.lockDurationMs;
+    const initialLocked = input.threshold <= 1;
+    const [updated] = await executor
+      .insert(habitTrackerSettings)
+      .values({
+        userId,
+        monthLockPinFailedAttempts: initialLocked ? 0 : 1,
+        monthLockPinLockedUntil: initialLocked ? lockUntilValue : null,
+        updatedAt: input.nowMs,
+      })
+      .onConflictDoUpdate({
+        target: habitTrackerSettings.userId,
+        set: {
+          monthLockPinFailedAttempts: sql`CASE WHEN COALESCE(${habitTrackerSettings.monthLockPinFailedAttempts}, 0) + 1 >= ${input.threshold} THEN 0 ELSE COALESCE(${habitTrackerSettings.monthLockPinFailedAttempts}, 0) + 1 END`,
+          monthLockPinLockedUntil: sql`CASE WHEN COALESCE(${habitTrackerSettings.monthLockPinFailedAttempts}, 0) + 1 >= ${input.threshold} THEN ${lockUntilValue} ELSE ${habitTrackerSettings.monthLockPinLockedUntil} END`,
+          updatedAt: input.nowMs,
+        },
+      })
+      .returning({
+        failedAttempts: habitTrackerSettings.monthLockPinFailedAttempts,
+        lockedUntil: habitTrackerSettings.monthLockPinLockedUntil,
+      });
+
+    const failedAttempts = updated?.failedAttempts ?? input.threshold;
+    const lockedUntil = updated?.lockedUntil ?? null;
+    const lockedOut = lockedUntil !== null && lockedUntil > input.nowMs;
+    return { failedAttempts, lockedUntil, lockedOut };
   }
 
   async updatePinFailureState(
@@ -1130,13 +1323,21 @@ export class DrizzleHabitRepository implements HabitRepository {
     executor: DbExecutor = this.database
   ): Promise<void> {
     await executor
-      .update(habitTrackerSettings)
-      .set({
+      .insert(habitTrackerSettings)
+      .values({
+        userId,
         monthLockPinFailedAttempts: input.failedAttempts,
         monthLockPinLockedUntil: input.lockedUntil,
         updatedAt: input.nowMs,
       })
-      .where(eq(habitTrackerSettings.userId, userId));
+      .onConflictDoUpdate({
+        target: habitTrackerSettings.userId,
+        set: {
+          monthLockPinFailedAttempts: input.failedAttempts,
+          monthLockPinLockedUntil: input.lockedUntil,
+          updatedAt: input.nowMs,
+        },
+      });
   }
 
   async deleteLogForUser(
@@ -1190,64 +1391,81 @@ export class DrizzleHabitRepository implements HabitRepository {
   }
 
   /**
-   * Paginated lookup of users who have either an active habit with `preferredTime`
-   * OR an `eveningCheckinTime` configured, bounded to `LIMIT 200` for Vercel/Inngest scale.
+   * Keyset-paginated SQL lookup of active (non-suspended) users who have either
+   * an active habit with `preferredTime` OR an `eveningCheckinTime` configured.
    */
   async listNudgeUserCandidatesPage(
     limit = 200,
-    offset = 0
+    offset = 0,
+    afterUserId?: string | null
   ): Promise<HabitNudgeUserCandidate[]> {
-    const [habitUsers, eveningUsers] = await Promise.all([
-      this.database
-        .selectDistinct({ userId: habits.userId })
-        .from(habits)
-        .where(
-          and(eq(habits.isArchived, false), isNotNull(habits.preferredTime))
+    const conditions = [
+      eq(users.isSuspended, false),
+      or(
+        exists(
+          this.database
+            .select({ one: habits.id })
+            .from(habits)
+            .where(
+              and(
+                eq(habits.userId, users.id),
+                eq(habits.isArchived, false),
+                isNotNull(habits.preferredTime)
+              )
+            )
         ),
-      this.database
-        .select({ userId: habitTrackerSettings.userId })
-        .from(habitTrackerSettings)
-        .where(isNotNull(habitTrackerSettings.eveningCheckinTime)),
-    ]);
+        exists(
+          this.database
+            .select({ one: habitTrackerSettings.userId })
+            .from(habitTrackerSettings)
+            .where(
+              and(
+                eq(habitTrackerSettings.userId, users.id),
+                isNotNull(habitTrackerSettings.eveningCheckinTime)
+              )
+            )
+        )
+      ),
+    ];
 
-    const candidateIds = Array.from(
-      new Set([
-        ...habitUsers.map((r) => r.userId),
-        ...eveningUsers.map((r) => r.userId),
-      ])
-    ).sort();
+    if (afterUserId) {
+      conditions.push(gt(users.id, afterUserId));
+    }
 
-    const pageIds = candidateIds.slice(offset, offset + limit);
-    if (pageIds.length === 0) return [];
+    const baseQuery = this.database
+      .select({
+        userId: users.id,
+        timezone: users.timezone,
+        eveningCheckinTime: habitTrackerSettings.eveningCheckinTime,
+      })
+      .from(users)
+      .leftJoin(
+        habitTrackerSettings,
+        eq(habitTrackerSettings.userId, users.id)
+      )
+      .where(and(...conditions))
+      .orderBy(asc(users.id))
+      .limit(limit);
 
-    const [userRows, settingsRows] = await Promise.all([
-      this.database
-        .select({ id: users.id, timezone: users.timezone })
-        .from(users)
-        .where(inArray(users.id, pageIds)),
-      this.database
-        .select({
-          userId: habitTrackerSettings.userId,
-          eveningCheckinTime: habitTrackerSettings.eveningCheckinTime,
-        })
-        .from(habitTrackerSettings)
-        .where(
-          and(
-            inArray(habitTrackerSettings.userId, pageIds),
-            or(isNotNull(habitTrackerSettings.eveningCheckinTime))
-          )
-        ),
-    ]);
+    const rows = afterUserId ? await baseQuery : await baseQuery.offset(offset);
 
-    const eveningMap = new Map(
-      settingsRows.map((s) => [s.userId, s.eveningCheckinTime])
-    );
-
-    return userRows.map((u) => ({
-      userId: u.id,
-      timezone: u.timezone || "UTC",
-      eveningCheckinTime: eveningMap.get(u.id) ?? null,
+    return rows.map((row) => ({
+      userId: row.userId,
+      timezone: row.timezone || "UTC",
+      eveningCheckinTime: row.eveningCheckinTime ?? null,
     }));
+  }
+
+  async isUserActive(
+    userId: string,
+    executor: DbExecutor = this.database
+  ): Promise<boolean> {
+    const [row] = await executor
+      .select({ isSuspended: users.isSuspended })
+      .from(users)
+      .where(eq(users.id, userId))
+      .limit(1);
+    return Boolean(row && !row.isSuspended);
   }
 }
 

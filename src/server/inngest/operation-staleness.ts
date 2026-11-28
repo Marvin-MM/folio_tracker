@@ -103,13 +103,18 @@ export async function dispatchStaleOperationsBatch(
   params: {
     limit?: number;
     offset?: number;
+    afterId?: string | null;
     nowMs?: number;
   } = {},
   deps: {
     social?: OperationsSocialRepository;
     eventBus?: EventBus;
   } = {}
-): Promise<{ candidatesChecked: number; eventsEmitted: number }> {
+): Promise<{
+  candidatesChecked: number;
+  eventsEmitted: number;
+  lastId: string | null;
+}> {
   const limit = params.limit ?? STALE_AUDIT_BATCH_SIZE;
   const offset = params.offset ?? 0;
   const nowMs = params.nowMs ?? Date.now();
@@ -119,10 +124,12 @@ export async function dispatchStaleOperationsBatch(
   const candidates = await socialRepo.listStaleOperationCandidatesPage(
     limit,
     offset,
-    nowMs
+    nowMs,
+    undefined,
+    params.afterId ?? null
   );
   if (candidates.length === 0) {
-    return { candidatesChecked: 0, eventsEmitted: 0 };
+    return { candidatesChecked: 0, eventsEmitted: 0, lastId: null };
   }
 
   const events: AppDomainEvent[] = candidates.map((op) => {
@@ -156,6 +163,7 @@ export async function dispatchStaleOperationsBatch(
   return {
     candidatesChecked: candidates.length,
     eventsEmitted: events.length,
+    lastId: candidates[candidates.length - 1]?.id ?? null,
   };
 }
 
@@ -255,21 +263,28 @@ export const operationStalenessAuditCronFn = inngest.createFunction(
     triggers: [{ cron: "0 7 * * *" }],
   },
   async ({ step }) => {
-    const nowMs = Date.now();
+    const nowMs = await step.run("capture-clock", () => Date.now());
     let totalChecked = 0;
     let totalEmitted = 0;
+    let cursor: string | null = null;
 
     for (let batch = 0; batch < MAX_BATCHES_PER_INVOCATION; batch += 1) {
-      const result = await step.run(`scan-stale-page-${batch}`, () =>
+      const batchCursor: string | null = cursor;
+      const result: {
+        candidatesChecked: number;
+        eventsEmitted: number;
+        lastId: string | null;
+      } = await step.run(`scan-stale-page-${batch}`, () =>
         dispatchStaleOperationsBatch({
           limit: STALE_AUDIT_BATCH_SIZE,
-          offset: batch * STALE_AUDIT_BATCH_SIZE,
+          afterId: batchCursor,
           nowMs,
         })
       );
       totalChecked += result.candidatesChecked;
       totalEmitted += result.eventsEmitted;
-      if (result.candidatesChecked < STALE_AUDIT_BATCH_SIZE) {
+      cursor = result.lastId;
+      if (result.candidatesChecked < STALE_AUDIT_BATCH_SIZE || !cursor) {
         break;
       }
     }

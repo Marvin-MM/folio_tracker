@@ -70,7 +70,7 @@ flowchart TB
 
 ## 2. SOLID Clean Layering & Dependency Direction
 
-Dependencies point strictly inward toward `src/server/db/` and `src/server/domain/`. Pure domain calculations (`operations/*`, `habit-analytics.ts`, `habit-month-lock.ts`, `comment-window-policy.ts`, `habit-import.ts`, `habit-evolution.ts`) have zero DB or network imports, while every service accepts repositories and providers via constructor injection (DIP) so all 33 Vitest suites (137 tests) execute offline against ephemeral SQLite databases.
+Dependencies point strictly inward toward `src/server/db/` and `src/server/domain/`. Pure domain calculations (`operations/*`, `habit-analytics.ts`, `habit-month-lock.ts`, `comment-window-policy.ts`, `habit-import.ts`, `habit-evolution.ts`) have zero DB or network imports, while every service accepts repositories and providers via constructor injection (DIP) so all 36 Vitest suites (153 tests) execute offline against ephemeral SQLite databases.
 
 ```mermaid
 flowchart LR
@@ -85,8 +85,8 @@ flowchart LR
   end
 
   subgraph Domain["Pure Domain & Service Orchestration"]
-    PURE["src/server/domain/ (habit-analytics, comment-window-policy — Zero I/O)"]
-    SVCS["src/server/services/ (14 ACID Services + Env Admin Role Sync — Zero Network I/O inside tx)"]
+    PURE["src/server/domain/ (operations, habit-analytics, habit-month-lock, comment-window-policy — Zero I/O)"]
+    SVCS["src/server/services/ (17 ACID Services + Env Admin Role Sync — Zero Network I/O inside tx)"]
   end
 
   subgraph DataAndPorts["Data Access & Provider Ports"]
@@ -95,7 +95,7 @@ flowchart LR
   end
 
   subgraph Foundations["Schema & Concrete Adapters"]
-    SCHEMA["src/server/db/ (31 Drizzle Tables, Relations, WAL Client, withDbRetry)"]
+    SCHEMA["src/server/db/ (35 Drizzle Tables, Migration 0010 Indexes, WAL + Embedded Replica Client, withDbRetry)"]
     ADAPT["External Adapters (Inngest v4, Resend, web-push, Upstash / ioredis / InMemory)"]
   end
 
@@ -546,35 +546,36 @@ sequenceDiagram
 
   User->>Proxy: Request /app/* or /invite/*
   Proxy-->>User: Attach Cache-Control private, no-store (redirect /app/* if no cookie)
-  Proxy->>Action: Forward to force-dynamic RSC / Action / Route
+  Proxy->>Action: Forward to cacheComponents RSC (<Suspense> shell) / Action / Route
 
   Action->>Action: Zod schema validation
-  Action->>Guard: requireSession() via Better Auth headers
-  Guard->>Turso: Validate live session & user
-  alt Unauthenticated
-    Guard-->>User: 401 Unauthorized or Redirect /login
+  Action->>Guard: requireSession() via Better Auth (cookieCache disabled -> 0s revocation)
+  Guard->>Turso: Validate live session & non-suspended user (React.cache per-request)
+  alt Unauthenticated or Suspended
+    Guard-->>User: 401/403 or Redirect /login (or /login?error=suspended)
   end
 
   Action->>Service: Invoke domain query or command
-  Service->>Guard: assertProjectRole() / canUserReadEntity() / assertActiveHabitMonitor()
-  Guard->>Turso: Direct PK/unique lookup (project_members or habit_monitors WHERE status='active')
+  Service->>Guard: assertProjectRole() / canUserReadEntity() / resolveOperationAccess() / assertActiveHabitMonitor()
+  Guard->>Turso: Direct single-RTT JOIN or PK lookup (zero Redis auth caching)
   alt Unauthorized, Revoked, or Cross-Tenant IDOR
-    Guard-->>User: 403 ForbiddenError (or 403 CommentWindowClosedError)
+    Guard-->>User: 403 ForbiddenError / 404 NotFoundError (private op isolation)
   end
 
-  Note over Service,Turso: Zero external network I/O inside db.transaction() ; SELECT-first reads avoid SQLite write locks
+  Note over Service,Turso: Zero external network I/O and zero Promise.all inside db.transaction()
   Service->>Turso: withDbRetry() -> BEGIN ACID transaction
   Service->>Turso: Tenant-scoped or selective-scope query/mutation (HabitMonitorReadDal strips unshared habits)
   Turso-->>Service: COMMIT
 
-  Service->>Ext: Post-commit side-effects (EventBus / UnreadCounterCache)
-  Action-->>User: ActionResult + revalidatePath()
+  Service->>Ext: Post-commit side-effects (EventBus / atomic Lua UnreadCounterCache)
+  Action-->>User: ActionResult + targeted updateTag() (public 'use cache' only) + client query invalidation
 ```
 
 **Authentication & Tenant Security Controls:**
-- **Environment-Gated Providers (Google-Only in Production):** Better Auth runs **Google OAuth exclusively in production** (`NODE_ENV === "production"`, hiding email/password UI, redirecting `/register`, `/forgot-password`, `/reset-password`, and `/verify-email` to `/login`, disabling `emailAndPassword`, and returning `403 AUTH_METHOD_DISABLED` on credential API endpoints) while keeping **both Email/Password and Google OAuth** active in local development. Better Auth enforces `requireEmailVerification: true`, `revokeSessionsOnPasswordReset: true`, `HttpOnly` / `SameSite=Lax` / `Secure` (prod) cookies, and open-redirect sanitization (`sanitizeCallbackUrl`).
-- **Env-Driven Admin Role Sync & Zero-Discovery Portal (`/app/admin`):** `ADMIN_EMAILS` (comma-separated allowlist, fail-closed when unset/empty) is reconciled automatically across 3 layers: Next.js Node boot (`src/instrumentation.ts`), Better Auth `databaseHooks.user.create/update` (paired with `input: false` on `role` and `isSuspended` to block mass-assignment), and live runtime enforcement (`requireAdmin()` / `resolveLiveAdminStatus()`). Matching **verified** users are promoted to `role = "admin"` and any admin removed from `ADMIN_EMAILS` is immediately demoted back to `role = "user"` without re-login. Non-admins never see the sidebar link, receive HTTP `404` with `"Not Found"` metadata on `/app/admin`, and receive HTTP `403` (`private, no-store`) on `/api/admin/overview` and admin Server Actions. Suspended users (`isSuspended = true`) have all sessions revoked and are blocked in `requireSession()`. Every operational admin action appends an immutable record to `admin_audit_logs` while enforcing a privacy boundary (aggregated KPIs, 14-day Recharts trends, live subsystem probes, and user metadata only — never exposing private task/note/habit bodies).
-- **Account Takeover Prevention:** `databaseHooks.account.create.before` ([auth-policy.ts](../src/server/auth-policy.ts)) rejects OAuth auto-linking into any pre-existing unverified credential account (`emailVerified === false`).
+- **Zero-Delay Live Revocation & Suspension:** Better Auth `session.cookieCache` is explicitly disabled (`enabled: false`), and `requireSession()` / `getOptionalSession()` / `resolveLiveUserShellStatus()` are wrapped in per-request `React.cache()` so revoked sessions and suspended accounts take effect in **0 seconds** across every Server Action, Route Handler, and RSC (routing suspended users cleanly to `/login?error=suspended` with zero redirect loop).
+- **Environment-Gated Providers (Google-Only in Production):** Better Auth runs **Google OAuth exclusively in production** (`NODE_ENV === "production"`, hiding email/password UI, redirecting `/register`, `/forgot-password`, `/reset-password`, and `/verify-email` to `/login`, disabling `emailAndPassword`, and returning `403 AUTH_METHOD_DISABLED` on credential API endpoints) while keeping **both Email/Password and Google OAuth** active in local development. Better Auth enforces lowercase email normalization, `requireEmailVerification: true`, `revokeSessionsOnPasswordReset: true`, `HttpOnly` / `SameSite=Lax` / `Secure` (prod) cookies, per-IP + per-email auth rate limiting (`Retry-After` + `X-RateLimit-*` headers on `429`), and open-redirect sanitization (`sanitizeCallbackUrl`).
+- **Env-Driven Admin Role Sync & Zero-Discovery Portal (`/app/admin`):** `ADMIN_EMAILS` (comma-separated allowlist, fail-closed when unset/empty) is reconciled automatically across 3 layers: Next.js Node boot (`src/instrumentation.ts`), Better Auth `databaseHooks.user.create/update` (paired with `input: false` on `role` and `isSuspended` to block mass-assignment), and `requireAdmin()`. Matching **verified** users are promoted to `role = "admin"` and any admin removed from `ADMIN_EMAILS` is immediately demoted back to `role = "user"` without re-login. Non-admins never see the sidebar link, receive HTTP `404` on `/app/admin`, and receive HTTP `403` (`private, no-store`) on `/api/admin/overview` and admin Server Actions. Suspended users (`isSuspended = true`) have all sessions revoked, public `'use cache'` entries immediately invalidated, and are blocked in `requireSession()`. Every operational admin action appends an immutable record to `admin_audit_logs` (`target_type`: `system | user | reminder | session`) while enforcing a privacy boundary (aggregated KPIs, 14-day Recharts trends, live subsystem probes, and user metadata only — never exposing private task/note/habit bodies).
+- **Account Takeover, IDOR & Anti-SSRF Prevention:** `databaseHooks.account.create.before` ([auth-policy.ts](../src/server/auth-policy.ts)) rejects OAuth auto-linking into any pre-existing unverified credential account (`emailVerified === false`); `updateMemberRole` strictly updates existing members only; Quick-Pick invites validate `targetUserId` against an authoritative server-side allowlist (followers, circle, or shared project co-members); Smart Dual Invites return uniform anti-enumeration responses (never exposing `inviteUrl`, `tokenHash`, or `targetUserId`); unauthenticated invite previews never serialize plaintext invitee emails; Web Push endpoints enforce strict `https://` + trusted push-service hostname allowlist (anti-SSRF); and `OperationRunService` gates `referenceNotes` strictly to owners while re-checking live operation access on every run read/mutation.
 - **Zero-Leak Selective Scope:** `DrizzleHabitMonitorReadDal` resolves `habit_monitors` + `habit_monitor_items` in Turso first and filters habits, logs, analytics, snapshots, and `target_habit_id` comments to `allowedHabitIds` before returning a payload—unshared habits never cross the DAL boundary.
 
 ---
@@ -756,15 +757,15 @@ flowchart TB
 
 Folio enforces a strict client-state split so navigating across Inbox, Today, Upcoming, Notes, Reminders, Projects, Habits, and Circle feels instantaneous (`0` redundant refetches inside the 60s stale window) without leaking tenant data across sessions:
 
-- **Server State (TanStack React Query v5 — `src/hooks/use-workspace-queries.ts`):** Every workspace view hydrates on initial SSR (`initialData` + `initialDataUpdatedAt`) and reads through authenticated `GET /api/workspace/*` routes (`bootstrap`, `tasks`, `notes`, `reminders`, `projects/[projectId]`, `habits`, `habits/circle`, `habits/circle/[ownerId]`), while `/app/admin` renders immediately behind `loading.tsx` + per-request `React.cache()` `requireAdmin()` deduplication and fetches section-scoped `GET /api/admin/overview?section=overview|users|timeline` (Turso `db.batch()` KPIs + SQL `GROUP BY` 14-day series + 1.5s-capped parallel health probes) without `revalidatePath` busting Next.js 16's 60s client Router Cache on exit. Keys are strictly user-scoped (`["workspace", userId, ...]`), hover/focus prefetching warms destination routes from `LeftRail` and `HabitsSubnav` (with `staleTime: 30_000` dedup), and mutations call targeted domain invalidation (`invalidateWorkspaceDomains()`) instead of shotgun `revalidatePath("/app", "layout")`. Switching Habits scoring modes (`Elapsed-to-Date` ↔ `Full Month`) recomputes purely on the client at `0ms` with `0` network calls.
+- **Server State (TanStack React Query v5 — `src/hooks/use-workspace-queries.ts`):** Every workspace view hydrates on initial SSR with client-clock `initialDataUpdatedAt` (immune to server/client clock skew), `placeholderData: keepPreviousData` on parameterized tabs/months, and reads through 13 authenticated `GET /api/workspace/*` routes (`bootstrap`, `tasks`, `notes`, `reminders`, `projects/[projectId]`, `habits`, `habits/circle`, `habits/circle/[ownerId]`, `operations`, `operations/[id]`, `operations/[id]/share`, `operations/runs/[runId]`, plus `POST /api/workspace/habits/import-history`), while `/app/admin` SSR-hydrates overview KPIs + 14-day series directly and lazy-fetches Users/Timeline tabs via `GET /api/admin/overview?section=users|timeline`. Keys are strictly user-scoped (`["workspace", userId, ...]`) with disambiguated roots (`habits-board` vs `habits-circle` vs `habits-friend`), hover/focus prefetching aligns `staleTime` to `60_000`, `WorkspaceChromeContext` is split into stable actions (`userId`, `openQuickCapture`) vs volatile data (`notifications`, `projects`, `timezone`) to eliminate shell-wide re-renders, and mutations call targeted `invalidateWorkspaceDomains()` without `/app/*` `revalidatePath()` calls. Service Worker quick-actions broadcast over `BroadcastChannel("folio-sw-sync")` to keep open tabs fresh, and `OperationRunnerView` tags offline queue entries with per-mutation IDs + `queuedAtMs` LWW ordering + concurrency mutex so mid-flight edits are never wiped.
 - **Unified Chronological Activity Timelines (`src/components/workspace/activity-timeline.tsx`):** A shared Warm Paper / Carbon Ink vertical day-grouped timeline component (`Today` / `Yesterday` / date headers, semantic tone nodes, actor initials, tabular/relative timestamps, category filter pills, and optional deep-link `Inspect` buttons) powers Project Detail (`Activity` tab with click-to-open `440px` Detail Sheet), the Admin Portal (`Activity Timeline` tab aggregating audits, signups, project milestones, and reminder deliveries), Reminders (`Recently triggered` newest-first day-grouped timeline), Accountability Circle (`Cycle Review` threaded spine), and the Notification Bell popover rail.
-- **Client UI State (Zustand v5 — `src/stores/workspace-ui-store.ts`):** Persists **only** harmless, non-PII layout preferences (`railCollapsed`, `habitsScoringMode`, `habitsShowArchived`) under `folio-ui-prefs` with `skipHydration: true` + post-mount rehydration. Ephemeral session state (`activeDetail`, `projectActiveTabs`, `quickCaptureOpen`, `mobileMenuOpen`, `isOnline`) stays in memory and resets on sign-out.
+- **Client UI State, Performance & Streaming (`src/stores/workspace-ui-store.ts`, `src/app/app/layout.tsx`):** Zustand persists **only** harmless, non-PII layout preferences (`railCollapsed` mirrored to cookie `folio-rail-collapsed` for 0 CLS, `habitsScoringMode`, `habitsShowArchived`) under `folio-ui-prefs` with `skipHydration: true`. Ephemeral session state (`activeDetail`, `projectActiveTabs`, `quickCaptureOpen`, `mobileMenuOpen`, `isOnline`) resets on sign-out, login, and `userId` transitions. Heavy surfaces are code-split per route (zero multi-route query barrels, `chrono-node/en`, lazy `next/dynamic` `DetailSheet`, `QuickCaptureDialog`, `SafeMarkdown`, Habit dialogs, and Recharts), `HabitsMatrix` uses a single hoisted `<Popover>` + `React.memo` rows/cells, and Next.js 16 `cacheComponents: true` routes wrap dynamic/session/URL reads inside explicit `<Suspense>` streaming shells with zero root `<Suspense fallback={null}>`.
 - **SEO, Procedural 3D Editorial Landing & Installed-PWA Isolation:** Public `/` serves a full-viewport Warm Paper / Carbon Ink editorial landing page backed by a zero-dependency procedural 3D dot-matrix `<canvas>` engine (`src/components/landing/dot-matrix-3d-engine.ts`, lazy-loaded via `next/dynamic` with `IntersectionObserver` + `visibilitychange` + `prefers-reduced-motion` guards and an elliptical copy quiet zone), a flush anchored bottom editorial sheet whose 3 interactive pillars morph the 3D sculpture (`Stacked Ledger Sheets`, `Curved 31-Day Matrix`, `Accountability Orbit`), a GPU-composited 3D perspective workspace stage (`PerspectiveStageCard`), `WebApplication` JSON-LD, dynamic `opengraph-image` / `twitter-image`, `robots.ts`, `sitemap.ts`, and canonical URL resolution (`NEXT_PUBLIC_SITE_URL ?? BETTER_AUTH_URL ?? "https://folio.renult.xyz"`). Private `/app/*` and `/invite/*` routes emit `noindex, nofollow, nocache`. When launched as an installed PWA (`display-mode: standalone` or iOS `navigator.standalone`), `manifest.ts` launches at `/app/inbox` (redirecting signed-out users directly to `/login`), CSS hides `[data-folio-landing="true"]`, `StandaloneRootGuard` immediately redirects `/` → `/login`, and `PwaLaunchSplash` displays a calm once-per-session launch curtain paired with 12 Light/Dark iOS startup images (`public/splash/`).
 
 ```mermaid
 flowchart TB
   subgraph Push["Shared-Device Sign-Out, Cache Wipe & Web Push Hygiene"]
-    SO["performSecureSignOut()"] --> CacheWipe["clearBrowserQueryClient() + clearAllOfflineRunCaches() + clearAllEphemeralRunSecrets() + resetSessionState()"]
+    SO["performSecureSignOut() (try/finally)"] --> CacheWipe["cancelAndClearBrowserQueryClient() + clearAllOfflineRunCaches() + clearAllEphemeralRunSecrets() + resetSessionState()"]
     CacheWipe --> SWCheck["navigator.serviceWorker.ready -> pushManager.getSubscription()"]
     SWCheck --> DelServer["removePushSubscriptionAction() — DELETE WHERE user_id=? AND endpoint=?"]
     DelServer --> Unsub["subscription.unsubscribe()"]
@@ -775,14 +776,14 @@ flowchart TB
 
   subgraph Order["Fractional Ordering (Tasks & Habits)"]
     Reord["create / reorder — ORDER BY position ASC, id ASC"] --> Len{"key.length > 32?"}
-    Len -->|No| SaveKey["Persist O(1) fractional position key"]
-    Len -->|Yes| Rebal["Transactional rebalancePositions() — compact base-36 keys in rank order"]
+    Len -->|No| SaveKey["Persist O(1) fractional position key (computed inside tx)"]
+    Len -->|Yes| Rebal["Transactional bulk CASE rebalancePositions() — compact base-36 keys in rank order"]
   end
 
   subgraph Offboard["Safe Account Offboarding"]
     DelAcc["AccountService.deleteAccount(userId)"] --> Sole{"Sole owner of shared project with members?"}
     Sole -->|Yes| Block["400 ValidationError (transfer or delete shared project first)"]
-    Sole -->|No| Sweep["ACID tx: collect scheduled reminders -> DELETE user (cascades all 26 tables) -> reset UnreadCounterCache -> emit cancellations"]
+    Sole -->|No| Sweep["ACID tx: reassign co-owned projects -> collect scheduled reminders & public slugs -> DELETE user (cascades all 35 tables) -> reset UnreadCounterCache -> bust public 'use cache' -> emit cancellations"]
   end
 ```
 
@@ -792,11 +793,11 @@ flowchart TB
 
 | Domain | Enforced Invariant |
 | :--- | :--- |
-| **ACID & SQLite Locking** | Multi-table mutations run in `db.transaction()`; zero external network I/O inside `tx`; `withDbRetry()` handles transient `SQLITE_BUSY` (`WAL` + `busy_timeout = 0`); settings reads (`getOrCreateSettings`) use a `SELECT`-first fast path to avoid write-lock escalation during parallel reads. |
-| **Zero TOCTOU** | Project invites, habit monitor requests, and reminder delivery claims execute single atomic conditional `UPDATE ... WHERE ... RETURNING *` statements. |
-| **Outbox & Deduplication** | Scheduled reminders persist `dispatched_at = NULL` and reconcile every 5m; reminders (`reminder-sched-{id}-v{v}`), habit nudges (`habit-nudge-{userId}-{dateKey}-{slot}`), and review digests (`habit-review-open-{monitorId}-{cycleKey}`) enforce deterministic event IDs + DB dedup checks. |
-| **Zero-Leak Isolation** | `assertProjectRole()`, `canUserReadEntity()`, and `habit_monitors` checks always hit Turso directly (zero Redis security cache); `DrizzleHabitMonitorReadDal` and `deliverHabitReviewDigestFn` strictly project only `allowedHabitIds` when `scope = 'selected'`. |
-| **Anti-Enumeration** | Email monitor invites return a uniform non-enumerating status regardless of whether the target email belongs to an existing account; token URLs use 32-byte CSPRNG values hashed with SHA-256 before persistence. |
-| **Vercel Scale** | All periodic crons (`far-future`, `outbox`, `habit-nudge`, `habit-review-digest`) enforce singleton `concurrency: { limit: 1 }` and loop `LIMIT 200` pages inside isolated `step.run()` steps; event-driven Inngest workers enforce `concurrency: { limit: INNGEST_CONCURRENCY_LIMIT }` (default `5`, Free-Plan safe) and `retries: 4`. |
+| **ACID, Indexing & SQLite Tuning** | Multi-table mutations run sequentially inside `db.transaction()` (zero external network I/O and zero `Promise.all` inside `tx`); `withDbRetry()` handles transient `SQLITE_BUSY`; awaited singleton `pragmasReady` enforces `PRAGMA foreign_keys = ON` + local WAL tuning (`synchronous=NORMAL`, `cache_size=-64000`, `temp_store=MEMORY`, `mmap_size=268435456`) with optional `TURSO_SYNC_URL` embedded replicas; Migration `0010` indexes all FKs, composite hot paths, and `notifications_dedup_system_uq`; `getOrCreateSettings` is 100% read-only. |
+| **Zero TOCTOU & Atomic Locks** | Project invites, habit/operation invites, reminder delivery claims, PIN failure lockouts (`pin_failed_attempts + 1`), and month unlocks (`unlock_count + 1`) execute single atomic conditional SQL `UPDATE/INSERT ... RETURNING *` statements; weakening month-lock settings requires current PIN verification. |
+| **Outbox, Retries & Determinism** | Scheduled reminders persist `dispatched_at = NULL`, reconcile via batched `markDispatchedBatch`, and guard `scheduleReminderFn` `cancelOn` by `version`; all background crons freeze `nowMs` inside `step.run("capture-clock")` and paginate by keyset cursor (`WHERE id > :cursor LIMIT 200`); `WebPushNotificationChannel` prunes `404`/`410` and re-throws retryable `5xx`/`429` errors so Inngest `retries: 4` fires; suspended users are skipped across all background channels. |
+| **Zero-Leak Isolation** | Better Auth `cookieCache` is disabled (`0s` revocation); `assertProjectRole()`, `canUserReadEntity()`, `resolveOperationAccess()`, and `habit_monitors` checks always hit Turso directly (zero Redis security cache); `TaskRepository` and `WorkspaceRepository` enforce active `project_members` checks on all project tasks; `DrizzleHabitMonitorReadDal` strictly projects `allowedHabitIds`; `OperationRunService` gates `referenceNotes` strictly to owners and re-checks access on every run read/mutation. |
+| **Anti-Enumeration & Anti-SSRF** | Both Habit Monitor and Operation email invites return uniform non-enumerating responses (never returning `inviteUrl`, `tokenHash`, or `targetUserId`); unauthenticated invite previews never expose raw invitee emails; Quick-Pick invites enforce a server-side allowlist; Web Push endpoints enforce `https://` + trusted push-service hostname allowlist; all `429` responses emit `Retry-After` and `X-RateLimit-*` headers. |
+| **Vercel & VPS Scale** | `getSidebarSummary()` executes in 2 batched RTTs, `listLinkOptionsForUser` in 1 `db.batch()`, `resolveOperationAccess` in 1 `LEFT JOIN`, and `listForOwner`/`listRunsForUser` compute step counts in SQL via `json_array_length`; all periodic crons enforce singleton `concurrency: { limit: 1 }` and keyset `LIMIT 200` pages; event-driven Inngest workers enforce `concurrency: { limit: INNGEST_CONCURRENCY_LIMIT }` (default `5`) and `retries: 4`. |
 | **Edge & Client Cache Isolation** | Public discovery routes (`/explore`, `/ops/[slug]` public, `/u/[handle]`) leverage Next.js 16 `cacheComponents: true` + native `'use cache'` (`cacheTag` + `updateTag`/`revalidateTag(..., 'max')`) strictly over stripped public DTOs; ZERO `unstable_cache` is used. Every `/app/*`, `/invite/*`, `/api/*`, and unlisted `/ops/*?token=` response enforces `Cache-Control: private, no-store` alongside strict CSP & `X-Frame-Options: DENY`. Service Worker (`public/sw.js`) caches **only** public static shell assets and `/offline`. TanStack Query keys are user-scoped (`["workspace", userId, ...]`), Zustand persists zero PII, and `performSecureSignOut()` clears QueryClient + offline runs + ephemeral RAM secrets + Zustand + push subscription + hard-navigates to `/login`. |
 | **Design System & Scope** | `shadcn/ui` **Mira** in Warm Paper (Light) and Carbon Ink (Dark) honoring OS `prefers-color-scheme` by default, WCAG AA contrast (including dark-mode Recharts ticks), `Geist` + `Geist Mono tabular-nums`, zero glassmorphism, `>= 36px` mobile / `28px` desktop targets, Skip-to-main-content landmark focus, reduced-motion compliance, and strictly in-app sharing (zero PNG/canvas/image-card exports). |

@@ -1,27 +1,18 @@
 import type { Metadata } from "next";
 import { notFound } from "next/navigation";
-import { OperationDetailQueryView } from "@/components/operations/operations-query-views";
+import { OperationDetailQueryView } from "@/components/operations/operation-detail-query-view";
 import { getServerTimestampMs } from "@/lib/query/clock";
 import { requireSession } from "@/server/dal/auth-guard";
 import { ForbiddenError, NotFoundError } from "@/server/dal/errors";
 import { operationService } from "@/server/services/operation-service";
 
+export const metadata: Metadata = {
+  title: "Operation",
+};
 
 interface OperationDetailPageProps {
   params: Promise<{ id: string }>;
   searchParams: Promise<{ action?: string }>;
-}
-
-export async function generateMetadata({
-  params,
-}: OperationDetailPageProps): Promise<Metadata> {
-  try {
-    const [{ user }, { id }] = await Promise.all([requireSession(), params]);
-    const detail = await operationService.getOperationDetail(user.id, id);
-    return { title: detail.operation.title };
-  } catch {
-    return { title: "Operation" };
-  }
 }
 
 export default async function OperationDetailPage({

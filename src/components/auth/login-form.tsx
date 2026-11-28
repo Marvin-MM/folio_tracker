@@ -17,7 +17,10 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Separator } from "@/components/ui/separator";
 import { authClient } from "@/lib/auth-client";
+import { clearAllEphemeralRunSecrets } from "@/lib/ephemeral-run-secrets";
+import { cancelAndClearBrowserQueryClient } from "@/lib/query/query-client";
 import { sanitizeCallbackUrl } from "@/lib/redirect";
+import { useWorkspaceUIStore } from "@/stores/workspace-ui-store";
 
 interface LoginFormProps {
   callbackURL: string;
@@ -25,6 +28,7 @@ interface LoginFormProps {
   emailPasswordEnabled: boolean;
   resetSuccess?: boolean;
   verifiedSuccess?: boolean;
+  suspendedError?: boolean;
 }
 
 export function LoginForm({
@@ -33,6 +37,7 @@ export function LoginForm({
   emailPasswordEnabled,
   resetSuccess = false,
   verifiedSuccess = false,
+  suspendedError = false,
 }: LoginFormProps) {
   const router = useRouter();
   const safeCallback = sanitizeCallbackUrl(callbackURL);
@@ -66,6 +71,12 @@ export function LoginForm({
         return;
       }
 
+      // Clear any previous user's in-memory query cache, active detail sheet,
+      // and RAM-only secrets before soft-navigating into the newly authenticated session.
+      await cancelAndClearBrowserQueryClient();
+      clearAllEphemeralRunSecrets();
+      useWorkspaceUIStore.getState().resetSessionState();
+
       router.push(safeCallback);
       router.refresh();
     } catch {
@@ -90,6 +101,14 @@ export function LoginForm({
         </CardHeader>
 
         <CardContent className="space-y-3">
+          {suspendedError ? (
+            <div
+              role="alert"
+              className="rounded-md border border-overdue/30 bg-overdue/10 px-3 py-2 text-xs text-overdue"
+            >
+              This account has been suspended and cannot access Folio.
+            </div>
+          ) : null}
           <GoogleAuthButton
             callbackURL={safeCallback}
             googleEnabled={googleEnabled}
@@ -120,6 +139,15 @@ export function LoginForm({
       </CardHeader>
 
       <CardContent className="space-y-4">
+        {suspendedError ? (
+          <div
+            role="alert"
+            className="rounded-md border border-overdue/30 bg-overdue/10 px-3 py-2 text-xs text-overdue"
+          >
+            This account has been suspended and cannot access Folio.
+          </div>
+        ) : null}
+
         {resetSuccess ? (
           <div
             role="status"

@@ -67,6 +67,17 @@ const EPHEMERAL_INITIAL_STATE = {
  * - Server data NEVER lives in this store (owned strictly by TanStack Query).
  * - `resetSessionState()` clears all ephemeral session UI state on sign-out.
  */
+const RAIL_COOKIE_NAME = "folio-rail-collapsed";
+
+function writeRailCollapsedCookie(collapsed: boolean): void {
+  if (typeof document === "undefined") return;
+  try {
+    document.cookie = `${RAIL_COOKIE_NAME}=${collapsed ? "1" : "0"}; Path=/; Max-Age=31536000; SameSite=Lax`;
+  } catch {
+    // Ignore cookie write failures in restricted contexts
+  }
+}
+
 export const useWorkspaceUIStore = create<WorkspaceUIState>()(
   persist(
     (set) => ({
@@ -76,9 +87,16 @@ export const useWorkspaceUIStore = create<WorkspaceUIState>()(
       ...EPHEMERAL_INITIAL_STATE,
       isOnline: true,
 
-      setRailCollapsed: (railCollapsed) => set({ railCollapsed }),
+      setRailCollapsed: (railCollapsed) => {
+        writeRailCollapsedCookie(railCollapsed);
+        set({ railCollapsed });
+      },
       toggleRailCollapsed: () =>
-        set((state) => ({ railCollapsed: !state.railCollapsed })),
+        set((state) => {
+          const next = !state.railCollapsed;
+          writeRailCollapsedCookie(next);
+          return { railCollapsed: next };
+        }),
       setMobileMenuOpen: (mobileMenuOpen) => set({ mobileMenuOpen }),
       setQuickCaptureOpen: (quickCaptureOpen) => set({ quickCaptureOpen }),
       toggleQuickCapture: () =>

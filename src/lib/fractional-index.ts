@@ -40,13 +40,27 @@ export function generatePositionBetween(
     return `${a}${MID_CHAR}`;
   }
 
-  // Prepend before `b`
+  // Prepend before `b` — strictly `< b` even when `b` starts with leading `0`s
   if (!a && b) {
-    const firstIdx = charIndex(b[0]);
-    if (firstIdx > 1) {
-      return ALPHABET[Math.floor(firstIdx / 2)]!;
+    let zeroPrefixLen = 0;
+    while (zeroPrefixLen < b.length && b[zeroPrefixLen] === FIRST_CHAR) {
+      zeroPrefixLen += 1;
     }
-    return `${FIRST_CHAR}${MID_CHAR}`;
+
+    if (zeroPrefixLen === b.length) {
+      // Degenerate all-zero string (e.g. "0" or "00"): shrink if possible,
+      // otherwise force a key > MAX_POSITION_KEY_LENGTH to trigger rebalancing.
+      return b.length > 1
+        ? b.slice(0, -1)
+        : FIRST_CHAR.repeat(MAX_POSITION_KEY_LENGTH + 1);
+    }
+
+    const prefix = b.slice(0, zeroPrefixLen);
+    const nextIdx = charIndex(b[zeroPrefixLen]);
+    if (nextIdx > 1) {
+      return `${prefix}${ALPHABET[Math.floor(nextIdx / 2)]!}`;
+    }
+    return `${prefix}${FIRST_CHAR}${MID_CHAR}`;
   }
 
   // Find midpoint strictly between `a` and `b`

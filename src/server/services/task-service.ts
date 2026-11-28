@@ -9,6 +9,7 @@ import {
 } from "@/server/dal/auth-guard";
 import {
   ForbiddenError,
+  MonthLockedError,
   NotFoundError,
   ValidationError,
 } from "@/server/dal/errors";
@@ -41,7 +42,12 @@ import type {
   TaskRecord,
   TaskStatus,
 } from "@/server/db/schema";
-import { computeIsBackfilledLate } from "@/server/domain/habit-analytics";
+import {
+  buildMonthCalendar,
+  computeIsBackfilledLate,
+  getLocalDateKey,
+} from "@/server/domain/habit-analytics";
+import { evaluateMonthLockState } from "@/server/domain/habit-month-lock";
 import {
   defaultEventBus,
   type AppDomainEvent,
@@ -146,11 +152,36 @@ export class TaskService {
       return;
     }
 
+    const tz =
+      params.timezone ??
+      (await this.users.getById(userId, tx))?.timezone ??
+      "UTC";
+    const yearMonth = existing.habitDateKey.slice(0, 7);
+    const todayDateKey = getLocalDateKey(nowMs, tz);
+    const settings = await this.habits.getOrCreateSettings(userId, tx);
+    const lockRow = await this.habits.getMonthLock(userId, yearMonth, tx);
+    const lockState = evaluateMonthLockState({
+      yearMonth,
+      todayDateKey,
+      nowMs,
+      settings,
+      lockRow,
+    });
+    if (lockState.isLocked) {
+      const monthLabel = buildMonthCalendar(yearMonth, 1).monthLabel;
+      const reason =
+        lockState.phase === "locked_manual" ? "locked_manual" : "locked_auto";
+      throw new MonthLockedError({
+        yearMonth,
+        reason,
+        message:
+          reason === "locked_manual"
+            ? `${monthLabel} is locked and read-only. Unlock it first to change tasks linked to habits in that month.`
+            : `${monthLabel} auto-locked after your ${lockState.graceDays}-day grace window. Unlock it first to change tasks linked to habits in that month.`,
+      });
+    }
+
     if (nextStatus === "done") {
-      const tz =
-        params.timezone ??
-        (await this.users.getById(userId, tx))?.timezone ??
-        "UTC";
       const existingLog = await this.habits.getLogForHabitDay(
         userId,
         habit.id,
@@ -571,13 +602,12 @@ export class TaskService {
     }
     await this.assertCanMutateTask(existing, userId);
 
-    const nextPosition = generatePositionBetween(
-      bounds.prevPosition ?? null,
-      bounds.nextPosition ?? null
-    );
-
     return withDbRetry(() =>
       this.database.transaction(async (tx) => {
+        const nextPosition = generatePositionBetween(
+          bounds.prevPosition ?? null,
+          bounds.nextPosition ?? null
+        );
         const updated = existing.projectId
           ? await this.tasks.updateProjectTask(
               taskId,

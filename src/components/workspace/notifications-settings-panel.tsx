@@ -20,6 +20,7 @@ import {
 } from "@/components/ui/card";
 import { Label } from "@/components/ui/label";
 import { Switch } from "@/components/ui/switch";
+import { useInvalidateWorkspace } from "@/hooks/use-workspace-queries";
 import type { PushSubscriptionRecord } from "@/server/db/schema";
 
 interface NotificationsSettingsPanelProps {
@@ -100,6 +101,7 @@ export function NotificationsSettingsPanel({
   emailRemindersEnabled,
   timezone,
 }: NotificationsSettingsPanelProps) {
+  const invalidate = useInvalidateWorkspace();
   const env = useSyncExternalStore(
     emptySubscribe,
     getClientEnvSnapshot,
@@ -238,6 +240,7 @@ export function NotificationsSettingsPanel({
         .filter((r) => r.delivered)
         .map((r) => r.channel.replace("_", " "));
 
+      await invalidate(["notifications", "sidebar"]);
       toast.success(
         delivered.length > 0
           ? `Test reminder dispatched via: ${delivered.join(", ")}.`

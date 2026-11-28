@@ -1,26 +1,17 @@
 import type { Metadata } from "next";
 import { notFound } from "next/navigation";
-import { OperationRunnerQueryView } from "@/components/operations/operations-query-views";
+import { OperationRunnerQueryView } from "@/components/operations/operation-runner-query-view";
 import { getServerTimestampMs } from "@/lib/query/clock";
 import { requireSession } from "@/server/dal/auth-guard";
 import { ForbiddenError, NotFoundError } from "@/server/dal/errors";
 import { operationRunService } from "@/server/services/operation-run-service";
 
+export const metadata: Metadata = {
+  title: "Operation Run",
+};
 
 interface OperationRunPageProps {
   params: Promise<{ runId: string }>;
-}
-
-export async function generateMetadata({
-  params,
-}: OperationRunPageProps): Promise<Metadata> {
-  try {
-    const [{ user }, { runId }] = await Promise.all([requireSession(), params]);
-    const detail = await operationRunService.getRunDetail(user.id, runId);
-    return { title: detail.run.title };
-  } catch {
-    return { title: "Operation Run" };
-  }
 }
 
 export default async function OperationRunPage({

@@ -35,17 +35,18 @@ export const workspaceQueryKeys = {
   projectsRoot: (userId: string) => ["workspace", userId, "projects"] as const,
   project: (userId: string, projectId: string) =>
     ["workspace", userId, "projects", projectId] as const,
-  habitsRoot: (userId: string) => ["workspace", userId, "habits"] as const,
+  habitsRoot: (userId: string) =>
+    ["workspace", userId, "habits-board"] as const,
   habitsMonth: (userId: string, yearMonth: string) =>
-    ["workspace", userId, "habits", "month", yearMonth] as const,
+    ["workspace", userId, "habits-board", "month", yearMonth] as const,
   habitsCircleRoot: (userId: string) =>
-    ["workspace", userId, "habits", "circle"] as const,
+    ["workspace", userId, "habits-circle"] as const,
   habitsCircle: (userId: string, cycleKey: string | null) =>
-    ["workspace", userId, "habits", "circle", cycleKey ?? "current"] as const,
+    ["workspace", userId, "habits-circle", cycleKey ?? "current"] as const,
   friendHabitsRoot: (userId: string, ownerId?: string) =>
     ownerId
-      ? (["workspace", userId, "habits", "friend", ownerId] as const)
-      : (["workspace", userId, "habits", "friend"] as const),
+      ? (["workspace", userId, "habits-friend", ownerId] as const)
+      : (["workspace", userId, "habits-friend"] as const),
   friendHabits: (
     userId: string,
     ownerId: string,
@@ -55,8 +56,7 @@ export const workspaceQueryKeys = {
     [
       "workspace",
       userId,
-      "habits",
-      "friend",
+      "habits-friend",
       ownerId,
       yearMonth ?? "current",
       cycleKey ?? "current",

@@ -21,6 +21,8 @@ import {
   hardNavigateAfterSignOut,
   performSecureSignOut,
 } from "@/lib/client-sign-out";
+import { getBrowserQueryClient } from "@/lib/query/query-client";
+import { workspaceQueryKeys } from "@/lib/query/query-keys";
 import type { InvitationPreviewResult } from "@/server/services/project-invite-service";
 
 interface InviteAcceptCardProps {
@@ -90,10 +92,7 @@ export function InviteAcceptCard({
     );
   }
 
-  const normalizedCurrentEmail = currentUser?.email.trim().toLowerCase() ?? null;
-  const emailMatches =
-    normalizedCurrentEmail !== null &&
-    normalizedCurrentEmail === preview.invitedEmailNormalized;
+  const emailMatches = currentUser !== null && preview.viewerEmailMatches;
 
   const handleAccept = () => {
     startTransition(async () => {
@@ -103,6 +102,9 @@ export function InviteAcceptCard({
         return;
       }
 
+      await getBrowserQueryClient().invalidateQueries({
+        queryKey: workspaceQueryKeys.all,
+      });
       toast.success(`Joined "${preview.projectName}"!`);
       router.push(`/app/projects/${result.data.projectId}`);
       router.refresh();

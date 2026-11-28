@@ -121,7 +121,7 @@ export function CreateHabitDialog({
         return;
       }
 
-      await invalidate(["habits", "today", "tasks", "sidebar", "admin"]);
+      await invalidate(["habits", "today", "tasks", "sidebar"]);
       toast.success(`Habit "${result.data.title}" added.`);
       handleOpenChange(false);
     });

@@ -692,12 +692,12 @@ export function ProjectWorkspaceView({
         ) : null}
 
         {/* Project Tabs: Tasks | Notes | Activity */}
-        <div
-          role="tablist"
-          aria-label="Project sections"
-          className="flex flex-wrap items-center justify-between gap-2 border-b border-border pb-2"
-        >
-          <div className="flex items-center gap-1">
+        <div className="flex flex-wrap items-center justify-between gap-2 border-b border-border pb-2">
+          <div
+            role="tablist"
+            aria-label="Project sections"
+            className="flex items-center gap-1"
+          >
             {(
               [
                 {
@@ -725,9 +725,11 @@ export function ProjectWorkspaceView({
               return (
                 <button
                   key={tab.key}
+                  id={`project-tab-${tab.key}`}
                   role="tab"
                   type="button"
                   aria-selected={selected}
+                  aria-controls={`project-panel-${tab.key}`}
                   onClick={() => setActiveTab(tab.key)}
                   className={cn(
                     "mira-row inline-flex items-center gap-1.5 rounded-md px-2.5 text-xs transition-colors",
@@ -762,7 +764,12 @@ export function ProjectWorkspaceView({
 
         {/* TAB 1: TASKS */}
         {activeTab === "tasks" ? (
-          <div className="space-y-3">
+          <div
+            id="project-panel-tasks"
+            role="tabpanel"
+            aria-labelledby="project-tab-tasks"
+            className="space-y-3"
+          >
             {/* Filters */}
             <div className="flex flex-wrap items-center justify-between gap-2">
               <div className="flex items-center gap-1">
@@ -930,16 +937,21 @@ export function ProjectWorkspaceView({
                               : `Complete "${task.title}"`
                           }
                           onClick={() => handleToggleTask(entry)}
-                          className={cn(
-                            "flex size-4 shrink-0 items-center justify-center rounded-[4px] border transition-colors disabled:cursor-not-allowed disabled:opacity-50",
-                            isDone
-                              ? "border-done bg-done text-primary-foreground"
-                              : "border-muted-foreground/50 bg-background hover:border-foreground"
-                          )}
+                          className="flex size-9 shrink-0 items-center justify-center rounded-md disabled:cursor-not-allowed disabled:opacity-50 md:size-6"
                         >
-                          {isDone ? (
-                            <Check className="size-2.5 stroke-[2.5]" />
-                          ) : null}
+                          <span
+                            aria-hidden="true"
+                            className={cn(
+                              "flex size-4 items-center justify-center rounded-[4px] border transition-colors",
+                              isDone
+                                ? "border-done bg-done text-primary-foreground"
+                                : "border-muted-foreground/50 bg-background hover:border-foreground"
+                            )}
+                          >
+                            {isDone ? (
+                              <Check className="size-2.5 stroke-[2.5]" />
+                            ) : null}
+                          </span>
                         </button>
 
                         <button
@@ -993,9 +1005,9 @@ export function ProjectWorkspaceView({
                             type="button"
                             onClick={() => handleDeleteTask(task.id)}
                             aria-label={`Delete "${task.title}"`}
-                            className="flex size-5 items-center justify-center rounded text-muted-foreground opacity-0 transition-opacity hover:bg-muted hover:text-overdue group-focus-within:opacity-100 group-hover:opacity-100"
+                            className="flex size-9 items-center justify-center rounded text-muted-foreground opacity-100 transition-opacity hover:bg-muted hover:text-overdue md:size-7 md:opacity-0 md:group-focus-within:opacity-100 md:group-hover:opacity-100"
                           >
-                            <Trash2 className="size-3" />
+                            <Trash2 className="size-3.5 md:size-3" />
                           </button>
                         ) : null}
                       </div>
@@ -1009,7 +1021,12 @@ export function ProjectWorkspaceView({
 
         {/* TAB 2: NOTES */}
         {activeTab === "notes" ? (
-          <div className="space-y-3">
+          <div
+            id="project-panel-notes"
+            role="tabpanel"
+            aria-labelledby="project-tab-notes"
+            className="space-y-3"
+          >
             <div className="grid gap-2 sm:grid-cols-[1fr_220px]">
               {canMutate ? (
                 <form
@@ -1144,17 +1161,23 @@ export function ProjectWorkspaceView({
 
         {/* TAB 3: CHRONOLOGICAL ACTIVITY TIMELINE */}
         {activeTab === "activity" ? (
-          <ActivityTimeline
-            items={filteredTimelineItems}
-            timezone={timezone}
-            referenceUtcMs={referenceUtcMs}
-            filters={timelineFilters}
-            activeFilter={activityFilter}
-            onFilterChange={setActivityFilter}
-            emptyTitle="No project activity recorded yet"
-            emptyDescription="Tasks, notes, invites, and membership changes appear here in chronological order."
-            ariaLabel="Project activity timeline"
-          />
+          <div
+            id="project-panel-activity"
+            role="tabpanel"
+            aria-labelledby="project-tab-activity"
+          >
+            <ActivityTimeline
+              items={filteredTimelineItems}
+              timezone={timezone}
+              referenceUtcMs={referenceUtcMs}
+              filters={timelineFilters}
+              activeFilter={activityFilter}
+              onFilterChange={setActivityFilter}
+              emptyTitle="No project activity recorded yet"
+              emptyDescription="Tasks, notes, invites, and membership changes appear here in chronological order."
+              ariaLabel="Project activity timeline"
+            />
+          </div>
         ) : null}
       </div>
 

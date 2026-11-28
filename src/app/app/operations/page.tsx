@@ -1,5 +1,5 @@
 import type { Metadata } from "next";
-import { OperationsHubQueryView } from "@/components/operations/operations-query-views";
+import { OperationsHubQueryView } from "@/components/operations/operations-hub-query-view";
 import { getServerTimestampMs } from "@/lib/query/clock";
 import { requireSession } from "@/server/dal/auth-guard";
 import { operationService } from "@/server/services/operation-service";

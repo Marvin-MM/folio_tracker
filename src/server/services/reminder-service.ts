@@ -422,16 +422,11 @@ export class ReminderService {
     expectedVersion: number
   ): Promise<ReminderRecord | null> {
     return withDbRetry(() =>
-      this.database.transaction(async (tx) => {
-        return this.reminders.claimForDelivery(
-          {
-            reminderId,
-            userId,
-            expectedVersion,
-            sentAt: this.now(),
-          },
-          tx
-        );
+      this.reminders.claimForDelivery({
+        reminderId,
+        userId,
+        expectedVersion,
+        sentAt: this.now(),
       })
     );
   }
@@ -442,16 +437,11 @@ export class ReminderService {
     expectedVersion: number
   ): Promise<ReminderRecord | null> {
     return withDbRetry(() =>
-      this.database.transaction(async (tx) => {
-        return this.reminders.cancelIfRevoked(
-          {
-            reminderId,
-            userId,
-            expectedVersion,
-            nowMs: this.now(),
-          },
-          tx
-        );
+      this.reminders.cancelIfRevoked({
+        reminderId,
+        userId,
+        expectedVersion,
+        nowMs: this.now(),
       })
     );
   }
@@ -515,18 +505,13 @@ export class ReminderService {
 
     const stampedAt = this.now();
     await withDbRetry(() =>
-      this.database.transaction(async (tx) => {
-        for (const row of promotedRows) {
-          await this.reminders.markDispatched(
-            {
-              reminderId: row.id,
-              expectedVersion: row.version,
-              dispatchedAt: stampedAt,
-            },
-            tx
-          );
-        }
-      })
+      this.reminders.markDispatchedBatch(
+        promotedRows.map((row) => ({
+          reminderId: row.id,
+          expectedVersion: row.version,
+        })),
+        stampedAt
+      )
     );
 
     return promotedRows.length;
@@ -556,18 +541,13 @@ export class ReminderService {
 
     const stampedAt = this.now();
     await withDbRetry(() =>
-      this.database.transaction(async (tx) => {
-        for (const row of undispatched) {
-          await this.reminders.markDispatched(
-            {
-              reminderId: row.id,
-              expectedVersion: row.version,
-              dispatchedAt: stampedAt,
-            },
-            tx
-          );
-        }
-      })
+      this.reminders.markDispatchedBatch(
+        undispatched.map((row) => ({
+          reminderId: row.id,
+          expectedVersion: row.version,
+        })),
+        stampedAt
+      )
     );
 
     return undispatched.length;

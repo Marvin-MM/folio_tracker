@@ -1,8 +1,10 @@
 import type { Metadata } from "next";
 import { notFound, redirect } from "next/navigation";
 import { AdminPortalView } from "@/components/admin/admin-portal-view";
+import { getServerTimestampMs } from "@/lib/query/clock";
 import { requireAdmin } from "@/server/dal/auth-guard";
 import { ForbiddenError, UnauthorizedError } from "@/server/dal/errors";
+import { adminService } from "@/server/services/admin-service";
 
 
 export const metadata: Metadata = {
@@ -26,10 +28,15 @@ export default async function AdminPortalPage() {
     throw error;
   }
 
+  const initialFetchedAtMs = getServerTimestampMs();
+  const initialData = await adminService.getOverviewSummary();
+
   return (
     <AdminPortalView
       currentUserId={user.id}
       timezone={user.timezone || "UTC"}
+      initialData={initialData}
+      initialFetchedAtMs={initialFetchedAtMs}
     />
   );
 }

@@ -29,6 +29,7 @@ const nextConfig: NextConfig = {
     formats: ["image/avif", "image/webp"],
   },
   experimental: {
+    optimizePackageImports: ["radix-ui", "lucide-react", "date-fns"],
     // Allow 60s client Router Cache reuse for visited dynamic App Router views
     // while TanStack Query manages fine-grained stale-while-revalidate & invalidation.
     staleTimes: {

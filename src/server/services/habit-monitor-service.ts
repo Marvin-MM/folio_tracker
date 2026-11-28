@@ -123,7 +123,7 @@ export type HabitInviteTokenPreview =
       ownerName: string;
       scope: HabitMonitorScope;
       invitedEmailMasked: string;
-      invitedEmailNormalized: string;
+      viewerEmailMatches: boolean;
       expiresAt: number;
     }
   | {
@@ -404,9 +404,54 @@ export class HabitMonitorService {
 
     const ownerTimezone = ownerProfile?.timezone || "UTC";
 
-    // Build compact friend cards with strictly scoped analytics
-    const monitoringOthers: MonitoringFriendCard[] = await Promise.all(
-      monitoringRaw.map(async (item) => {
+    // Batched analytics hydration: 2 queries total instead of 2N N+1 loop across monitored friends
+    const monitoredOwnerIds = Array.from(
+      new Set(monitoringRaw.map((item) => item.owner.id))
+    );
+    const todayByOwner = new Map<
+      string,
+      { todayKey: string; yearMonth: string; lookback: string }
+    >();
+    let globalMinLookback = "9999-12-31";
+    let globalMaxToday = "0000-01-01";
+    for (const item of monitoringRaw) {
+      const todayKey = getLocalDateKey(nowMs, item.owner.timezone);
+      const yearMonth = todayKey.slice(0, 7);
+      const lookback = addDaysToDateKey(`${yearMonth}-01`, -60);
+      todayByOwner.set(item.owner.id, { todayKey, yearMonth, lookback });
+      if (lookback < globalMinLookback) globalMinLookback = lookback;
+      if (todayKey > globalMaxToday) globalMaxToday = todayKey;
+    }
+
+    const [allMonitoredHabits, allMonitoredLogs] =
+      monitoredOwnerIds.length > 0
+        ? await Promise.all([
+            this.habits.listHabitsForUsers(monitoredOwnerIds, {
+              includeArchived: false,
+            }),
+            this.habits.listLogsForUsersInRange(
+              monitoredOwnerIds,
+              globalMinLookback,
+              globalMaxToday
+            ),
+          ])
+        : [[], []];
+
+    const habitsByOwner = new Map<string, HabitRecord[]>();
+    for (const h of allMonitoredHabits) {
+      const list = habitsByOwner.get(h.userId) ?? [];
+      list.push(h);
+      habitsByOwner.set(h.userId, list);
+    }
+    const logsByOwner = new Map<string, typeof allMonitoredLogs>();
+    for (const log of allMonitoredLogs) {
+      const list = logsByOwner.get(log.userId) ?? [];
+      list.push(log);
+      logsByOwner.set(log.userId, list);
+    }
+
+    const monitoringOthers: MonitoringFriendCard[] = monitoringRaw.map(
+      (item) => {
         const effectivePolicy = resolveEffectivePolicy(
           item.globalSettings,
           item.monitor
@@ -417,10 +462,7 @@ export class HabitMonitorService {
           nowMs
         );
 
-        const allOwnerHabits = await this.habits.listHabitsForUser(
-          item.owner.id,
-          { includeArchived: false }
-        );
+        const allOwnerHabits = habitsByOwner.get(item.owner.id) ?? [];
         const allowedSet =
           item.monitor.scope === "selected"
             ? new Set(item.selectedHabitIds)
@@ -431,22 +473,21 @@ export class HabitMonitorService {
             : allOwnerHabits.filter((h) => allowedSet.has(h.id));
         const scopedIds = new Set(scopedHabits.map((h) => h.id));
 
-        const todayKey = getLocalDateKey(nowMs, item.owner.timezone);
-        const yearMonth = todayKey.slice(0, 7);
-        const lookback = addDaysToDateKey(`${yearMonth}-01`, -60);
-        const rawLogs =
+        const dates = todayByOwner.get(item.owner.id)!;
+        const ownerLogs = logsByOwner.get(item.owner.id) ?? [];
+        const scopedLogs =
           scopedHabits.length > 0
-            ? await this.habits.listLogsForRange(
-                item.owner.id,
-                lookback,
-                todayKey
+            ? ownerLogs.filter(
+                (l) =>
+                  scopedIds.has(l.habitId) &&
+                  l.dateKey >= dates.lookback &&
+                  l.dateKey <= dates.todayKey
               )
             : [];
-        const scopedLogs = rawLogs.filter((l) => scopedIds.has(l.habitId));
 
         const analytics = computeHabitMonthAnalytics({
-          yearMonth,
-          todayDateKey: todayKey,
+          yearMonth: dates.yearMonth,
+          todayDateKey: dates.todayKey,
           weekStartsOn: item.globalSettings.weekStartsOn === 0 ? 0 : 1,
           scoringMode: "elapsed",
           habits: scopedHabits.map((h) => ({
@@ -485,7 +526,7 @@ export class HabitMonitorService {
           effectivePolicy,
           windowState,
         };
-      })
+      }
     );
 
     const myMonitors: MyMonitorListItem[] = myMonitorsRaw.map((monitor) => {
@@ -507,9 +548,22 @@ export class HabitMonitorService {
       (f) => f.windowState.isOpen
     ).length;
 
+    // Sanitize outgoing/incoming request payloads: never expose tokenHash or targetUserId
+    // and mask user-targeted emails so collaborator IDs cannot be abused for email harvesting.
+    const safeIncomingRequests = incomingRequests.map((req) => ({
+      ...req,
+      tokenHash: null,
+    }));
+    const safeOutgoingRequests = outgoingRequests.map((req) => ({
+      ...req,
+      tokenHash: null,
+      targetUserId: null,
+      targetEmail: req.targetUserId ? maskEmail(req.targetEmail) : req.targetEmail,
+    }));
+
     return {
-      incomingRequests,
-      outgoingRequests,
+      incomingRequests: safeIncomingRequests,
+      outgoingRequests: safeOutgoingRequests,
       monitoringOthers,
       myMonitors,
       knownCollaborators,
@@ -544,10 +598,23 @@ export class HabitMonitorService {
 
     const { request, ownerName, targetUser } = await withDbRetry(() =>
       this.database.transaction(async (tx) => {
+        const isCollaborator = await this.social.isProjectCollaborator(
+          ownerId,
+          input.targetUserId,
+          tx
+        );
+        if (!isCollaborator) {
+          throw new ForbiddenError(
+            "Quick-invite is only available for teammates who share an active project with you."
+          );
+        }
+
         const owner = await this.social.findUserById(ownerId, tx);
         const target = await this.social.findUserById(input.targetUserId, tx);
         if (!owner) throw new NotFoundError("Owner account not found.");
-        if (!target) throw new NotFoundError("Collaborator not found.");
+        if (!target || target.isSuspended || !target.emailVerified) {
+          throw new NotFoundError("Collaborator not found.");
+        }
 
         const normalizedEmail = target.email.trim().toLowerCase();
 
@@ -623,7 +690,12 @@ export class HabitMonitorService {
     });
 
     return {
-      request,
+      request: {
+        ...request,
+        tokenHash: null,
+        targetUserId: null,
+        targetEmail: maskEmail(request.targetEmail),
+      },
       message: `Monitor request sent to ${targetUser.name}.`,
     };
   }
@@ -669,10 +741,15 @@ export class HabitMonitorService {
           throw new ValidationError("You cannot invite yourself as a monitor.");
         }
 
-        const existingUser = await this.social.findUserByNormalizedEmail(
+        const foundUser = await this.social.findUserByNormalizedEmail(
           normalizedEmail,
           tx
         );
+        // Only link in-app to verified, non-suspended accounts
+        const existingUser =
+          foundUser && foundUser.emailVerified && !foundUser.isSuspended
+            ? foundUser
+            : null;
 
         if (existingUser) {
           const existingMonitor = await this.social.getActiveMonitor(
@@ -777,7 +854,10 @@ export class HabitMonitorService {
     };
   }
 
-  async previewTokenInvite(rawToken: string): Promise<HabitInviteTokenPreview> {
+  async previewTokenInvite(
+    rawToken: string,
+    viewerEmail?: string | null
+  ): Promise<HabitInviteTokenPreview> {
     const trimmed = rawToken.trim();
     if (!trimmed) return { status: "not_found" };
 
@@ -793,12 +873,16 @@ export class HabitMonitorService {
       return { status: "expired", ownerName };
     }
 
+    const invitedEmailNormalized = request.targetEmail.trim().toLowerCase();
+    const viewerNormalized = viewerEmail?.trim().toLowerCase() ?? null;
+
     return {
       status: "valid",
       ownerName,
       scope: request.scope,
       invitedEmailMasked: maskEmail(request.targetEmail),
-      invitedEmailNormalized: request.targetEmail.trim().toLowerCase(),
+      viewerEmailMatches:
+        viewerNormalized !== null && viewerNormalized === invitedEmailNormalized,
       expiresAt: request.expiresAt,
     };
   }
@@ -857,7 +941,6 @@ export class HabitMonitorService {
     }
 
     const nowMs = this.now();
-    const userEmail = authenticatedUser.email.trim().toLowerCase();
 
     return withDbRetry(() =>
       this.database.transaction(async (tx) => {
@@ -866,11 +949,9 @@ export class HabitMonitorService {
           throw new NotFoundError("Monitor request not found.");
         }
 
-        const isRecipient =
-          req.targetUserId === authenticatedUser.id ||
-          (req.targetUserId === null &&
-            req.targetEmail.trim().toLowerCase() === userEmail);
-        if (!isRecipient) {
+        // Strictly require `targetUserId === authenticatedUser.id` so external
+        // token-gated invites (`targetUserId === null`) cannot be claimed without the token.
+        if (req.targetUserId !== authenticatedUser.id) {
           throw new ForbiddenError("This monitor request belongs to another user.");
         }
 

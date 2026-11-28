@@ -2,6 +2,8 @@
 
 import { z } from "zod";
 import { requireSession } from "@/server/dal/auth-guard";
+import { RateLimitError } from "@/server/dal/errors";
+import { defaultRateLimiter } from "@/server/providers/redis/rate-limiter";
 import {
   HABIT_CADENCE_TYPES,
   HABIT_COMMENT_MODES,
@@ -103,6 +105,7 @@ const updateHabitSettingsSchema = z.object({
   eveningCheckinTime: optionalTimeSchema,
   monthLockEnabled: z.boolean().optional(),
   monthLockGraceDays: z.number().int().min(0).max(14).optional(),
+  currentPin: z.string().trim().max(12).optional(),
 });
 
 const pinSchema = z
@@ -497,6 +500,16 @@ export async function bulkImportHabitHistoryAction(
 
   try {
     const { user } = await requireSession();
+    const rate = await defaultRateLimiter.limit("habit_history_import", user.id);
+    if (!rate.allowed) {
+      throw new RateLimitError({
+        message: `Import rate limit reached. Please retry in ${rate.retryAfterSeconds}s.`,
+        retryAfterSeconds: rate.retryAfterSeconds,
+        limit: rate.limit,
+        remaining: rate.remaining,
+        resetAtMs: rate.resetAtMs,
+      });
+    }
     const timezone = user.timezone || "UTC";
     const source = parseHabitHistoryImport(parsed.data.rawText, {
       month: parsed.data.month,

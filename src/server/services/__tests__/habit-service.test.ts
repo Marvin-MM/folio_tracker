@@ -308,6 +308,7 @@ describe("HabitService ACID sync, tenant isolation, bulk import, and habit nudge
       getOrCreateSettings: habitRepo.getOrCreateSettings.bind(habitRepo),
       updateSettings: habitRepo.updateSettings.bind(habitRepo),
       listHabitsForUser: habitRepo.listHabitsForUser.bind(habitRepo),
+      listHabitsForUsers: habitRepo.listHabitsForUsers.bind(habitRepo),
       getHabitForUser: habitRepo.getHabitForUser.bind(habitRepo),
       getLastHabitPosition: habitRepo.getLastHabitPosition.bind(habitRepo),
       createHabit: habitRepo.createHabit.bind(habitRepo),
@@ -335,12 +336,16 @@ describe("HabitService ACID sync, tenant isolation, bulk import, and habit nudge
       listMonthLocksForMonths:
         habitRepo.listMonthLocksForMonths.bind(habitRepo),
       upsertMonthLock: habitRepo.upsertMonthLock.bind(habitRepo),
+      unlockMonthAtomically: habitRepo.unlockMonthAtomically.bind(habitRepo),
       updateMonthLockPin: habitRepo.updateMonthLockPin.bind(habitRepo),
+      recordPinFailureAtomically:
+        habitRepo.recordPinFailureAtomically.bind(habitRepo),
       updatePinFailureState: habitRepo.updatePinFailureState.bind(habitRepo),
       deleteHabitForUser: habitRepo.deleteHabitForUser.bind(habitRepo),
       rebalanceHabitPositions:
         habitRepo.rebalanceHabitPositions.bind(habitRepo),
       listLogsForRange: habitRepo.listLogsForRange.bind(habitRepo),
+      listLogsForUsersInRange: habitRepo.listLogsForUsersInRange.bind(habitRepo),
       listLogNotesForRange: habitRepo.listLogNotesForRange.bind(habitRepo),
       getLogForHabitDay: habitRepo.getLogForHabitDay.bind(habitRepo),
       deleteLogForUser: habitRepo.deleteLogForUser.bind(habitRepo),
@@ -348,6 +353,7 @@ describe("HabitService ACID sync, tenant isolation, bulk import, and habit nudge
         habitRepo.listLinkedTasksForRange.bind(habitRepo),
       listNudgeUserCandidatesPage:
         habitRepo.listNudgeUserCandidatesPage.bind(habitRepo),
+      isUserActive: habitRepo.isUserActive.bind(habitRepo),
       upsertLog: async () => {
         throw new Error("Simulated habit log upsert crash");
       },

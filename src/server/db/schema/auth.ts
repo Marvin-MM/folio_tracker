@@ -35,7 +35,10 @@ export const users = sqliteTable(
       .notNull()
       .$defaultFn(() => new Date()),
   },
-  (table) => [index("users_role_idx").on(table.role)]
+  (table) => [
+    index("users_role_idx").on(table.role),
+    index("users_created_at_idx").on(table.createdAt),
+  ]
 );
 
 export const sessions = sqliteTable(
@@ -58,7 +61,10 @@ export const sessions = sqliteTable(
       .notNull()
       .references(() => users.id, { onDelete: "cascade" }),
   },
-  (table) => [index("sessions_user_id_idx").on(table.userId)]
+  (table) => [
+    index("sessions_user_id_idx").on(table.userId),
+    index("sessions_expires_at_idx").on(table.expiresAt),
+  ]
 );
 
 export const accounts = sqliteTable(
@@ -115,7 +121,10 @@ export const verifications = sqliteTable(
       () => new Date()
     ),
   },
-  (table) => [index("verifications_identifier_idx").on(table.identifier)]
+  (table) => [
+    index("verifications_identifier_idx").on(table.identifier),
+    index("verifications_expires_at_idx").on(table.expiresAt),
+  ]
 );
 
 export type UserRecord = typeof users.$inferSelect;

@@ -61,7 +61,7 @@ export type InvitationPreviewResult =
       inviterName: string;
       role: InvitationRole;
       invitedEmailMasked: string;
-      invitedEmailNormalized: string;
+      viewerEmailMatches: boolean;
       expiresAt: number;
     }
   | {
@@ -244,7 +244,8 @@ export class ProjectInviteService {
   }
 
   async previewInvitationByToken(
-    rawToken: string
+    rawToken: string,
+    viewerEmail?: string | null
   ): Promise<InvitationPreviewResult> {
     const trimmed = rawToken.trim();
     if (!trimmed) {
@@ -275,6 +276,9 @@ export class ProjectInviteService {
       };
     }
 
+    const invitedEmailNormalized = invitation.email.trim().toLowerCase();
+    const viewerNormalized = viewerEmail?.trim().toLowerCase() ?? null;
+
     return {
       status: "valid",
       projectId: invitation.projectId,
@@ -282,7 +286,8 @@ export class ProjectInviteService {
       inviterName,
       role: invitation.role,
       invitedEmailMasked: maskEmail(invitation.email),
-      invitedEmailNormalized: invitation.email.trim().toLowerCase(),
+      viewerEmailMatches:
+        viewerNormalized !== null && viewerNormalized === invitedEmailNormalized,
       expiresAt: invitation.expiresAt,
     };
   }

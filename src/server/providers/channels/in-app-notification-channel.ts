@@ -23,7 +23,7 @@ export class InAppNotificationChannel implements NotificationChannel {
   async send(
     payload: NotificationPayload
   ): Promise<NotificationDispatchResult> {
-    const created = await this.repo.create({
+    const { notification, inserted } = await this.repo.createIdempotent({
       userId: payload.userId,
       type: payload.type,
       title: payload.title,
@@ -34,12 +34,21 @@ export class InAppNotificationChannel implements NotificationChannel {
         : payload.entityId,
     });
 
+    if (!inserted || !notification) {
+      return {
+        channel: this.name,
+        delivered: false,
+        skipped: true,
+        detail: "Duplicate notification suppressed.",
+      };
+    }
+
     await this.unreadCache.increment(payload.userId, 1);
 
     return {
       channel: this.name,
       delivered: true,
-      detail: created.id,
+      detail: notification.id,
     };
   }
 }

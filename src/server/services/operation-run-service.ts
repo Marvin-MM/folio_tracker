@@ -34,7 +34,7 @@ import {
   userRepository,
   type UserRepository,
 } from "@/server/dal/user-repository";
-import { db, withDbRetry, type AppDatabase } from "@/server/db";
+import { db, withDbRetry, type AppDatabase, type DbExecutor } from "@/server/db";
 import type {
   OperationDomain,
   OperationRecord,
@@ -108,6 +108,7 @@ export interface UpdateRunStepInput {
   stepKey: string;
   status: OperationRunStepStatus;
   note?: string | null;
+  queuedAtMs?: number;
 }
 
 export interface SyncOfflineRunMutationsInput {
@@ -124,6 +125,9 @@ export interface CompleteRunInput {
 export interface CompleteRunResult {
   run: OperationRunRecord;
   verifiedUpdated: boolean;
+  operationSlug?: string;
+  operationVisibility?: OperationRecord["visibility"];
+  ownerHandle?: string | null;
   habitAutoLogged: {
     habitId: string;
     habitTitle: string;
@@ -204,25 +208,95 @@ export class OperationRunService {
     return out;
   }
 
+  private async assertRunnerStillHasOperationAccess(
+    userId: string,
+    operation: OperationRecord,
+    executor: DbExecutor = this.database
+  ): Promise<void> {
+    if (operation.ownerId === userId) {
+      return;
+    }
+
+    if (operation.visibility === "private") {
+      // Private operations require live direct membership or active opt-in project membership.
+      await resolveOperationAccess(
+        { operationId: operation.id, sessionUserId: userId },
+        executor
+      );
+      return;
+    }
+
+    if (operation.visibility === "unlisted") {
+      // Unlisted runners keep access to their pinned run while the unlisted link remains active,
+      // or if they hold direct/project membership. Revoking/archiving immediately terminates access.
+      if (!operation.isArchived && operation.unlistedTokenHash) {
+        return;
+      }
+      await resolveOperationAccess(
+        { operationId: operation.id, sessionUserId: userId },
+        executor
+      );
+      return;
+    }
+
+    // Public operations remain accessible while published & unarchived, or to owner/members.
+    if (!operation.isArchived) {
+      return;
+    }
+    await resolveOperationAccess(
+      { operationId: operation.id, sessionUserId: userId },
+      executor
+    );
+  }
+
   private async assembleRunDetail(
     userId: string,
-    run: OperationRunRecord
+    run: OperationRunRecord,
+    preloaded?: {
+      operation?: OperationRecord;
+      pinnedVersionRow?: {
+        id: string;
+        versionNumber: number;
+        changeSummary: string | null;
+        createdAt: number;
+        variablesSchemaJson: string;
+        prerequisitesJson: string;
+        stepsSnapshotJson: string;
+      };
+      stepStates?: OperationRunStepRecord[];
+      accessAlreadyVerified?: boolean;
+    }
   ): Promise<OperationRunDetailPayload> {
-    const [operation, pinnedVersionRow, stepStates, referenceNotes] =
-      await Promise.all([
-        this.operations.getById(run.operationId),
-        this.operations.getVersionById(run.versionId),
-        this.operations.listRunSteps(run.id),
-        this.operations.listReferenceNotesForOperation(run.operationId),
-      ]);
+    const [operation, pinnedVersionRow, stepStates] = await Promise.all([
+      preloaded?.operation
+        ? Promise.resolve(preloaded.operation)
+        : this.operations.getById(run.operationId),
+      preloaded?.pinnedVersionRow
+        ? Promise.resolve(preloaded.pinnedVersionRow)
+        : this.operations.getVersionById(run.versionId),
+      preloaded?.stepStates
+        ? Promise.resolve(preloaded.stepStates)
+        : this.operations.listRunSteps(run.id),
+    ]);
 
     if (!operation || !pinnedVersionRow) {
       throw new NotFoundError("Operation run version is no longer available.");
     }
 
-    const linkedHabit = operation.linkedHabitId
-      ? await this.habits.getHabitForUser(userId, operation.linkedHabitId)
-      : null;
+    if (!preloaded?.accessAlreadyVerified) {
+      await this.assertRunnerStillHasOperationAccess(userId, operation);
+    }
+
+    const isOwner = operation.ownerId === userId;
+    const [referenceNotes, linkedHabit] = await Promise.all([
+      // SECURITY: Reference notes are owner-private workspace notes; NEVER leak to non-owners.
+      isOwner
+        ? this.operations.listReferenceNotesForOperation(run.operationId)
+        : Promise.resolve([]),
+      operation.linkedHabitId
+        ? this.habits.getHabitForUser(userId, operation.linkedHabitId)
+        : Promise.resolve(null),
+    ]);
 
     const variables = parseVariablesSchemaJson(
       pinnedVersionRow.variablesSchemaJson
@@ -338,18 +412,28 @@ export class OperationRunService {
           tx
         );
 
-        await this.operations.seedRunStepsBatch(
+        const seededSteps = await this.operations.seedRunStepsBatch(
           run.id,
           steps.map((s) => s.key),
           nowMs,
           tx
         );
 
-        return run;
+        return {
+          run,
+          operation,
+          latestVersion,
+          seededSteps,
+        };
       })
     );
 
-    return this.assembleRunDetail(userId, createdRun);
+    return this.assembleRunDetail(userId, createdRun.run, {
+      operation: createdRun.operation,
+      pinnedVersionRow: createdRun.latestVersion,
+      stepStates: createdRun.seededSteps,
+      accessAlreadyVerified: true,
+    });
   }
 
   async getRunDetail(
@@ -383,6 +467,12 @@ export class OperationRunService {
         if (existing.status !== "in_progress") {
           throw new ConflictError("Completed or abandoned runs cannot be modified.");
         }
+
+        const operation = await this.operations.getById(existing.operationId, tx);
+        if (!operation) {
+          throw new NotFoundError("Operation run version is no longer available.");
+        }
+        await this.assertRunnerStillHasOperationAccess(userId, operation, tx);
 
         const pinnedVersion = await this.operations.getVersionById(
           existing.versionId,
@@ -477,32 +567,57 @@ export class OperationRunService {
           throw new ConflictError("Completed or abandoned runs cannot be modified.");
         }
 
-        const pinnedVersion = await this.operations.getVersionById(
-          existing.versionId,
-          tx
-        );
-        if (!pinnedVersion) {
-          throw new NotFoundError("Pinned operation version not found.");
+        const operation = await this.operations.getById(existing.operationId, tx);
+        if (!operation) {
+          throw new NotFoundError("Operation run version is no longer available.");
         }
+        await this.assertRunnerStillHasOperationAccess(userId, operation, tx);
 
-        const steps = parseStepsSnapshotJson(pinnedVersion.stepsSnapshotJson);
-        const validStep = steps.some((s) => s.key === input.stepKey);
-        if (!validStep) {
-          throw new ValidationError(
-            `Step "${input.stepKey}" does not exist in this pinned version.`
-          );
-        }
+        const cleanNote =
+          input.note !== undefined ? input.note?.trim() || null : undefined;
 
-        const updatedStep = await this.operations.upsertRunStep(
+        // Fast path: seeded run steps exist for every valid stepKey in the
+        // pinned version, so updating directly avoids fetching & JSON-parsing
+        // `operation_versions.steps_snapshot_json` on every checkbox click.
+        let updatedStep = await this.operations.updateSeededRunStep(
           {
             runId,
             stepKey: input.stepKey,
             status: input.status,
-            note: input.note !== undefined ? input.note?.trim() || null : undefined,
+            note: cleanNote,
             nowMs,
           },
           tx
         );
+
+        if (!updatedStep) {
+          const pinnedVersion = await this.operations.getVersionById(
+            existing.versionId,
+            tx
+          );
+          if (!pinnedVersion) {
+            throw new NotFoundError("Pinned operation version not found.");
+          }
+
+          const steps = parseStepsSnapshotJson(pinnedVersion.stepsSnapshotJson);
+          const validStep = steps.some((s) => s.key === input.stepKey);
+          if (!validStep) {
+            throw new ValidationError(
+              `Step "${input.stepKey}" does not exist in this pinned version.`
+            );
+          }
+
+          updatedStep = await this.operations.upsertRunStep(
+            {
+              runId,
+              stepKey: input.stepKey,
+              status: input.status,
+              note: cleanNote,
+              nowMs,
+            },
+            tx
+          );
+        }
 
         await this.operations.updateRunPreflight(runId, userId, { nowMs }, tx);
         return updatedStep;
@@ -531,6 +646,12 @@ export class OperationRunService {
           throw new ConflictError("Completed or abandoned runs cannot sync offline edits.");
         }
 
+        const operation = await this.operations.getById(existing.operationId, tx);
+        if (!operation) {
+          throw new NotFoundError("Operation run version is no longer available.");
+        }
+        await this.assertRunnerStillHasOperationAccess(userId, operation, tx);
+
         const pinnedVersion = await this.operations.getVersionById(
           existing.versionId,
           tx
@@ -551,8 +672,37 @@ export class OperationRunService {
           )
         );
 
+        // Deduplicate & apply last-write-wins (LWW) ordering by `queuedAtMs`
+        // per stepKey so replayed offline queues preserve newest edits cleanly
+        // and never overwrite fresher server changes with stale mutations.
+        const existingSteps = await this.operations.listRunSteps(runId, tx);
+        const existingUpdatedAtByKey = new Map(
+          existingSteps.map((s) => [s.stepKey, s.updatedAt])
+        );
+
+        const latestByStepKey = new Map<string, UpdateRunStepInput>();
         for (const stepUpdate of input.stepUpdates ?? []) {
           if (!validStepKeys.has(stepUpdate.stepKey)) {
+            continue;
+          }
+          const prev = latestByStepKey.get(stepUpdate.stepKey);
+          if (
+            !prev ||
+            (stepUpdate.queuedAtMs ?? nowMs) >= (prev.queuedAtMs ?? 0)
+          ) {
+            latestByStepKey.set(stepUpdate.stepKey, stepUpdate);
+          }
+        }
+
+        for (const stepUpdate of latestByStepKey.values()) {
+          const existingUpdatedAt =
+            existingUpdatedAtByKey.get(stepUpdate.stepKey) ?? 0;
+          if (
+            typeof stepUpdate.queuedAtMs === "number" &&
+            stepUpdate.queuedAtMs > 0 &&
+            existingUpdatedAt > stepUpdate.queuedAtMs
+          ) {
+            // Skip stale offline mutation if server already has a newer edit
             continue;
           }
           const cleanNote =
@@ -565,7 +715,12 @@ export class OperationRunService {
               stepKey: stepUpdate.stepKey,
               status: stepUpdate.status,
               note: cleanNote,
-              nowMs,
+              nowMs:
+                typeof stepUpdate.queuedAtMs === "number" &&
+                stepUpdate.queuedAtMs > 0 &&
+                stepUpdate.queuedAtMs <= nowMs
+                  ? stepUpdate.queuedAtMs
+                  : nowMs,
             },
             tx
           );
@@ -607,11 +762,15 @@ export class OperationRunService {
         if (!refreshed) {
           throw new ConflictError("Run is no longer in progress.");
         }
-        return refreshed;
+        return { refreshed, operation, pinnedVersion };
       })
     );
 
-    return this.assembleRunDetail(userId, updatedRun);
+    return this.assembleRunDetail(userId, updatedRun.refreshed, {
+      operation: updatedRun.operation,
+      pinnedVersionRow: updatedRun.pinnedVersion,
+      accessAlreadyVerified: true,
+    });
   }
 
   async completeRun(
@@ -632,6 +791,15 @@ export class OperationRunService {
           throw new NotFoundError("Operation run not found.");
         }
 
+        const operation: OperationRecord | null = await this.operations.getById(
+          existing.operationId,
+          tx
+        );
+        if (!operation) {
+          throw new NotFoundError("Operation run version is no longer available.");
+        }
+        await this.assertRunnerStillHasOperationAccess(userId, operation, tx);
+
         const completedRun = await this.operations.completeRunAtomically(
           runId,
           userId,
@@ -642,15 +810,9 @@ export class OperationRunService {
           throw new ConflictError("This run is already completed or abandoned.");
         }
 
-        const operation: OperationRecord | null = await this.operations.getById(
-          completedRun.operationId,
-          tx
-        );
-
         let verifiedUpdated = false;
         if (
           input.markOperationVerified &&
-          operation &&
           operation.ownerId === userId
         ) {
           const stamped = await this.operations.updateOperationSimple(
@@ -667,7 +829,7 @@ export class OperationRunService {
 
         if (
           input.autoLogLinkedHabit !== false &&
-          operation?.linkedHabitId
+          operation.linkedHabitId
         ) {
           const linkedHabit = await this.habits.getHabitForUser(
             userId,
@@ -683,10 +845,12 @@ export class OperationRunService {
             const todayDateKey = getLocalDateKey(nowMs, timezone);
             const yearMonth = todayDateKey.slice(0, 7);
 
-            const [settings, lockRow] = await Promise.all([
-              this.habits.getOrCreateSettings(userId, tx),
-              this.habits.getMonthLock(userId, yearMonth, tx),
-            ]);
+            const settings = await this.habits.getOrCreateSettings(userId, tx);
+            const lockRow = await this.habits.getMonthLock(
+              userId,
+              yearMonth,
+              tx
+            );
 
             const lockState = evaluateMonthLockState({
               yearMonth,
@@ -716,10 +880,17 @@ export class OperationRunService {
                 tx
               );
 
-              await this.habits.upsertMonthRosterEntries(
-                [{ userId, habitId: linkedHabit.id, yearMonth }],
-                tx
-              );
+              // Only append to explicit month roster if user already opted into
+              // month rosters, so legacy implicit-roster users never lose visibility
+              // of their other habits for this month.
+              const usesExplicitRosters =
+                await this.habits.hasAnyMonthRosterForUser(userId, tx);
+              if (usesExplicitRosters) {
+                await this.habits.upsertMonthRosterEntries(
+                  [{ userId, habitId: linkedHabit.id, yearMonth }],
+                  tx
+                );
+              }
 
               await this.tasks.syncLinkedTasksForHabitDay(
                 {
@@ -741,9 +912,18 @@ export class OperationRunService {
           }
         }
 
+        let ownerHandle: string | null = null;
+        if (verifiedUpdated && operation.visibility === "public") {
+          const ownerRow = await this.users.getById(operation.ownerId, tx);
+          ownerHandle = ownerRow?.handle ?? null;
+        }
+
         return {
           run: completedRun,
           verifiedUpdated,
+          operationSlug: operation.slug,
+          operationVisibility: operation.visibility,
+          ownerHandle,
           habitAutoLogged,
           habitAutoLogSkippedReason,
         };
@@ -791,13 +971,15 @@ export class OperationRunService {
           throw new NotFoundError("Operation run not found.");
         }
 
-        const [operation, pinnedVersion] = await Promise.all([
-          this.operations.getById(run.operationId, tx),
-          this.operations.getVersionById(run.versionId, tx),
-        ]);
+        const operation = await this.operations.getById(run.operationId, tx);
+        const pinnedVersion = await this.operations.getVersionById(
+          run.versionId,
+          tx
+        );
         if (!operation || !pinnedVersion) {
           throw new NotFoundError("Operation run version not found.");
         }
+        await this.assertRunnerStillHasOperationAccess(userId, operation, tx);
 
         const steps = parseStepsSnapshotJson(pinnedVersion.stepsSnapshotJson);
         const step = steps.find((s) => s.key === input.stepKey);

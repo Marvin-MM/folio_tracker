@@ -1,4 +1,4 @@
-import { and, eq, inArray, notInArray, sql } from "drizzle-orm";
+import { and, eq, inArray, notInArray } from "drizzle-orm";
 import {
   getAdminEmailsFingerprint,
   parseAdminEmails,
@@ -47,7 +47,7 @@ export async function syncAdminRolesFromEnv(
             and(
               eq(users.emailVerified, true),
               eq(users.role, "user"),
-              inArray(sql`lower(${users.email})`, configuredEmails)
+              inArray(users.email, configuredEmails)
             )
           )
           .returning({ email: users.email });
@@ -60,7 +60,7 @@ export async function syncAdminRolesFromEnv(
           .where(
             and(
               eq(users.role, "admin"),
-              notInArray(sql`lower(${users.email})`, configuredEmails)
+              notInArray(users.email, configuredEmails)
             )
           )
           .returning({ email: users.email });

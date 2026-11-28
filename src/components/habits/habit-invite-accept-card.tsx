@@ -17,6 +17,8 @@ import {
   hardNavigateAfterSignOut,
   performSecureSignOut,
 } from "@/lib/client-sign-out";
+import { getBrowserQueryClient } from "@/lib/query/query-client";
+import { workspaceQueryKeys } from "@/lib/query/query-keys";
 import type { HabitInviteTokenPreview } from "@/server/services/habit-monitor-service";
 
 interface HabitInviteAcceptCardProps {
@@ -82,9 +84,7 @@ export function HabitInviteAcceptCard({
     );
   }
 
-  const emailMatches =
-    currentUser !== null &&
-    currentUser.email.trim().toLowerCase() === preview.invitedEmailNormalized;
+  const emailMatches = currentUser !== null && preview.viewerEmailMatches;
 
   const handleAccept = () => {
     startTransition(async () => {
@@ -93,6 +93,9 @@ export function HabitInviteAcceptCard({
         toast.error(result.error.message);
         return;
       }
+      await getBrowserQueryClient().invalidateQueries({
+        queryKey: workspaceQueryKeys.all,
+      });
       toast.success(`Joined ${preview.ownerName}'s Accountability Circle.`);
       router.push(`/app/habits/circle/${result.data.ownerId}`);
       router.refresh();

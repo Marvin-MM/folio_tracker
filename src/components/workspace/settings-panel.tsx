@@ -2,7 +2,6 @@
 
 import { useState, useSyncExternalStore, useTransition, type FormEvent } from "react";
 import Link from "next/link";
-import { useRouter } from "next/navigation";
 import { AlertTriangle, ArrowUpRight, Loader2, Trash2 } from "lucide-react";
 import { useTheme } from "next-themes";
 import { toast } from "sonner";
@@ -58,7 +57,6 @@ export function SettingsPanel({
   connectedProviders,
   timezoneOptions,
 }: SettingsPanelProps) {
-  const router = useRouter();
   const invalidate = useInvalidateWorkspace();
   const { theme, setTheme } = useTheme();
   const isMounted = useSyncExternalStore(
@@ -67,6 +65,7 @@ export function SettingsPanel({
     () => false
   );
   const [name, setName] = useState(profile.name);
+  const [savedHandle, setSavedHandle] = useState(profile.handle ?? null);
   const [handle, setHandle] = useState(profile.handle ?? "");
   const [bio, setBio] = useState(profile.bio ?? "");
   const [timezone, setTimezone] = useState(profile.timezone);
@@ -103,8 +102,8 @@ export function SettingsPanel({
         return;
       }
 
+      setSavedHandle(result.data.handle ?? null);
       await invalidate(["all"]);
-      router.refresh();
       toast.success("Preferences saved.");
     });
   };
@@ -177,12 +176,12 @@ export function SettingsPanel({
                 <Label htmlFor="settings-handle" className="text-xs">
                   Public creator handle (optional)
                 </Label>
-                {profile.handle ? (
+                {savedHandle ? (
                   <Link
-                    href={`/u/${profile.handle}`}
+                    href={`/u/${savedHandle}`}
                     className="inline-flex items-center gap-1 font-mono text-[11px] text-reminder hover:underline"
                   >
-                    /u/{profile.handle}
+                    /u/{savedHandle}
                     <ArrowUpRight className="size-3" />
                   </Link>
                 ) : null}

@@ -83,6 +83,7 @@ export const projectMembers = sqliteTable(
   (table) => [
     primaryKey({ columns: [table.projectId, table.userId] }),
     index("project_members_user_id_idx").on(table.userId),
+    index("project_members_user_role_idx").on(table.userId, table.role),
     check(
       "project_members_role_check",
       sql`${table.role} IN ('owner', 'editor', 'viewer')`
@@ -119,6 +120,11 @@ export const projectInvitations = sqliteTable(
       table.status
     ),
     index("project_invitations_email_status_idx").on(table.email, table.status),
+    index("project_invitations_invited_by_idx").on(table.invitedById),
+    index("project_invitations_status_expires_idx").on(
+      table.status,
+      table.expiresAt
+    ),
     check(
       "project_invitations_role_check",
       sql`${table.role} IN ('editor', 'viewer')`
@@ -179,15 +185,30 @@ export const tasks = sqliteTable(
       table.status,
       table.dueAt
     ),
+    index("tasks_user_project_pos_id_idx").on(
+      table.userId,
+      table.projectId,
+      table.position,
+      table.id
+    ),
+    index("tasks_user_habit_date_idx").on(table.userId, table.habitDateKey),
     index("tasks_project_status_position_idx").on(
       table.projectId,
       table.status,
       table.position
     ),
+    index("tasks_project_pos_id_idx").on(
+      table.projectId,
+      table.position,
+      table.id
+    ),
+    index("tasks_project_assignee_idx").on(table.projectId, table.assigneeId),
     index("tasks_assignee_status_idx").on(table.assigneeId, table.status),
     index("tasks_habit_date_idx").on(table.habitId, table.habitDateKey),
     index("tasks_operation_id_idx").on(table.operationId),
     index("tasks_operation_run_id_idx").on(table.operationRunId),
+    index("tasks_created_at_idx").on(table.createdAt),
+    index("tasks_status_completed_idx").on(table.status, table.completedAt),
     check(
       "tasks_status_check",
       sql`${table.status} IN ('todo', 'in_progress', 'done', 'archived')`
@@ -230,7 +251,18 @@ export const notes = sqliteTable(
       table.isPinned,
       table.updatedAt
     ),
+    index("notes_user_project_pinned_updated_idx").on(
+      table.userId,
+      table.projectId,
+      table.isPinned,
+      table.updatedAt
+    ),
     index("notes_project_updated_idx").on(table.projectId, table.updatedAt),
+    index("notes_project_pinned_updated_idx").on(
+      table.projectId,
+      table.isPinned,
+      table.updatedAt
+    ),
   ]
 );
 
@@ -259,6 +291,8 @@ export const projectActivities = sqliteTable(
       table.projectId,
       table.createdAt
     ),
+    index("project_activities_actor_id_idx").on(table.actorId),
+    index("project_activities_created_at_idx").on(table.createdAt),
   ]
 );
 

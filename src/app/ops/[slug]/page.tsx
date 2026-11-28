@@ -1,9 +1,11 @@
+import { Suspense } from "react";
 import type { Metadata } from "next";
-import { headers } from "next/headers";
 import { notFound } from "next/navigation";
+import { connection } from "next/server";
 import { GuestOperationRunner } from "@/components/operations/guest-operation-runner";
 import { PublicChrome } from "@/components/operations/public-chrome";
-import { auth } from "@/server/auth";
+import { Skeleton } from "@/components/ui/skeleton";
+import { getOptionalSession } from "@/server/dal/auth-guard";
 import { NotFoundError } from "@/server/dal/errors";
 import { resolveOperationAccess } from "@/server/dal/operation-auth";
 import { operationsSocialRepository } from "@/server/dal/operations-social";
@@ -62,18 +64,33 @@ export async function generateMetadata({
   };
 }
 
-export default async function PublicOperationPage({
+function PublicOperationSkeleton() {
+  return (
+    <div className="min-h-screen bg-background">
+      <div className="h-12 border-b border-border" />
+      <div className="mx-auto max-w-4xl space-y-4 px-4 py-8 md:px-6">
+        <Skeleton className="h-32 w-full rounded-lg" />
+        <Skeleton className="h-64 w-full rounded-lg" />
+      </div>
+    </div>
+  );
+}
+
+async function PublicOperationContent({
   params,
   searchParams,
 }: PublicOperationPageProps) {
+  await connection();
   const [{ slug }, { token }, session] = await Promise.all([
     params,
     searchParams,
-    auth.api.getSession({ headers: await headers() }),
+    getOptionalSession(),
   ]);
 
-  const sessionUserId = session?.user?.id ?? null;
-  const cleanToken = typeof token === "string" && token.trim() ? token.trim() : null;
+  const sessionUserId =
+    session && !session.user.isSuspended ? session.user.id : null;
+  const cleanToken =
+    typeof token === "string" && token.trim() ? token.trim() : null;
 
   // Path 1: Unlisted token access (direct Turso RBAC + timing-safe hash check, ZERO cache)
   if (cleanToken) {
@@ -132,5 +149,16 @@ export default async function PublicOperationPage({
         isOwner={sessionUserId === dto.creator.id}
       />
     </PublicChrome>
+  );
+}
+
+export default function PublicOperationPage({
+  params,
+  searchParams,
+}: PublicOperationPageProps) {
+  return (
+    <Suspense fallback={<PublicOperationSkeleton />}>
+      <PublicOperationContent params={params} searchParams={searchParams} />
+    </Suspense>
   );
 }

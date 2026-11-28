@@ -184,11 +184,11 @@ export const scheduleReminderFn = inngest.createFunction(
     cancelOn: [
       {
         event: "app/reminder.cancelled",
-        if: "async.data.reminderId == event.data.reminderId",
+        if: "async.data.reminderId == event.data.reminderId && async.data.version >= event.data.version",
       },
       {
         event: "app/reminder.rescheduled",
-        if: "async.data.reminderId == event.data.reminderId",
+        if: "async.data.reminderId == event.data.reminderId && async.data.version > event.data.version",
       },
     ],
   },

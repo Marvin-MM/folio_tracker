@@ -1,5 +1,5 @@
 import type { Metadata } from "next";
-import { HabitsCircleClient } from "@/components/habits/habits-query-views";
+import { HabitsCircleClient } from "@/components/habits/habits-circle-client";
 import { getServerTimestampMs } from "@/lib/query/clock";
 import { requireSession } from "@/server/dal/auth-guard";
 import { habitCommentService } from "@/server/services/habit-comment-service";

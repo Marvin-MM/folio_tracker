@@ -11,7 +11,6 @@ import {
   CardDescription,
   CardFooter,
   CardHeader,
-  CardTitle,
 } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -74,9 +73,9 @@ export function ResetPasswordForm({ token }: ResetPasswordFormProps) {
   return (
     <Card className="border-border bg-card shadow-none">
       <CardHeader className="space-y-1">
-        <CardTitle className="text-base font-semibold tracking-tight">
+        <h1 className="text-base font-semibold leading-none tracking-tight text-foreground">
           Choose a new password
-        </CardTitle>
+        </h1>
         <CardDescription className="text-xs text-muted-foreground">
           Updating your password automatically signs out all active sessions.
         </CardDescription>

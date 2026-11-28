@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useTransition } from "react";
+import { useState, useSyncExternalStore, useTransition } from "react";
 import Link from "next/link";
 import {
   AlertTriangle,
@@ -70,6 +70,10 @@ interface OperationShareModalProps {
   initialShareWithProject: boolean;
 }
 
+const subscribeOrigin = () => () => {};
+const getClientOrigin = () => window.location.origin;
+const getServerOrigin = () => "";
+
 export function OperationShareModal({
   open,
   onOpenChange,
@@ -96,13 +100,15 @@ export function OperationShareModal({
     useState<OperationMemberRole>("viewer");
   const [inviteEmail, setInviteEmail] = useState("");
   const [inviteRole, setInviteRole] = useState<OperationMemberRole>("viewer");
-  const [lastExternalInviteUrl, setLastExternalInviteUrl] = useState<
-    string | null
-  >(null);
   const [mintedUnlistedToken, setMintedUnlistedToken] = useState<string | null>(
     null
   );
   const [copiedKey, setCopiedKey] = useState<string | null>(null);
+  const origin = useSyncExternalStore(
+    subscribeOrigin,
+    getClientOrigin,
+    getServerOrigin
+  );
 
   // Secret Scanner gate state when flipping to Unlisted or Public
   const [pendingTargetVisibility, setPendingTargetVisibility] =
@@ -117,8 +123,6 @@ export function OperationShareModal({
     dashboard?.shareWithProject ?? initialShareWithProject;
   const slug = dashboard?.operationSlug ?? operationSlug;
 
-  const origin =
-    typeof window !== "undefined" ? window.location.origin : "";
   const publicUrl = `${origin}/ops/${slug}`;
   const unlistedShareUrl = mintedUnlistedToken
     ? `${origin}/ops/${slug}?token=${encodeURIComponent(mintedUnlistedToken)}`
@@ -246,7 +250,6 @@ export function OperationShareModal({
 
   const handleEmailInvite = () => {
     if (!inviteEmail.trim()) return;
-    setLastExternalInviteUrl(null);
     startTransition(async () => {
       const result = await inviteOperationByEmailAction({
         operationId,
@@ -258,7 +261,6 @@ export function OperationShareModal({
         return;
       }
       setInviteEmail("");
-      setLastExternalInviteUrl(result.data.inviteUrl);
       await invalidate(["operations"]);
       toast.success(result.data.message);
     });
@@ -318,9 +320,6 @@ export function OperationShareModal({
     setSecretWarnings([]);
     setPendingTargetVisibility(null);
     setAckWarningsChecked(false);
-    if (!nextOpen) {
-      setLastExternalInviteUrl(null);
-    }
     onOpenChange(nextOpen);
   };
 
@@ -813,30 +812,6 @@ export function OperationShareModal({
                     Invite
                   </Button>
                 </div>
-
-                {lastExternalInviteUrl ? (
-                  <div className="flex items-center gap-2 rounded-md border border-border bg-background p-2">
-                    <code className="flex-1 truncate font-mono text-[11px]">
-                      {lastExternalInviteUrl}
-                    </code>
-                    <Button
-                      type="button"
-                      size="sm"
-                      variant="outline"
-                      onClick={() =>
-                        copyText("ext-invite", lastExternalInviteUrl, "Invite URL")
-                      }
-                      className="h-7 gap-1 px-2 text-[11px]"
-                    >
-                      {copiedKey === "ext-invite" ? (
-                        <Check className="size-3 text-done" />
-                      ) : (
-                        <Copy className="size-3" />
-                      )}
-                      Copy link
-                    </Button>
-                  </div>
-                ) : null}
               </div>
             )}
           </section>

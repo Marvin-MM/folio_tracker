@@ -1,7 +1,7 @@
 import type { Metadata } from "next";
 import Link from "next/link";
 import { ShieldAlert } from "lucide-react";
-import { FriendHabitsClient } from "@/components/habits/habits-query-views";
+import { FriendHabitsClient } from "@/components/habits/friend-habits-client";
 import { HabitsSubnav } from "@/components/habits/habits-subnav";
 import { Button } from "@/components/ui/button";
 import { ViewHeader } from "@/components/workspace/view-header";

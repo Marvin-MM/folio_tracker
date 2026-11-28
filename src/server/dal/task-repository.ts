@@ -5,6 +5,7 @@ import {
   asc,
   desc,
   eq,
+  exists,
   gt,
   gte,
   inArray,
@@ -13,10 +14,12 @@ import {
   lte,
   ne,
   or,
+  sql,
 } from "drizzle-orm";
 import { generateEvenPositions } from "@/lib/fractional-index";
 import { db, type AppDatabase, type DbExecutor } from "@/server/db";
 import {
+  projectMembers,
   projects,
   reminders,
   tasks,
@@ -370,22 +373,27 @@ export class DrizzleTaskRepository implements TaskRepository {
 
     const freshKeys = generateEvenPositions(ordered.length);
     const now = Date.now();
+    const chunkSize = 200;
 
-    for (let i = 0; i < ordered.length; i++) {
-      const row = ordered[i]!;
-      const nextKey = freshKeys[i]!;
-      const rowPredicate =
+    for (let start = 0; start < ordered.length; start += chunkSize) {
+      const slice = ordered.slice(start, start + chunkSize);
+      const ids = slice.map((r) => r.id);
+      const caseParts = slice.map((row, idx) =>
+        sql`WHEN ${tasks.id} = ${row.id} THEN ${freshKeys[start + idx]!}`
+      );
+      const caseExpr = sql`CASE ${sql.join(caseParts, sql` `)} ELSE ${tasks.position} END`;
+      const chunkPredicate =
         scope.kind === "project"
-          ? and(eq(tasks.id, row.id), eq(tasks.projectId, scope.projectId))
+          ? and(inArray(tasks.id, ids), eq(tasks.projectId, scope.projectId))
           : and(
-              eq(tasks.id, row.id),
+              inArray(tasks.id, ids),
               eq(tasks.userId, scope.userId),
               isNull(tasks.projectId)
             );
       await executor
         .update(tasks)
-        .set({ position: nextKey, updatedAt: now })
-        .where(rowPredicate);
+        .set({ position: caseExpr, updatedAt: now })
+        .where(chunkPredicate);
     }
 
     return ordered.length;
@@ -634,12 +642,28 @@ export class DrizzleTaskRepository implements TaskRepository {
           )
         : lte(tasks.dueAt, endOfTodayMs);
 
+    const activeProjectMembershipPredicate = or(
+      isNull(tasks.projectId),
+      exists(
+        this.database
+          .select({ one: projectMembers.userId })
+          .from(projectMembers)
+          .where(
+            and(
+              eq(projectMembers.projectId, tasks.projectId),
+              eq(projectMembers.userId, userId)
+            )
+          )
+      )
+    );
+
     const rows = await this.database
       .select()
       .from(tasks)
       .where(
         and(
           eq(tasks.userId, userId),
+          activeProjectMembershipPredicate,
           inArray(tasks.status, ["todo", "in_progress"]),
           condition
         )
@@ -689,12 +713,28 @@ export class DrizzleTaskRepository implements TaskRepository {
           )
         : gt(tasks.dueAt, endOfTodayMs);
 
+    const activeProjectMembershipPredicate = or(
+      isNull(tasks.projectId),
+      exists(
+        this.database
+          .select({ one: projectMembers.userId })
+          .from(projectMembers)
+          .where(
+            and(
+              eq(projectMembers.projectId, tasks.projectId),
+              eq(projectMembers.userId, userId)
+            )
+          )
+      )
+    );
+
     const rows = await this.database
       .select()
       .from(tasks)
       .where(
         and(
           eq(tasks.userId, userId),
+          activeProjectMembershipPredicate,
           inArray(tasks.status, ["todo", "in_progress"]),
           condition
         )

@@ -1,9 +1,9 @@
 import { cache } from "react";
-import { and, eq } from "drizzle-orm";
+import { and, eq, inArray } from "drizzle-orm";
 import { headers } from "next/headers";
 import { isAdminEmail } from "@/server/admin-policy";
 import { auth, type BetterAuthSession } from "@/server/auth";
-import { db, type AppDatabase, type DbExecutor } from "@/server/db";
+import { db, withDbRetry, type AppDatabase, type DbExecutor } from "@/server/db";
 import {
   notes,
   projectMembers,
@@ -137,10 +137,6 @@ async function queryLiveUserShellStatus(
     };
   }
 
-  if (database === db) {
-    await ensureAdminRolesSyncedForCurrentEnv(database).catch(() => null);
-  }
-
   const [row] = await database
     .select({
       id: users.id,
@@ -181,15 +177,19 @@ async function queryLiveUserShellStatus(
   const allowedByEnv = row.emailVerified && isAdminEmail(row.email, rawAdminEnv);
 
   if (allowedByEnv && row.role !== "admin") {
-    await database
-      .update(users)
-      .set({ role: "admin", updatedAt: new Date() })
-      .where(eq(users.id, row.id));
+    await withDbRetry(() =>
+      database
+        .update(users)
+        .set({ role: "admin", updatedAt: new Date() })
+        .where(eq(users.id, row.id))
+    );
   } else if (!allowedByEnv && row.role === "admin") {
-    await database
-      .update(users)
-      .set({ role: "user", updatedAt: new Date() })
-      .where(eq(users.id, row.id));
+    await withDbRetry(() =>
+      database
+        .update(users)
+        .set({ role: "user", updatedAt: new Date() })
+        .where(eq(users.id, row.id))
+    );
   }
 
   return {
@@ -255,6 +255,9 @@ export async function requireAdmin(
   rawAdminEnv: string | undefined = process.env.ADMIN_EMAILS
 ): Promise<AuthenticatedContext> {
   const authContext = await requireSession(resolver);
+  if (database === db && rawAdminEnv === process.env.ADMIN_EMAILS) {
+    await ensureAdminRolesSyncedForCurrentEnv(database).catch(() => null);
+  }
   const status = await resolveLiveAdminStatus(
     authContext.user.id,
     database,
@@ -324,62 +327,103 @@ export async function canUserReadEntity(
   }
 
   if (hasTask && target.taskId) {
-    const [task] = await executor
+    const [row] = await executor
       .select({
-        userId: tasks.userId,
+        isSuspended: users.isSuspended,
+        ownerId: tasks.userId,
         projectId: tasks.projectId,
+        memberRole: projectMembers.role,
       })
       .from(tasks)
+      .innerJoin(users, eq(users.id, userId))
+      .leftJoin(
+        projectMembers,
+        and(
+          eq(projectMembers.projectId, tasks.projectId),
+          eq(projectMembers.userId, userId)
+        )
+      )
       .where(eq(tasks.id, target.taskId))
       .limit(1);
 
-    if (!task) return false;
-    if (task.projectId === null) {
-      return task.userId === userId;
+    if (!row || row.isSuspended) return false;
+    if (row.projectId === null) {
+      return row.ownerId === userId;
     }
-
-    const [membership] = await executor
-      .select({ role: projectMembers.role })
-      .from(projectMembers)
-      .where(
-        and(
-          eq(projectMembers.projectId, task.projectId),
-          eq(projectMembers.userId, userId)
-        )
-      )
-      .limit(1);
-
-    return Boolean(membership);
+    return row.memberRole !== null;
   }
 
   if (hasNote && target.noteId) {
-    const [note] = await executor
+    const [row] = await executor
       .select({
-        userId: notes.userId,
+        isSuspended: users.isSuspended,
+        ownerId: notes.userId,
         projectId: notes.projectId,
+        memberRole: projectMembers.role,
       })
       .from(notes)
-      .where(eq(notes.id, target.noteId))
-      .limit(1);
-
-    if (!note) return false;
-    if (note.projectId === null) {
-      return note.userId === userId;
-    }
-
-    const [membership] = await executor
-      .select({ role: projectMembers.role })
-      .from(projectMembers)
-      .where(
+      .innerJoin(users, eq(users.id, userId))
+      .leftJoin(
+        projectMembers,
         and(
-          eq(projectMembers.projectId, note.projectId),
+          eq(projectMembers.projectId, notes.projectId),
           eq(projectMembers.userId, userId)
         )
       )
+      .where(eq(notes.id, target.noteId))
       .limit(1);
 
-    return Boolean(membership);
+    if (!row || row.isSuspended) return false;
+    if (row.projectId === null) {
+      return row.ownerId === userId;
+    }
+    return row.memberRole !== null;
   }
 
   return false;
+}
+
+/**
+ * Batch-verifies in a single SQL round-trip that `userId` (non-suspended) can
+ * read every note ID in `noteIds` (either personal owned or active project member).
+ */
+export async function canUserReadAllNotes(
+  userId: string,
+  noteIds: readonly string[],
+  executor: DbExecutor = db
+): Promise<boolean> {
+  if (!userId) return false;
+  const uniqueIds = Array.from(new Set(noteIds.filter(Boolean)));
+  if (uniqueIds.length === 0) return true;
+
+  const rows = await executor
+    .select({
+      id: notes.id,
+      isSuspended: users.isSuspended,
+      ownerId: notes.userId,
+      projectId: notes.projectId,
+      memberRole: projectMembers.role,
+    })
+    .from(notes)
+    .innerJoin(users, eq(users.id, userId))
+    .leftJoin(
+      projectMembers,
+      and(
+        eq(projectMembers.projectId, notes.projectId),
+        eq(projectMembers.userId, userId)
+      )
+    )
+    .where(inArray(notes.id, uniqueIds));
+
+  if (rows.length !== uniqueIds.length) {
+    return false;
+  }
+
+  return rows.every((row) => {
+    if (row.isSuspended) return false;
+    if (row.projectId === null) {
+      return row.ownerId === userId;
+    }
+    return row.memberRole !== null;
+  });
 }

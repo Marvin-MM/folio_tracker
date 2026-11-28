@@ -184,11 +184,53 @@ export async function resolveOperationAccess(
     throw new NotFoundError("Operation not found.");
   }
 
-  const [operation] = await executor
-    .select()
-    .from(operations)
-    .where(operationId ? eq(operations.id, operationId) : eq(operations.slug, slug!))
-    .limit(1);
+  const predicate = operationId
+    ? eq(operations.id, operationId)
+    : eq(operations.slug, slug!);
+
+  // Single-RTT lookup: when authenticated, LEFT JOIN both `operation_members`
+  // and `project_members` alongside `operations` so private/shared access
+  // resolves in 1 SQL round-trip instead of 3 sequential queries.
+  let operation: OperationRecord | undefined;
+  let directMemberRole: string | null = null;
+  let projectMemberRole: string | null = null;
+
+  if (sessionUserId) {
+    const [joined] = await executor
+      .select({
+        operation: operations,
+        directMemberRole: operationMembers.role,
+        projectMemberRole: projectMembers.role,
+      })
+      .from(operations)
+      .leftJoin(
+        operationMembers,
+        and(
+          eq(operationMembers.operationId, operations.id),
+          eq(operationMembers.userId, sessionUserId)
+        )
+      )
+      .leftJoin(
+        projectMembers,
+        and(
+          eq(projectMembers.projectId, operations.projectId),
+          eq(projectMembers.userId, sessionUserId)
+        )
+      )
+      .where(predicate)
+      .limit(1);
+
+    operation = joined?.operation;
+    directMemberRole = joined?.directMemberRole ?? null;
+    projectMemberRole = joined?.projectMemberRole ?? null;
+  } else {
+    const [row] = await executor
+      .select()
+      .from(operations)
+      .where(predicate)
+      .limit(1);
+    operation = row;
+  }
 
   if (!operation) {
     throw new NotFoundError("Operation not found.");
@@ -213,65 +255,44 @@ export async function resolveOperationAccess(
   }
 
   // 2. Direct membership check (`operation_members`)
-  if (sessionUserId) {
-    const [directMember] = await executor
-      .select({ role: operationMembers.role })
-      .from(operationMembers)
-      .where(
-        and(
-          eq(operationMembers.operationId, operation.id),
-          eq(operationMembers.userId, sessionUserId)
-        )
-      )
-      .limit(1);
-
-    if (directMember) {
-      const role: OperationEffectiveRole =
-        directMember.role === "collaborator" ? "collaborator" : "viewer";
-      return {
-        operation,
+  if (sessionUserId && directMemberRole) {
+    const role: OperationEffectiveRole =
+      directMemberRole === "collaborator" ? "collaborator" : "viewer";
+    return {
+      operation,
+      role,
+      accessSource: "direct_member",
+      capabilities: buildCapabilitiesForRole({
         role,
-        accessSource: "direct_member",
-        capabilities: buildCapabilitiesForRole({
-          role,
-          isAuthenticated: true,
-          allowForking: operation.allowForking,
-          isPublicOrUnlisted,
-        }),
-      };
-    }
+        isAuthenticated: true,
+        allowForking: operation.allowForking,
+        isPublicOrUnlisted,
+      }),
+    };
+  }
 
-    // 3. Opt-in Project Team inheritance (`shareWithProject === true`)
-    if (operation.projectId && operation.shareWithProject) {
-      const [projMember] = await executor
-        .select({ role: projectMembers.role })
-        .from(projectMembers)
-        .where(
-          and(
-            eq(projectMembers.projectId, operation.projectId),
-            eq(projectMembers.userId, sessionUserId)
-          )
-        )
-        .limit(1);
-
-      if (projMember) {
-        const inheritedRole: OperationEffectiveRole =
-          projMember.role === "owner" || projMember.role === "editor"
-            ? "collaborator"
-            : "viewer";
-        return {
-          operation,
-          role: inheritedRole,
-          accessSource: "project_inherited",
-          capabilities: buildCapabilitiesForRole({
-            role: inheritedRole,
-            isAuthenticated: true,
-            allowForking: operation.allowForking,
-            isPublicOrUnlisted,
-          }),
-        };
-      }
-    }
+  // 3. Opt-in Project Team inheritance (`shareWithProject === true`)
+  if (
+    sessionUserId &&
+    operation.projectId &&
+    operation.shareWithProject &&
+    projectMemberRole
+  ) {
+    const inheritedRole: OperationEffectiveRole =
+      projectMemberRole === "owner" || projectMemberRole === "editor"
+        ? "collaborator"
+        : "viewer";
+    return {
+      operation,
+      role: inheritedRole,
+      accessSource: "project_inherited",
+      capabilities: buildCapabilitiesForRole({
+        role: inheritedRole,
+        isAuthenticated: true,
+        allowForking: operation.allowForking,
+        isPublicOrUnlisted,
+      }),
+    };
   }
 
   // 4. Unlisted link check (timing-safe SHA-256 verification)

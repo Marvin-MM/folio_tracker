@@ -29,7 +29,8 @@ export function workspaceJson<T>(data: T, status = 200): NextResponse<T> {
 export function workspaceErrorJson(
   code: string,
   message: string,
-  status: number
+  status: number,
+  extraHeaders?: Record<string, string>
 ): NextResponse {
   return NextResponse.json(
     {
@@ -38,7 +39,10 @@ export function workspaceErrorJson(
     },
     {
       status,
-      headers: PRIVATE_NO_STORE_HEADERS,
+      headers: {
+        ...PRIVATE_NO_STORE_HEADERS,
+        ...extraHeaders,
+      },
     }
   );
 }
@@ -105,7 +109,12 @@ export async function withWorkspaceAuth(
       return workspaceErrorJson(error.code, error.message, 409);
     }
     if (error instanceof RateLimitError) {
-      return workspaceErrorJson(error.code, error.message, 429);
+      return workspaceErrorJson(error.code, error.message, 429, {
+        "Retry-After": String(Math.max(1, Math.ceil(error.retryAfterSeconds))),
+        "X-RateLimit-Limit": String(error.limit),
+        "X-RateLimit-Remaining": String(error.remaining),
+        "X-RateLimit-Reset": String(Math.ceil(error.resetAtMs / 1000)),
+      });
     }
     if (error instanceof ValidationError) {
       return workspaceErrorJson(error.code, error.message, 400);

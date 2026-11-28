@@ -460,8 +460,8 @@ export function FolioLanding({
                           : "border-transparent bg-secondary text-foreground hover:border-border hover:bg-accent"
                       )}
                     >
-                      <div className="min-w-0">
-                        <div className="flex items-center text-xs font-medium">
+                      <span className="block min-w-0">
+                        <span className="flex items-center text-xs font-medium">
                           <span className="mono-tabular text-muted-foreground">
                             {pillar.index}
                           </span>
@@ -472,11 +472,11 @@ export function FolioLanding({
                             /
                           </span>
                           <span className="truncate">{pillar.label}</span>
-                        </div>
-                        <p className="mt-0.5 truncate text-[11px] text-muted-foreground">
+                        </span>
+                        <span className="mt-0.5 block truncate text-[11px] text-muted-foreground">
                           {pillar.detail}
-                        </p>
-                      </div>
+                        </span>
+                      </span>
                       <ArrowRight
                         aria-hidden="true"
                         className="size-3.5 shrink-0 text-muted-foreground transition-transform duration-200 group-hover:translate-x-0.5 group-hover:text-foreground"

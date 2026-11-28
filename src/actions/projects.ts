@@ -1,6 +1,5 @@
 "use server";
 
-import { revalidatePath } from "next/cache";
 import { z } from "zod";
 import { requireSession } from "@/server/dal/auth-guard";
 import {
@@ -64,11 +63,10 @@ const removeMemberSchema = z.object({
   targetUserId: z.string().min(1),
 });
 
-function revalidateProjectPaths(projectId?: string) {
-  revalidatePath("/app", "layout");
-  if (projectId) {
-    revalidatePath(`/app/projects/${projectId}`);
-  }
+// Client freshness on `/app/*` routes is driven by TanStack Query domain
+// invalidation so Next.js 16's client Router Cache stays warm for instant nav.
+function revalidateProjectPaths(_projectId?: string) {
+  void _projectId;
 }
 
 export async function createProjectAction(

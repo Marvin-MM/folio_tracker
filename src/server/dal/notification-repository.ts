@@ -29,6 +29,10 @@ export interface NotificationRepository {
     input: CreateNotificationInput,
     executor?: DbExecutor
   ): Promise<NotificationRecord>;
+  createIdempotent(
+    input: CreateNotificationInput,
+    executor?: DbExecutor
+  ): Promise<{ notification: NotificationRecord | null; inserted: boolean }>;
   listRecentForUser(
     userId: string,
     limit?: number
@@ -82,6 +86,33 @@ export class DrizzleNotificationRepository implements NotificationRepository {
     return created;
   }
 
+  async createIdempotent(
+    input: CreateNotificationInput,
+    executor: DbExecutor = this.database
+  ): Promise<{ notification: NotificationRecord | null; inserted: boolean }> {
+    const [created] = await withDbRetry(() =>
+      executor
+        .insert(notifications)
+        .values({
+          userId: input.userId,
+          type: input.type,
+          title: input.title,
+          body: input.body,
+          entityType: input.entityType ?? null,
+          entityId: input.entityId ?? null,
+          isRead: false,
+          createdAt: Date.now(),
+        })
+        .onConflictDoNothing()
+        .returning()
+    );
+
+    if (!created) {
+      return { notification: null, inserted: false };
+    }
+    return { notification: created, inserted: true };
+  }
+
   async listRecentForUser(
     userId: string,
     limit = 20
@@ -126,28 +157,33 @@ export class DrizzleNotificationRepository implements NotificationRepository {
   }
 
   async markRead(userId: string, notificationId: string): Promise<boolean> {
-    const updated = await this.database
-      .update(notifications)
-      .set({ isRead: true })
-      .where(
-        and(
-          eq(notifications.id, notificationId),
-          eq(notifications.userId, userId)
+    const updated = await withDbRetry(() =>
+      this.database
+        .update(notifications)
+        .set({ isRead: true })
+        .where(
+          and(
+            eq(notifications.id, notificationId),
+            eq(notifications.userId, userId),
+            eq(notifications.isRead, false)
+          )
         )
-      )
-      .returning({ id: notifications.id });
+        .returning({ id: notifications.id })
+    );
 
     return updated.length > 0;
   }
 
   async markAllRead(userId: string): Promise<number> {
-    const updated = await this.database
-      .update(notifications)
-      .set({ isRead: true })
-      .where(
-        and(eq(notifications.userId, userId), eq(notifications.isRead, false))
-      )
-      .returning({ id: notifications.id });
+    const updated = await withDbRetry(() =>
+      this.database
+        .update(notifications)
+        .set({ isRead: true })
+        .where(
+          and(eq(notifications.userId, userId), eq(notifications.isRead, false))
+        )
+        .returning({ id: notifications.id })
+    );
 
     return updated.length;
   }
@@ -209,23 +245,27 @@ export class DrizzleNotificationRepository implements NotificationRepository {
   }
 
   async deletePushSubscriptionByEndpoint(endpoint: string): Promise<void> {
-    await this.database
-      .delete(pushSubscriptions)
-      .where(eq(pushSubscriptions.endpoint, endpoint));
+    await withDbRetry(() =>
+      this.database
+        .delete(pushSubscriptions)
+        .where(eq(pushSubscriptions.endpoint, endpoint))
+    );
   }
 
   async deletePushSubscriptionForUser(
     userId: string,
     endpoint: string
   ): Promise<void> {
-    await this.database
-      .delete(pushSubscriptions)
-      .where(
-        and(
-          eq(pushSubscriptions.userId, userId),
-          eq(pushSubscriptions.endpoint, endpoint)
+    await withDbRetry(() =>
+      this.database
+        .delete(pushSubscriptions)
+        .where(
+          and(
+            eq(pushSubscriptions.userId, userId),
+            eq(pushSubscriptions.endpoint, endpoint)
+          )
         )
-      );
+    );
   }
 }
 

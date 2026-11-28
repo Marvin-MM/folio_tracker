@@ -95,15 +95,6 @@ export interface StaleOperationCandidate {
   ownerTimezone: string;
 }
 
-function countStepsJson(stepsSnapshotJson: string): number {
-  try {
-    const parsed: unknown = JSON.parse(stepsSnapshotJson);
-    return Array.isArray(parsed) ? parsed.length : 0;
-  } catch {
-    return 0;
-  }
-}
-
 export interface OperationsSocialRepository {
   // Follow graph
   followUser(
@@ -142,6 +133,17 @@ export interface OperationsSocialRepository {
     },
     executor?: DbExecutor
   ): Promise<OperationMemberRecord>;
+  updateMemberRole(
+    operationId: string,
+    userId: string,
+    role: OperationMemberRole,
+    executor?: DbExecutor
+  ): Promise<OperationMemberRecord | null>;
+  isQuickPickContact(
+    ownerId: string,
+    targetUserId: string,
+    executor?: DbExecutor
+  ): Promise<boolean>;
   removeMember(
     operationId: string,
     userId: string,
@@ -261,13 +263,22 @@ export interface OperationsSocialRepository {
     limit?: number,
     executor?: DbExecutor
   ): Promise<Array<{ slug: string; updatedAt: number }>>;
+  listPublicSlugsForOwner(
+    ownerId: string,
+    executor?: DbExecutor
+  ): Promise<string[]>;
+  listPublicForkSlugs(
+    sourceOperationId: string,
+    executor?: DbExecutor
+  ): Promise<string[]>;
 
   // Staleness audit pagination
   listStaleOperationCandidatesPage(
     limit: number,
     offset: number,
     nowMs: number,
-    executor?: DbExecutor
+    executor?: DbExecutor,
+    afterId?: string | null
   ): Promise<StaleOperationCandidate[]>;
 }
 
@@ -398,6 +409,94 @@ export class DrizzleOperationsSocialRepository
       throw new Error("Failed to upsert operation member.");
     }
     return row;
+  }
+
+  async updateMemberRole(
+    operationId: string,
+    userId: string,
+    role: OperationMemberRole,
+    executor: DbExecutor = this.database
+  ): Promise<OperationMemberRecord | null> {
+    const [updated] = await executor
+      .update(operationMembers)
+      .set({ role })
+      .where(
+        and(
+          eq(operationMembers.operationId, operationId),
+          eq(operationMembers.userId, userId)
+        )
+      )
+      .returning();
+
+    return updated ?? null;
+  }
+
+  async isQuickPickContact(
+    ownerId: string,
+    targetUserId: string,
+    executor: DbExecutor = this.database
+  ): Promise<boolean> {
+    if (!ownerId || !targetUserId || ownerId === targetUserId) return false;
+
+    const [followLink] = await executor
+      .select({ followerId: userFollows.followerId })
+      .from(userFollows)
+      .where(
+        or(
+          and(
+            eq(userFollows.followerId, ownerId),
+            eq(userFollows.followingId, targetUserId)
+          ),
+          and(
+            eq(userFollows.followerId, targetUserId),
+            eq(userFollows.followingId, ownerId)
+          )
+        )
+      )
+      .limit(1);
+    if (followLink) return true;
+
+    const [circleLink] = await executor
+      .select({ id: habitMonitors.id })
+      .from(habitMonitors)
+      .where(
+        and(
+          eq(habitMonitors.status, "active"),
+          or(
+            and(
+              eq(habitMonitors.ownerId, ownerId),
+              eq(habitMonitors.monitorUserId, targetUserId)
+            ),
+            and(
+              eq(habitMonitors.ownerId, targetUserId),
+              eq(habitMonitors.monitorUserId, ownerId)
+            )
+          )
+        )
+      )
+      .limit(1);
+    if (circleLink) return true;
+
+    const ownerProjects = await executor
+      .select({ projectId: projectMembers.projectId })
+      .from(projectMembers)
+      .where(eq(projectMembers.userId, ownerId));
+    if (ownerProjects.length === 0) return false;
+
+    const [sharedProj] = await executor
+      .select({ projectId: projectMembers.projectId })
+      .from(projectMembers)
+      .where(
+        and(
+          eq(projectMembers.userId, targetUserId),
+          inArray(
+            projectMembers.projectId,
+            ownerProjects.map((p) => p.projectId)
+          )
+        )
+      )
+      .limit(1);
+    return Boolean(sharedProj);
   }
 
   async removeMember(
@@ -616,22 +715,30 @@ export class DrizzleOperationsSocialRepository
     const versionRows = await executor
       .select({
         operationId: operationVersions.operationId,
-        versionNumber: operationVersions.versionNumber,
-        stepsSnapshotJson: operationVersions.stepsSnapshotJson,
+        stepCount: sql<number>`COALESCE(json_array_length(${operationVersions.stepsSnapshotJson}), 0)`,
       })
       .from(operationVersions)
+      .innerJoin(
+        operations,
+        and(
+          eq(operationVersions.operationId, operations.id),
+          eq(operationVersions.versionNumber, operations.currentVersion)
+        )
+      )
       .where(inArray(operationVersions.operationId, opIds));
 
     const stepCountByOp = new Map<string, number>();
     for (const ver of versionRows) {
-      const target = merged.get(ver.operationId);
-      if (target && ver.versionNumber === target.operation.currentVersion) {
-        stepCountByOp.set(ver.operationId, countStepsJson(ver.stepsSnapshotJson));
-      }
+      stepCountByOp.set(ver.operationId, Number(ver.stepCount ?? 0));
     }
 
     return Array.from(merged.values()).map((entry) => ({
       ...entry,
+      operation: {
+        ...entry.operation,
+        // Never expose owner's unlisted token hash to non-owners
+        unlistedTokenHash: null,
+      },
       stepCount: stepCountByOp.get(entry.operation.id) ?? 0,
     }));
   }
@@ -656,7 +763,7 @@ export class DrizzleOperationsSocialRepository
       .from(users)
       .where(
         and(
-          sql`lower(${users.email}) = ${normalized}`,
+          eq(users.email, normalized),
           eq(users.emailVerified, true),
           eq(users.isSuspended, false)
         )
@@ -738,12 +845,11 @@ export class DrizzleOperationsSocialRepository
 
   async listPendingInvitationsForUser(
     userId: string,
-    email: string,
+    _email: string,
     nowMs: number,
     executor: DbExecutor = this.database
   ): Promise<OperationInvitationWithMeta[]> {
-    const normalized = email.trim().toLowerCase();
-    return executor
+    const rows = await executor
       .select({
         invitation: operationInvitations,
         operationTitle: operations.title,
@@ -761,13 +867,20 @@ export class DrizzleOperationsSocialRepository
         and(
           eq(operationInvitations.status, "pending"),
           gt(operationInvitations.expiresAt, nowMs),
-          or(
-            eq(operationInvitations.targetUserId, userId),
-            eq(operationInvitations.targetEmail, normalized)
-          )
+          // Strictly bind in-app invitations to `targetUserId` so external
+          // token-gated invites cannot be bypassed or discovered without the token.
+          eq(operationInvitations.targetUserId, userId)
         )
       )
       .orderBy(desc(operationInvitations.createdAt));
+
+    return rows.map((row) => ({
+      ...row,
+      invitation: {
+        ...row.invitation,
+        tokenHash: null,
+      },
+    }));
   }
 
   async getInvitationById(
@@ -970,20 +1083,21 @@ export class DrizzleOperationsSocialRepository
     const versionRows = await executor
       .select({
         operationId: operationVersions.operationId,
-        versionNumber: operationVersions.versionNumber,
-        stepsSnapshotJson: operationVersions.stepsSnapshotJson,
+        stepCount: sql<number>`COALESCE(json_array_length(${operationVersions.stepsSnapshotJson}), 0)`,
       })
       .from(operationVersions)
+      .innerJoin(
+        operations,
+        and(
+          eq(operationVersions.operationId, operations.id),
+          eq(operationVersions.versionNumber, operations.currentVersion)
+        )
+      )
       .where(inArray(operationVersions.operationId, opIds));
 
-    const currentVerByOp = new Map(
-      rows.map((r) => [r.operation.id, r.operation.currentVersion])
-    );
     const stepCountByOp = new Map<string, number>();
     for (const ver of versionRows) {
-      if (ver.versionNumber === currentVerByOp.get(ver.operationId)) {
-        stepCountByOp.set(ver.operationId, countStepsJson(ver.stepsSnapshotJson));
-      }
+      stepCountByOp.set(ver.operationId, Number(ver.stepCount ?? 0));
     }
 
     return rows.map((row) =>
@@ -1255,13 +1369,58 @@ export class DrizzleOperationsSocialRepository
       .limit(limit);
   }
 
+  async listPublicSlugsForOwner(
+    ownerId: string,
+    executor: DbExecutor = this.database
+  ): Promise<string[]> {
+    const rows = await executor
+      .select({ slug: operations.slug })
+      .from(operations)
+      .where(
+        and(
+          eq(operations.ownerId, ownerId),
+          eq(operations.visibility, "public")
+        )
+      )
+      .limit(200);
+    return rows.map((r) => r.slug);
+  }
+
+  async listPublicForkSlugs(
+    sourceOperationId: string,
+    executor: DbExecutor = this.database
+  ): Promise<string[]> {
+    const rows = await executor
+      .select({ slug: operations.slug })
+      .from(operations)
+      .where(
+        and(
+          eq(operations.forkedFromId, sourceOperationId),
+          eq(operations.visibility, "public")
+        )
+      )
+      .limit(200);
+    return rows.map((r) => r.slug);
+  }
+
   async listStaleOperationCandidatesPage(
     limit: number,
     offset: number,
     nowMs: number,
-    executor: DbExecutor = this.database
+    executor: DbExecutor = this.database,
+    afterId?: string | null
   ): Promise<StaleOperationCandidate[]> {
-    const rows = await executor
+    const conditions = [
+      eq(operations.isArchived, false),
+      eq(users.isSuspended, false),
+      isNotNull(operations.reviewCycleDays),
+      sql`(COALESCE(${operations.lastVerifiedAt}, ${operations.updatedAt}) + (${operations.reviewCycleDays} * 86400000)) <= ${nowMs}`,
+    ];
+    if (afterId) {
+      conditions.push(gt(operations.id, afterId));
+    }
+
+    const baseQuery = executor
       .select({
         id: operations.id,
         ownerId: operations.ownerId,
@@ -1274,17 +1433,11 @@ export class DrizzleOperationsSocialRepository
       })
       .from(operations)
       .innerJoin(users, eq(operations.ownerId, users.id))
-      .where(
-        and(
-          eq(operations.isArchived, false),
-          eq(users.isSuspended, false),
-          isNotNull(operations.reviewCycleDays),
-          sql`(COALESCE(${operations.lastVerifiedAt}, ${operations.updatedAt}) + (${operations.reviewCycleDays} * 86400000)) <= ${nowMs}`
-        )
-      )
+      .where(and(...conditions))
       .orderBy(asc(operations.id))
-      .limit(limit)
-      .offset(offset);
+      .limit(limit);
+
+    const rows = afterId ? await baseQuery : await baseQuery.offset(offset);
 
     return rows.filter(
       (r): r is StaleOperationCandidate =>

@@ -89,6 +89,7 @@ export const habitMonitors = sqliteTable(
       table.status
     ),
     index("habit_monitors_owner_status_idx").on(table.ownerId, table.status),
+    index("habit_monitors_status_id_idx").on(table.status, table.id),
     check(
       "habit_monitors_no_self_check",
       sql`${table.ownerId} != ${table.monitorUserId}`
@@ -187,6 +188,10 @@ export const habitMonitorRequests = sqliteTable(
       table.targetEmail,
       table.status
     ),
+    index("habit_monitor_requests_status_expires_idx").on(
+      table.status,
+      table.expiresAt
+    ),
     check(
       "habit_monitor_requests_scope_check",
       sql`${table.scope} IN ('all', 'selected')`
@@ -264,6 +269,8 @@ export const habitComments = sqliteTable(
     ),
     index("habit_comments_parent_idx").on(table.parentCommentId),
     index("habit_comments_target_habit_idx").on(table.targetHabitId),
+    index("habit_comments_author_id_idx").on(table.authorId),
+    index("habit_comments_owner_created_idx").on(table.ownerId, table.createdAt),
   ]
 );
 
@@ -302,6 +309,7 @@ export const habitReactions = sqliteTable(
       .on(table.ownerId, table.authorId, table.cycleKey, table.reactionType)
       .where(sql`${table.targetDateKey} IS NULL`),
     index("habit_reactions_owner_cycle_idx").on(table.ownerId, table.cycleKey),
+    index("habit_reactions_author_id_idx").on(table.authorId),
     check(
       "habit_reactions_type_check",
       sql`${table.reactionType} IN ('ack', 'solid', 'push')`

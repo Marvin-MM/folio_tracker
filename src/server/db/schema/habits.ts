@@ -97,6 +97,9 @@ export const habitTrackerSettings = sqliteTable(
       .$defaultFn(() => Date.now()),
   },
   (table) => [
+    index("habit_tracker_settings_evening_checkin_idx").on(
+      table.eveningCheckinTime
+    ),
     check(
       "habit_settings_week_starts_on_check",
       sql`${table.weekStartsOn} IN (0, 1)`
@@ -178,6 +181,7 @@ export const habits = sqliteTable(
       table.isArchived,
       table.preferredTime
     ),
+    index("habits_linked_project_id_idx").on(table.linkedProjectId),
     check(
       "habits_cadence_type_check",
       sql`${table.cadenceType} IN ('daily', 'specific_days', 'weekly_target')`
@@ -220,6 +224,7 @@ export const habitImportAliases = sqliteTable(
       table.normalizedTitle
     ),
     index("habit_import_alias_user_habit_idx").on(table.userId, table.habitId),
+    index("habit_import_aliases_habit_id_idx").on(table.habitId),
   ]
 );
 
@@ -286,7 +291,6 @@ export const habitMonthLocks = sqliteTable(
   },
   (table) => [
     primaryKey({ columns: [table.userId, table.yearMonth] }),
-    index("habit_month_locks_user_month_idx").on(table.userId, table.yearMonth),
     check(
       "habit_month_locks_status_check",
       sql`${table.status} IN ('locked', 'unlocked_override')`
@@ -326,6 +330,7 @@ export const habitLogs = sqliteTable(
   (table) => [
     uniqueIndex("habit_logs_habit_date_uq").on(table.habitId, table.dateKey),
     index("habit_logs_user_date_idx").on(table.userId, table.dateKey),
+    index("habit_logs_logged_at_idx").on(table.loggedAt),
     check(
       "habit_logs_status_check",
       sql`${table.status} IN ('done', 'missed', 'skipped')`

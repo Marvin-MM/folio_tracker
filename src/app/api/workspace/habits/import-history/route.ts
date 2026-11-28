@@ -6,7 +6,10 @@ import {
   workspaceErrorJson,
   workspaceJson,
 } from "@/server/http/workspace-api";
-import { defaultRateLimiter } from "@/server/providers/redis/rate-limiter";
+import {
+  buildRateLimitHeaders,
+  defaultRateLimiter,
+} from "@/server/providers/redis/rate-limiter";
 import { habitService } from "@/server/services/habit-service";
 
 export const maxDuration = 60;
@@ -76,7 +79,8 @@ export async function POST(request: NextRequest) {
       return workspaceErrorJson(
         "RATE_LIMITED",
         `Import rate limit reached. Please retry in ${rate.retryAfterSeconds}s.`,
-        429
+        429,
+        buildRateLimitHeaders(rate)
       );
     }
 

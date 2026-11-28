@@ -2,6 +2,7 @@
 
 import { useEffect, useRef } from "react";
 import { syncUserTimezoneAction } from "@/actions/user-preferences";
+import { useInvalidateWorkspace } from "@/hooks/use-workspace-queries";
 
 interface TimezoneSyncProps {
   currentTimezone: string;
@@ -12,6 +13,7 @@ interface TimezoneSyncProps {
  * timezone after login without disrupting navigation.
  */
 export function TimezoneSync({ currentTimezone }: TimezoneSyncProps) {
+  const invalidate = useInvalidateWorkspace();
   const attemptedRef = useRef(false);
 
   useEffect(() => {
@@ -23,8 +25,12 @@ export function TimezoneSync({ currentTimezone }: TimezoneSyncProps) {
       return;
     }
 
-    void syncUserTimezoneAction({ timezone: detected });
-  }, [currentTimezone]);
+    void syncUserTimezoneAction({ timezone: detected }).then((res) => {
+      if (res.ok) {
+        void invalidate(["all"]);
+      }
+    });
+  }, [currentTimezone, invalidate]);
 
   return null;
 }

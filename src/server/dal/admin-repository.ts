@@ -25,6 +25,7 @@ import {
   habits,
   notes,
   notifications,
+  operationInvitations,
   projectActivities,
   projectInvitations,
   projectMembers,
@@ -147,6 +148,7 @@ export interface PlatformTimelineEvent {
 export interface SweepExpiredSummary {
   expiredProjectInvitations: number;
   expiredHabitRequests: number;
+  expiredOperationInvitations: number;
   prunedSessions: number;
   prunedVerifications: number;
 }
@@ -1046,41 +1048,53 @@ export class DrizzleAdminRepository implements AdminRepository {
   ): Promise<SweepExpiredSummary> {
     const nowDate = new Date(nowMs);
 
-    const [expiredInvites, expiredMonitorReqs, prunedSessions, prunedVerifs] =
-      await Promise.all([
-        executor
-          .update(projectInvitations)
-          .set({ status: "expired" })
-          .where(
-            and(
-              eq(projectInvitations.status, "pending"),
-              lte(projectInvitations.expiresAt, nowMs)
-            )
-          )
-          .returning({ id: projectInvitations.id }),
-        executor
-          .update(habitMonitorRequests)
-          .set({ status: "expired" })
-          .where(
-            and(
-              eq(habitMonitorRequests.status, "pending"),
-              lte(habitMonitorRequests.expiresAt, nowMs)
-            )
-          )
-          .returning({ id: habitMonitorRequests.id }),
-        executor
-          .delete(sessions)
-          .where(lt(sessions.expiresAt, nowDate))
-          .returning({ id: sessions.id }),
-        executor
-          .delete(verifications)
-          .where(lt(verifications.expiresAt, nowDate))
-          .returning({ id: verifications.id }),
-      ]);
+    const expiredInvites = await executor
+      .update(projectInvitations)
+      .set({ status: "expired" })
+      .where(
+        and(
+          eq(projectInvitations.status, "pending"),
+          lte(projectInvitations.expiresAt, nowMs)
+        )
+      )
+      .returning({ id: projectInvitations.id });
+
+    const expiredMonitorReqs = await executor
+      .update(habitMonitorRequests)
+      .set({ status: "expired" })
+      .where(
+        and(
+          eq(habitMonitorRequests.status, "pending"),
+          lte(habitMonitorRequests.expiresAt, nowMs)
+        )
+      )
+      .returning({ id: habitMonitorRequests.id });
+
+    const expiredOpInvites = await executor
+      .update(operationInvitations)
+      .set({ status: "expired", respondedAt: nowMs })
+      .where(
+        and(
+          eq(operationInvitations.status, "pending"),
+          lte(operationInvitations.expiresAt, nowMs)
+        )
+      )
+      .returning({ id: operationInvitations.id });
+
+    const prunedSessions = await executor
+      .delete(sessions)
+      .where(lt(sessions.expiresAt, nowDate))
+      .returning({ id: sessions.id });
+
+    const prunedVerifs = await executor
+      .delete(verifications)
+      .where(lt(verifications.expiresAt, nowDate))
+      .returning({ id: verifications.id });
 
     return {
       expiredProjectInvitations: expiredInvites.length,
       expiredHabitRequests: expiredMonitorReqs.length,
+      expiredOperationInvitations: expiredOpInvites.length,
       prunedSessions: prunedSessions.length,
       prunedVerifications: prunedVerifs.length,
     };

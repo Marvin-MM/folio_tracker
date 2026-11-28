@@ -99,38 +99,82 @@ export async function dispatchHabitNudgeBatch(
   params: {
     limit?: number;
     offset?: number;
+    afterUserId?: string | null;
     nowMs?: number;
   } = {},
   deps: {
     habits?: HabitRepository;
     eventBus?: EventBus;
   } = {}
-): Promise<{ candidatesChecked: number; eventsEmitted: number }> {
+): Promise<{
+  candidatesChecked: number;
+  eventsEmitted: number;
+  lastUserId: string | null;
+}> {
   const limit = params.limit ?? NUDGE_BATCH_SIZE;
   const offset = params.offset ?? 0;
   const nowMs = params.nowMs ?? Date.now();
   const habitRepo = deps.habits ?? habitRepository;
   const eventBus = deps.eventBus ?? defaultEventBus;
 
-  const candidates = await habitRepo.listNudgeUserCandidatesPage(limit, offset);
+  const candidates = await habitRepo.listNudgeUserCandidatesPage(
+    limit,
+    offset,
+    params.afterUserId ?? null
+  );
   if (candidates.length === 0) {
-    return { candidatesChecked: 0, eventsEmitted: 0 };
+    return { candidatesChecked: 0, eventsEmitted: 0, lastUserId: null };
+  }
+
+  const candidateMeta = candidates.map((candidate) => ({
+    candidate,
+    dateKey: getLocalDateKey(nowMs, candidate.timezone),
+    currentHHmm: getLocalTimeHHmm(nowMs, candidate.timezone),
+  }));
+
+  let minDateKey = candidateMeta[0]!.dateKey;
+  let maxDateKey = candidateMeta[0]!.dateKey;
+  const candidateIds: string[] = [];
+  for (const item of candidateMeta) {
+    candidateIds.push(item.candidate.userId);
+    if (item.dateKey < minDateKey) minDateKey = item.dateKey;
+    if (item.dateKey > maxDateKey) maxDateKey = item.dateKey;
+  }
+
+  // Batch fetch all habits & today logs for the entire 200-user page in 2 queries
+  // (instead of 2*N = 400 sequential queries).
+  const [allActiveHabits, allRecentLogs] = await Promise.all([
+    habitRepo.listHabitsForUsers(candidateIds, { includeArchived: false }),
+    habitRepo.listLogsForUsersInRange(candidateIds, minDateKey, maxDateKey),
+  ]);
+
+  const habitsByUser = new Map<string, typeof allActiveHabits>();
+  for (const habit of allActiveHabits) {
+    const list = habitsByUser.get(habit.userId);
+    if (list) list.push(habit);
+    else habitsByUser.set(habit.userId, [habit]);
+  }
+
+  const loggedKeysByUserDate = new Map<string, Set<string>>();
+  for (const log of allRecentLogs) {
+    const key = `${log.userId}:${log.dateKey}`;
+    let set = loggedKeysByUserDate.get(key);
+    if (!set) {
+      set = new Set<string>();
+      loggedKeysByUserDate.set(key, set);
+    }
+    set.add(log.habitId);
   }
 
   const events: AppDomainEvent[] = [];
 
-  for (const candidate of candidates) {
-    const dateKey = getLocalDateKey(nowMs, candidate.timezone);
-    const currentHHmm = getLocalTimeHHmm(nowMs, candidate.timezone);
-
-    const [activeHabits, todayLogs] = await Promise.all([
-      habitRepo.listHabitsForUser(candidate.userId, { includeArchived: false }),
-      habitRepo.listLogsForRange(candidate.userId, dateKey, dateKey),
-    ]);
-
+  for (const { candidate, dateKey, currentHHmm } of candidateMeta) {
+    const activeHabits = habitsByUser.get(candidate.userId) ?? [];
     if (activeHabits.length === 0) continue;
 
-    const loggedHabitIds = new Set(todayLogs.map((l) => l.habitId));
+    const loggedHabitIds =
+      loggedKeysByUserDate.get(`${candidate.userId}:${dateKey}`) ??
+      new Set<string>();
     const unloggedScheduled = activeHabits.filter((habit) => {
       if (loggedHabitIds.has(habit.id)) return false;
       return isHabitScheduledOnDate(
@@ -197,6 +241,7 @@ export async function dispatchHabitNudgeBatch(
   return {
     candidatesChecked: candidates.length,
     eventsEmitted: events.length,
+    lastUserId: candidates[candidates.length - 1]?.userId ?? null,
   };
 }
 
@@ -220,6 +265,16 @@ export async function executeHabitNudgeDelivery(
   const email = deps.emailChannel ?? defaultEmailChannel;
   const runStep =
     deps.runStep ?? (async <T>(_id: string, fn: () => Promise<T>) => fn());
+
+  const userActive = await runStep("verify-user-active", () =>
+    habitRepo.isUserActive(input.userId)
+  );
+  if (!userActive) {
+    return {
+      status: "skipped_already_logged_or_inactive",
+      dedupKey: input.dedupKey,
+    };
+  }
 
   const alreadySent = await runStep("check-nudge-dedup", async () =>
     notifRepo.hasNotificationForEntity(
@@ -333,27 +388,33 @@ export const habitNudgeDispatcherFn = inngest.createFunction(
     triggers: [{ cron: "*/15 * * * *" }],
   },
   async ({ step }) => {
-    const nowMs = Date.now();
+    const nowMs = await step.run("capture-clock", () => Date.now());
     let totalCandidates = 0;
     let totalEmitted = 0;
     let batchNumber = 0;
+    let cursor: string | null = null;
 
     while (batchNumber < MAX_BATCHES_PER_INVOCATION) {
-      const offset = batchNumber * NUDGE_BATCH_SIZE;
+      const batchCursor: string | null = cursor;
       batchNumber += 1;
 
-      const batchResult = await step.run(`batch-${batchNumber}`, async () =>
+      const batchResult: {
+        candidatesChecked: number;
+        eventsEmitted: number;
+        lastUserId: string | null;
+      } = await step.run(`batch-${batchNumber}`, async () =>
         dispatchHabitNudgeBatch({
           limit: NUDGE_BATCH_SIZE,
-          offset,
+          afterUserId: batchCursor,
           nowMs,
         })
       );
 
       totalCandidates += batchResult.candidatesChecked;
       totalEmitted += batchResult.eventsEmitted;
+      cursor = batchResult.lastUserId;
 
-      if (batchResult.candidatesChecked < NUDGE_BATCH_SIZE) {
+      if (batchResult.candidatesChecked < NUDGE_BATCH_SIZE || !cursor) {
         break;
       }
     }

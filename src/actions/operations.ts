@@ -1,6 +1,5 @@
 "use server";
 
-import { revalidatePath } from "next/cache";
 import { z } from "zod";
 import {
   actionErr,
@@ -180,6 +179,7 @@ const syncOfflineRunSchema = z.object({
         stepKey: z.string().trim().min(1).max(64),
         status: operationRunStepStatusSchema,
         note: z.string().max(MAX_RUN_STEP_NOTE_LENGTH).nullish(),
+        queuedAtMs: z.number().int().positive().optional(),
       })
     )
     .max(200)
@@ -262,58 +262,57 @@ const followCreatorSchema = z.object({
   follow: z.boolean(),
 });
 
-function revalidateOperationRoutes(params: {
-  operationId?: string;
-  runId?: string;
+/**
+ * Targeted Next.js 16 `'use cache'` tag invalidation for public pages ONLY.
+ * Workspace `/app/*` views are refreshed by TanStack Query without blowing away
+ * the client Router Cache via `revalidatePath`, and private operations NEVER
+ * bust `PUBLIC_EXPLORE_CACHE_TAG`.
+ */
+function invalidatePublicOperationCacheIfNeeded(params: {
   slug?: string | null;
   ownerHandle?: string | null;
+  extraHandles?: readonly (string | null | undefined)[];
+  forkSlugs?: readonly string[];
+  affectsPublicCache: boolean;
 }) {
-  revalidatePath("/app/operations");
-  if (params.operationId) {
-    revalidatePath(`/app/operations/${params.operationId}`);
-    revalidatePath(`/app/operations/${params.operationId}/edit`);
+  if (!params.affectsPublicCache && !params.ownerHandle && !(params.extraHandles?.length)) {
+    return;
   }
-  if (params.runId) {
-    revalidatePath(`/app/operations/runs/${params.runId}`);
-  }
-  if (params.slug) {
-    revalidatePath(`/ops/${params.slug}`);
-  }
-  if (params.ownerHandle) {
-    revalidatePath(`/u/${params.ownerHandle}`);
-  }
-  revalidatePath("/explore");
   invalidatePublicOperationTags({
-    slug: params.slug,
+    slug: params.affectsPublicCache ? params.slug : null,
+    extraSlugs: params.affectsPublicCache ? params.forkSlugs : undefined,
     ownerHandle: params.ownerHandle,
+    extraHandles: params.extraHandles,
+    affectsExplore: params.affectsPublicCache,
   });
 }
+
+const draftScanSchema = z.object({
+  title: z.string().max(MAX_OPERATION_TITLE_LENGTH).optional(),
+  summary: z.string().max(MAX_OPERATION_SUMMARY_LENGTH).optional(),
+  variables: operationVariablesSchemaArray.optional(),
+  prerequisites: operationPrerequisitesSchemaArray.optional(),
+  steps: operationStepsSchemaArray.optional(),
+});
 
 export async function scanOperationDraftAction(
   raw: z.input<typeof blueprintBaseSchema>
 ): Promise<ActionResult<SecretScanReport>> {
   try {
     await requireSession();
+    const parsed = draftScanSchema.safeParse(raw);
+    if (!parsed.success) {
+      return actionErr(
+        "VALIDATION_ERROR",
+        parsed.error.issues[0]?.message ?? "Draft exceeds secret scanner limits."
+      );
+    }
     const report = scanOperationForSecrets({
-      title: raw.title,
-      summary: raw.summary,
-      variables: raw.variables?.map((v) => ({
-        ...v,
-        type: v.type ?? "text",
-        required: v.required ?? false,
-      })),
-      prerequisites: raw.prerequisites,
-      steps: raw.steps?.map((s) => ({
-        ...s,
-        type: s.type ?? "action",
-        bodyMarkdown: s.bodyMarkdown ?? "",
-        codeBlock: s.codeBlock
-          ? {
-              language: s.codeBlock.language ?? "bash",
-              content: s.codeBlock.content,
-            }
-          : null,
-      })),
+      title: parsed.data.title,
+      summary: parsed.data.summary,
+      variables: parsed.data.variables,
+      prerequisites: parsed.data.prerequisites,
+      steps: parsed.data.steps,
     });
     return actionOk(report);
   } catch (error) {
@@ -336,11 +335,13 @@ export async function createOperationAction(
     }
 
     const result = await operationService.createOperation(user.id, parsed.data);
-    revalidateOperationRoutes({
-      operationId: result.operation.id,
-      slug: result.operation.slug,
-      ownerHandle: result.ownerHandle,
-    });
+    if (result.operation.visibility === "public") {
+      invalidatePublicOperationCacheIfNeeded({
+        slug: result.operation.slug,
+        ownerHandle: result.ownerHandle,
+        affectsPublicCache: true,
+      });
+    }
     return actionOk(result);
   } catch (error) {
     return mapErrorToActionResult(error);
@@ -367,11 +368,14 @@ export async function publishOperationVersionAction(
       operationId,
       payload
     );
-    revalidateOperationRoutes({
-      operationId,
-      slug: result.operation.slug,
-      ownerHandle: result.ownerHandle,
-    });
+    if (result.affectsPublicCache || result.operation.visibility === "public") {
+      invalidatePublicOperationCacheIfNeeded({
+        slug: result.operation.slug,
+        ownerHandle: result.ownerHandle,
+        forkSlugs: result.forkSlugs,
+        affectsPublicCache: true,
+      });
+    }
     return actionOk(result);
   } catch (error) {
     return mapErrorToActionResult(error);
@@ -397,11 +401,14 @@ export async function updateOperationVisibilityAction(
         acknowledgeWarnings: parsed.data.acknowledgeWarnings,
       }
     );
-    revalidateOperationRoutes({
-      operationId: result.operation.id,
-      slug: result.operation.slug,
-      ownerHandle: result.ownerHandle,
-    });
+    if (result.affectsPublicCache || result.operation.visibility === "public") {
+      invalidatePublicOperationCacheIfNeeded({
+        slug: result.operation.slug,
+        ownerHandle: result.ownerHandle,
+        forkSlugs: result.forkSlugs,
+        affectsPublicCache: true,
+      });
+    }
     return actionOk(result);
   } catch (error) {
     return mapErrorToActionResult(error);
@@ -423,10 +430,6 @@ export async function rotateUnlistedOperationLinkAction(
       user.id,
       parsed.data.operationId
     );
-    revalidateOperationRoutes({
-      operationId: result.operation.id,
-      slug: result.operation.slug,
-    });
     return actionOk(result);
   } catch (error) {
     return mapErrorToActionResult(error);
@@ -450,7 +453,6 @@ export async function updateOperationProjectSharingAction(
         shareWithProject: parsed.data.shareWithProject,
       }
     );
-    revalidateOperationRoutes({ operationId: updated.id });
     return actionOk(updated);
   } catch (error) {
     return mapErrorToActionResult(error);
@@ -476,10 +478,10 @@ export async function forkOperationAction(
       parsed.data.operationId,
       parsed.data.unlistedToken
     );
-    revalidateOperationRoutes({
-      operationId: result.forked.id,
+    invalidatePublicOperationCacheIfNeeded({
       slug: result.sourceSlug,
       ownerHandle: result.sourceOwnerHandle,
+      affectsPublicCache: Boolean(result.sourceSlug),
     });
     return actionOk({
       forked: result.forked,
@@ -514,11 +516,13 @@ export async function rollbackOperationVersionAction(
         acknowledgeWarnings: parsed.data.acknowledgeWarnings,
       }
     );
-    revalidateOperationRoutes({
-      operationId: parsed.data.operationId,
-      slug: result.operation.slug,
-      ownerHandle: result.ownerHandle,
-    });
+    if (result.operation.visibility === "public") {
+      invalidatePublicOperationCacheIfNeeded({
+        slug: result.operation.slug,
+        ownerHandle: result.ownerHandle,
+        affectsPublicCache: true,
+      });
+    }
     return actionOk(result);
   } catch (error) {
     return mapErrorToActionResult(error);
@@ -540,11 +544,13 @@ export async function archiveOperationAction(
         parsed.data.operationId,
         parsed.data.isArchived
       );
-    revalidateOperationRoutes({
-      operationId: updated.id,
-      slug: updated.slug,
-      ownerHandle,
-    });
+    if (updated.visibility === "public") {
+      invalidatePublicOperationCacheIfNeeded({
+        slug: updated.slug,
+        ownerHandle,
+        affectsPublicCache: true,
+      });
+    }
     return actionOk(updated);
   } catch (error) {
     return mapErrorToActionResult(error);
@@ -560,15 +566,19 @@ export async function deleteOperationAction(
     if (!parsed.success) {
       return actionErr("VALIDATION_ERROR", "Invalid operation ID.");
     }
-    const { slug, ownerHandle } = await operationService.deleteOperation(
-      user.id,
-      parsed.data.operationId
-    );
-    revalidateOperationRoutes({
-      operationId: parsed.data.operationId,
-      slug,
-      ownerHandle,
-    });
+    const { slug, ownerHandle, wasPublic, forkSlugs } =
+      await operationService.deleteOperation(
+        user.id,
+        parsed.data.operationId
+      );
+    if (wasPublic) {
+      invalidatePublicOperationCacheIfNeeded({
+        slug,
+        ownerHandle,
+        forkSlugs,
+        affectsPublicCache: true,
+      });
+    }
     return actionOk({ deleted: true });
   } catch (error) {
     return mapErrorToActionResult(error);
@@ -586,11 +596,13 @@ export async function markOperationVerifiedAction(
     }
     const { operation: updated, ownerHandle } =
       await operationService.markVerified(user.id, parsed.data.operationId);
-    revalidateOperationRoutes({
-      operationId: updated.id,
-      slug: updated.slug,
-      ownerHandle,
-    });
+    if (updated.visibility === "public") {
+      invalidatePublicOperationCacheIfNeeded({
+        slug: updated.slug,
+        ownerHandle,
+        affectsPublicCache: true,
+      });
+    }
     return actionOk(updated);
   } catch (error) {
     return mapErrorToActionResult(error);
@@ -623,10 +635,6 @@ export async function scheduleOperationRunTaskAction(
       }
     );
 
-    revalidatePath("/app/inbox");
-    revalidatePath("/app/today");
-    revalidatePath("/app/upcoming");
-    revalidatePath("/app/reminders");
     return actionOk(result);
   } catch (error) {
     return mapErrorToActionResult(error);
@@ -657,10 +665,6 @@ export async function startOperationRunAction(
         unlistedToken: parsed.data.unlistedToken,
       }
     );
-    revalidateOperationRoutes({
-      operationId: parsed.data.operationId,
-      runId: detail.run.id,
-    });
     return actionOk(detail);
   } catch (error) {
     return mapErrorToActionResult(error);
@@ -746,10 +750,6 @@ export async function syncOfflineRunMutationsAction(
         stepUpdates: parsed.data.stepUpdates,
       }
     );
-    revalidateOperationRoutes({
-      operationId: detail.operation.id,
-      runId: detail.run.id,
-    });
     return actionOk(detail);
   } catch (error) {
     return mapErrorToActionResult(error);
@@ -775,13 +775,12 @@ export async function completeOperationRunAction(
         timezone: parsed.data.timezone ?? user.timezone ?? "UTC",
       }
     );
-    revalidateOperationRoutes({
-      operationId: result.run.operationId,
-      runId: result.run.id,
-    });
-    if (result.habitAutoLogged) {
-      revalidatePath("/app/habits");
-      revalidatePath("/app/today");
+    if (result.verifiedUpdated && result.operationVisibility === "public") {
+      invalidatePublicOperationCacheIfNeeded({
+        slug: result.operationSlug,
+        ownerHandle: result.ownerHandle,
+        affectsPublicCache: true,
+      });
     }
     return actionOk(result);
   } catch (error) {
@@ -803,10 +802,6 @@ export async function abandonOperationRunAction(
       user.id,
       parsed.data.runId
     );
-    revalidateOperationRoutes({
-      operationId: abandoned.operationId,
-      runId: abandoned.id,
-    });
     return actionOk(abandoned);
   } catch (error) {
     return mapErrorToActionResult(error);
@@ -841,11 +836,6 @@ export async function createBlockedStepTaskAction(
         markStepBlocked: parsed.data.markStepBlocked,
       }
     );
-    revalidatePath("/app/inbox");
-    revalidatePath("/app/today");
-    revalidatePath("/app/upcoming");
-    revalidatePath("/app/reminders");
-    revalidateOperationRoutes({ runId: parsed.data.runId });
     return actionOk(result);
   } catch (error) {
     return mapErrorToActionResult(error);
@@ -873,7 +863,6 @@ export async function inviteOperationQuickPickAction(
         role: parsed.data.role,
       }
     );
-    revalidatePath(`/app/operations/${parsed.data.operationId}`);
     return actionOk(result);
   } catch (error) {
     return mapErrorToActionResult(error);
@@ -900,7 +889,6 @@ export async function inviteOperationByEmailAction(
         role: parsed.data.role,
       }
     );
-    revalidatePath(`/app/operations/${parsed.data.operationId}`);
     return actionOk(result);
   } catch (error) {
     return mapErrorToActionResult(error);
@@ -920,8 +908,6 @@ export async function acceptInAppOperationInviteAction(
       user.id,
       parsed.data.invitationId
     );
-    revalidatePath("/app/operations");
-    revalidatePath(`/app/operations/${result.operationId}`);
     return actionOk(result);
   } catch (error) {
     return mapErrorToActionResult(error);
@@ -941,8 +927,6 @@ export async function acceptTokenOperationInviteAction(
       user.id,
       parsed.data.token
     );
-    revalidatePath("/app/operations");
-    revalidatePath(`/app/operations/${result.operationId}`);
     return actionOk(result);
   } catch (error) {
     return mapErrorToActionResult(error);
@@ -962,7 +946,6 @@ export async function declineOperationInviteAction(
       user.id,
       parsed.data.invitationId
     );
-    revalidatePath("/app/operations");
     return actionOk({ declined: true });
   } catch (error) {
     return mapErrorToActionResult(error);
@@ -983,7 +966,6 @@ export async function revokeOperationInviteAction(
       parsed.data.operationId,
       parsed.data.invitationId
     );
-    revalidatePath(`/app/operations/${parsed.data.operationId}`);
     return actionOk({ revoked: true });
   } catch (error) {
     return mapErrorToActionResult(error);
@@ -1005,7 +987,6 @@ export async function updateOperationMemberRoleAction(
       parsed.data.targetUserId,
       parsed.data.role
     );
-    revalidatePath(`/app/operations/${parsed.data.operationId}`);
     return actionOk(updated);
   } catch (error) {
     return mapErrorToActionResult(error);
@@ -1026,7 +1007,6 @@ export async function revokeOperationMemberAction(
       parsed.data.operationId,
       parsed.data.targetUserId
     );
-    revalidatePath(`/app/operations/${parsed.data.operationId}`);
     return actionOk({ revoked: true });
   } catch (error) {
     return mapErrorToActionResult(error);
@@ -1055,7 +1035,6 @@ export async function flagOperationStepAction(
         unlistedToken: parsed.data.unlistedToken,
       }
     );
-    revalidatePath(`/app/operations/${parsed.data.operationId}`);
     return actionOk(created);
   } catch (error) {
     return mapErrorToActionResult(error);
@@ -1076,7 +1055,6 @@ export async function resolveOperationStepFlagAction(
       parsed.data.operationId,
       parsed.data.flagId
     );
-    revalidatePath(`/app/operations/${parsed.data.operationId}`);
     return actionOk(resolved);
   } catch (error) {
     return mapErrorToActionResult(error);
@@ -1102,10 +1080,11 @@ export async function toggleFollowCreatorAction(
           parsed.data.targetUserId
         );
 
-    if (res.targetHandle) {
-      invalidatePublicOperationTags({ ownerHandle: res.targetHandle });
-      revalidatePath(`/u/${res.targetHandle}`);
-    }
+    invalidatePublicOperationCacheIfNeeded({
+      ownerHandle: res.targetHandle,
+      extraHandles: [res.actorHandle],
+      affectsPublicCache: false,
+    });
     return actionOk({
       following: res.following,
       followerCount: res.followerCount,

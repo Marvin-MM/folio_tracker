@@ -1,9 +1,16 @@
 "use client";
 
-import { useCallback } from "react";
-import { useQuery, useQueryClient } from "@tanstack/react-query";
-import { useWorkspaceChrome } from "@/components/shell/workspace-chrome-context";
-import { fetchWorkspaceJson } from "@/lib/query/query-client";
+import { useCallback, useState } from "react";
+import {
+  keepPreviousData,
+  useQuery,
+  useQueryClient,
+} from "@tanstack/react-query";
+import { useWorkspaceUserId } from "@/components/shell/workspace-chrome-context";
+import {
+  fetchWorkspaceJson,
+  WORKSPACE_STALE_TIME_MS,
+} from "@/lib/query/query-client";
 import {
   invalidateWorkspaceDomains,
   workspaceQueryKeys,
@@ -85,11 +92,28 @@ export interface FriendHabitsViewPayload {
   circleBadgeCount: number;
 }
 
+/**
+ * Anchors SSR `initialData` to the client's local clock captured once on mount,
+ * eliminating client-vs-server clock skew refetch storms or stuck caches.
+ */
+function useClientInitialDataUpdatedAt(
+  hasInitialData: boolean,
+  _serverFetchedAtMs?: number
+): number | undefined {
+  void _serverFetchedAtMs;
+  const [clientMountMs] = useState(() => Date.now());
+  return hasInitialData ? clientMountMs : undefined;
+}
+
 export function useWorkspaceBootstrapQuery(
   userId: string,
   initialData: WorkspaceBootstrapPayload,
   initialDataUpdatedAt: number
 ) {
+  const clientUpdatedAt = useClientInitialDataUpdatedAt(
+    true,
+    initialDataUpdatedAt
+  );
   return useQuery({
     queryKey: workspaceQueryKeys.bootstrap(userId),
     queryFn: ({ signal }) =>
@@ -98,7 +122,7 @@ export function useWorkspaceBootstrapQuery(
         signal
       ),
     initialData,
-    initialDataUpdatedAt,
+    initialDataUpdatedAt: clientUpdatedAt,
   });
 }
 
@@ -108,6 +132,10 @@ export function useTasksViewQuery(
   initialData: TasksViewPayload,
   initialDataUpdatedAt: number
 ) {
+  const clientUpdatedAt = useClientInitialDataUpdatedAt(
+    true,
+    initialDataUpdatedAt
+  );
   return useQuery({
     queryKey: workspaceQueryKeys.tasks(userId, view),
     queryFn: ({ signal }) =>
@@ -116,7 +144,7 @@ export function useTasksViewQuery(
         signal
       ),
     initialData,
-    initialDataUpdatedAt,
+    initialDataUpdatedAt: clientUpdatedAt,
   });
 }
 
@@ -125,12 +153,16 @@ export function useNotesViewQuery(
   initialData: NotesViewPayload,
   initialDataUpdatedAt: number
 ) {
+  const clientUpdatedAt = useClientInitialDataUpdatedAt(
+    true,
+    initialDataUpdatedAt
+  );
   return useQuery({
     queryKey: workspaceQueryKeys.notes(userId),
     queryFn: ({ signal }) =>
       fetchWorkspaceJson<NotesViewPayload>("/api/workspace/notes", signal),
     initialData,
-    initialDataUpdatedAt,
+    initialDataUpdatedAt: clientUpdatedAt,
   });
 }
 
@@ -139,6 +171,10 @@ export function useRemindersViewQuery(
   initialData: RemindersViewPayload,
   initialDataUpdatedAt: number
 ) {
+  const clientUpdatedAt = useClientInitialDataUpdatedAt(
+    true,
+    initialDataUpdatedAt
+  );
   return useQuery({
     queryKey: workspaceQueryKeys.reminders(userId),
     queryFn: ({ signal }) =>
@@ -147,7 +183,7 @@ export function useRemindersViewQuery(
         signal
       ),
     initialData,
-    initialDataUpdatedAt,
+    initialDataUpdatedAt: clientUpdatedAt,
   });
 }
 
@@ -157,6 +193,10 @@ export function useProjectWorkspaceQuery(
   initialData: ProjectViewPayload,
   initialDataUpdatedAt: number
 ) {
+  const clientUpdatedAt = useClientInitialDataUpdatedAt(
+    true,
+    initialDataUpdatedAt
+  );
   return useQuery({
     queryKey: workspaceQueryKeys.project(userId, projectId),
     queryFn: ({ signal }) =>
@@ -165,7 +205,7 @@ export function useProjectWorkspaceQuery(
         signal
       ),
     initialData,
-    initialDataUpdatedAt,
+    initialDataUpdatedAt: clientUpdatedAt,
   });
 }
 
@@ -175,6 +215,10 @@ export function useHabitsMonthQuery(
   initialData?: HabitsMonthViewPayload,
   initialDataUpdatedAt?: number
 ) {
+  const clientUpdatedAt = useClientInitialDataUpdatedAt(
+    initialData !== undefined,
+    initialDataUpdatedAt
+  );
   return useQuery({
     queryKey: workspaceQueryKeys.habitsMonth(userId, yearMonth),
     queryFn: ({ signal }) =>
@@ -182,7 +226,10 @@ export function useHabitsMonthQuery(
         `/api/workspace/habits?month=${encodeURIComponent(yearMonth)}`,
         signal
       ),
-    ...(initialData ? { initialData, initialDataUpdatedAt } : {}),
+    placeholderData: keepPreviousData,
+    ...(initialData
+      ? { initialData, initialDataUpdatedAt: clientUpdatedAt }
+      : {}),
   });
 }
 
@@ -192,6 +239,10 @@ export function useHabitsCircleQuery(
   initialData?: HabitsCircleViewPayload,
   initialDataUpdatedAt?: number
 ) {
+  const clientUpdatedAt = useClientInitialDataUpdatedAt(
+    initialData !== undefined,
+    initialDataUpdatedAt
+  );
   return useQuery({
     queryKey: workspaceQueryKeys.habitsCircle(userId, cycleKey),
     queryFn: ({ signal }) => {
@@ -203,7 +254,10 @@ export function useHabitsCircleQuery(
         signal
       );
     },
-    ...(initialData ? { initialData, initialDataUpdatedAt } : {}),
+    placeholderData: keepPreviousData,
+    ...(initialData
+      ? { initialData, initialDataUpdatedAt: clientUpdatedAt }
+      : {}),
   });
 }
 
@@ -215,6 +269,10 @@ export function useFriendHabitsQuery(
   initialData?: FriendHabitsViewPayload,
   initialDataUpdatedAt?: number
 ) {
+  const clientUpdatedAt = useClientInitialDataUpdatedAt(
+    initialData !== undefined,
+    initialDataUpdatedAt
+  );
   return useQuery({
     queryKey: workspaceQueryKeys.friendHabits(
       userId,
@@ -231,7 +289,10 @@ export function useFriendHabitsQuery(
         signal
       );
     },
-    ...(initialData ? { initialData, initialDataUpdatedAt } : {}),
+    placeholderData: keepPreviousData,
+    ...(initialData
+      ? { initialData, initialDataUpdatedAt: clientUpdatedAt }
+      : {}),
   });
 }
 
@@ -250,7 +311,7 @@ export function useWorkspaceInvalidation(userId: string) {
 }
 
 export function useInvalidateWorkspace() {
-  const { userId } = useWorkspaceChrome();
+  const userId = useWorkspaceUserId();
   return useWorkspaceInvalidation(userId);
 }
 
@@ -270,6 +331,10 @@ export function useAdminOverviewQuery(
   initialData?: AdminOverviewPayload,
   initialDataUpdatedAt?: number
 ) {
+  const clientUpdatedAt = useClientInitialDataUpdatedAt(
+    initialData !== undefined,
+    initialDataUpdatedAt
+  );
   const search = new URLSearchParams();
   if (params.query) search.set("q", params.query);
   if (params.roleFilter && params.roleFilter !== "all") {
@@ -293,7 +358,9 @@ export function useAdminOverviewQuery(
     queryKey: workspaceQueryKeys.adminOverview(userId, filterKey),
     queryFn: ({ signal }) =>
       fetchWorkspaceJson<AdminOverviewPayload>(endpoint, signal),
-    ...(initialData ? { initialData, initialDataUpdatedAt } : {}),
+    ...(initialData
+      ? { initialData, initialDataUpdatedAt: clientUpdatedAt }
+      : {}),
   });
 }
 
@@ -302,6 +369,10 @@ export function useAdminSummaryQuery(
   initialData?: AdminOverviewSummaryPayload,
   initialDataUpdatedAt?: number
 ) {
+  const clientUpdatedAt = useClientInitialDataUpdatedAt(
+    initialData !== undefined,
+    initialDataUpdatedAt
+  );
   return useQuery({
     queryKey: workspaceQueryKeys.adminSummary(userId),
     queryFn: ({ signal }) =>
@@ -309,8 +380,10 @@ export function useAdminSummaryQuery(
         "/api/admin/overview?section=overview",
         signal
       ),
-    staleTime: 30_000,
-    ...(initialData ? { initialData, initialDataUpdatedAt } : {}),
+    staleTime: WORKSPACE_STALE_TIME_MS,
+    ...(initialData
+      ? { initialData, initialDataUpdatedAt: clientUpdatedAt }
+      : {}),
   });
 }
 
@@ -384,6 +457,10 @@ export function useOperationsHubQuery(
   initialData?: OperationsHubPayload,
   initialDataUpdatedAt?: number
 ) {
+  const clientUpdatedAt = useClientInitialDataUpdatedAt(
+    initialData !== undefined,
+    initialDataUpdatedAt
+  );
   const search = new URLSearchParams();
   if (params.includeArchived) search.set("archived", "true");
   if (params.domain && params.domain !== "all") search.set("domain", params.domain);
@@ -397,7 +474,10 @@ export function useOperationsHubQuery(
     queryKey: workspaceQueryKeys.operationsHub(userId, filterKey),
     queryFn: ({ signal }) =>
       fetchWorkspaceJson<OperationsHubPayload>(endpoint, signal),
-    ...(initialData ? { initialData, initialDataUpdatedAt } : {}),
+    placeholderData: keepPreviousData,
+    ...(initialData
+      ? { initialData, initialDataUpdatedAt: clientUpdatedAt }
+      : {}),
   });
 }
 
@@ -407,6 +487,10 @@ export function useOperationDetailQuery(
   initialData?: OperationDetailPayload,
   initialDataUpdatedAt?: number
 ) {
+  const clientUpdatedAt = useClientInitialDataUpdatedAt(
+    initialData !== undefined,
+    initialDataUpdatedAt
+  );
   return useQuery({
     queryKey: workspaceQueryKeys.operationDetail(userId, operationId),
     queryFn: ({ signal }) =>
@@ -414,7 +498,9 @@ export function useOperationDetailQuery(
         `/api/workspace/operations/${encodeURIComponent(operationId)}`,
         signal
       ),
-    ...(initialData ? { initialData, initialDataUpdatedAt } : {}),
+    ...(initialData
+      ? { initialData, initialDataUpdatedAt: clientUpdatedAt }
+      : {}),
   });
 }
 
@@ -440,6 +526,10 @@ export function useOperationRunQuery(
   initialData?: OperationRunDetailPayload,
   initialDataUpdatedAt?: number
 ) {
+  const clientUpdatedAt = useClientInitialDataUpdatedAt(
+    initialData !== undefined,
+    initialDataUpdatedAt
+  );
   return useQuery({
     queryKey: workspaceQueryKeys.operationRun(userId, runId),
     queryFn: ({ signal }) =>
@@ -447,7 +537,9 @@ export function useOperationRunQuery(
         `/api/workspace/operations/runs/${encodeURIComponent(runId)}`,
         signal
       ),
-    ...(initialData ? { initialData, initialDataUpdatedAt } : {}),
+    ...(initialData
+      ? { initialData, initialDataUpdatedAt: clientUpdatedAt }
+      : {}),
   });
 }
 
@@ -463,7 +555,7 @@ export function usePrefetchWorkspaceView(userId: string) {
             `/api/workspace/tasks?view=${encodeURIComponent(view)}`,
             signal
           ),
-        staleTime: 30_000,
+        staleTime: WORKSPACE_STALE_TIME_MS,
       });
     },
     [queryClient, userId]
@@ -474,7 +566,7 @@ export function usePrefetchWorkspaceView(userId: string) {
       queryKey: workspaceQueryKeys.notes(userId),
       queryFn: ({ signal }) =>
         fetchWorkspaceJson<NotesViewPayload>("/api/workspace/notes", signal),
-      staleTime: 30_000,
+      staleTime: WORKSPACE_STALE_TIME_MS,
     });
   }, [queryClient, userId]);
 
@@ -486,7 +578,7 @@ export function usePrefetchWorkspaceView(userId: string) {
           "/api/workspace/reminders",
           signal
         ),
-      staleTime: 30_000,
+      staleTime: WORKSPACE_STALE_TIME_MS,
     });
   }, [queryClient, userId]);
 
@@ -499,7 +591,7 @@ export function usePrefetchWorkspaceView(userId: string) {
             `/api/workspace/projects/${encodeURIComponent(projectId)}`,
             signal
           ),
-        staleTime: 30_000,
+        staleTime: WORKSPACE_STALE_TIME_MS,
       });
     },
     [queryClient, userId]
@@ -514,7 +606,7 @@ export function usePrefetchWorkspaceView(userId: string) {
             `/api/workspace/habits?month=${encodeURIComponent(yearMonth)}`,
             signal
           ),
-        staleTime: 30_000,
+        staleTime: WORKSPACE_STALE_TIME_MS,
       });
     },
     [queryClient, userId]
@@ -531,7 +623,7 @@ export function usePrefetchWorkspaceView(userId: string) {
               : "/api/workspace/habits/circle",
             signal
           ),
-        staleTime: 30_000,
+        staleTime: WORKSPACE_STALE_TIME_MS,
       });
     },
     [queryClient, userId]
@@ -555,7 +647,7 @@ export function usePrefetchWorkspaceView(userId: string) {
             signal
           );
         },
-        staleTime: 30_000,
+        staleTime: WORKSPACE_STALE_TIME_MS,
       });
     },
     [queryClient, userId]
@@ -569,7 +661,7 @@ export function usePrefetchWorkspaceView(userId: string) {
           "/api/admin/overview?section=overview",
           signal
         ),
-      staleTime: 30_000,
+      staleTime: WORKSPACE_STALE_TIME_MS,
     });
   }, [queryClient, userId]);
 
@@ -582,7 +674,7 @@ export function usePrefetchWorkspaceView(userId: string) {
           "/api/admin/overview?section=users",
           signal
         ),
-      staleTime: 30_000,
+      staleTime: WORKSPACE_STALE_TIME_MS,
     });
   }, [queryClient, userId]);
 
@@ -594,7 +686,7 @@ export function usePrefetchWorkspaceView(userId: string) {
           "/api/admin/overview?section=timeline",
           signal
         ),
-      staleTime: 30_000,
+      staleTime: WORKSPACE_STALE_TIME_MS,
     });
   }, [queryClient, userId]);
 
@@ -606,7 +698,7 @@ export function usePrefetchWorkspaceView(userId: string) {
           "/api/workspace/operations",
           signal
         ),
-      staleTime: 30_000,
+      staleTime: WORKSPACE_STALE_TIME_MS,
     });
   }, [queryClient, userId]);
 

@@ -50,10 +50,15 @@ export function AddReminderPopover({
   const invalidate = useInvalidateWorkspace();
   const [isPending, startTransition] = useTransition();
 
-  const [customDate, setCustomDate] = useState(() =>
-    computeDefaultTomorrowDate(timezone)
-  );
+  const [customDate, setCustomDate] = useState("");
   const [customTime, setCustomTime] = useState("09:00");
+
+  const handleOpenChange = (nextOpen: boolean) => {
+    if (nextOpen && !customDate) {
+      setCustomDate(computeDefaultTomorrowDate(timezone));
+    }
+    setOpen(nextOpen);
+  };
 
   const scheduleAt = (remindAtUtcMs: number) => {
     startTransition(async () => {
@@ -95,7 +100,7 @@ export function AddReminderPopover({
   };
 
   return (
-    <Popover open={open} onOpenChange={setOpen}>
+    <Popover open={open} onOpenChange={handleOpenChange}>
       <PopoverTrigger asChild>
         <Button
           type="button"

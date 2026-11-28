@@ -125,6 +125,7 @@ export class WebPushNotificationChannel implements NotificationChannel {
     );
 
     const removedEndpoints: string[] = [];
+    const retryableErrors: unknown[] = [];
     let successCount = 0;
 
     for (let i = 0; i < settled.length; i++) {
@@ -140,7 +141,22 @@ export class WebPushNotificationChannel implements NotificationChannel {
       if (statusCode === 404 || statusCode === 410) {
         await this.repo.deletePushSubscriptionByEndpoint(sub.endpoint);
         removedEndpoints.push(sub.endpoint);
+      } else if (
+        statusCode === null ||
+        statusCode === 429 ||
+        statusCode >= 500
+      ) {
+        retryableErrors.push(outcome.reason);
       }
+    }
+
+    // Re-throw transient push service failures (5xx / 429 / network) when no
+    // subscription succeeded so Inngest exponential retries can recover cleanly.
+    if (successCount === 0 && retryableErrors.length > 0) {
+      const firstError = retryableErrors[0];
+      throw firstError instanceof Error
+        ? firstError
+        : new Error("Transient Web Push delivery failure.");
     }
 
     return {

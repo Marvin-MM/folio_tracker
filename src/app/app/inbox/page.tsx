@@ -1,5 +1,5 @@
 import type { Metadata } from "next";
-import { InboxWorkspaceClient } from "@/components/workspace/workspace-query-views";
+import { InboxWorkspaceClient } from "@/components/workspace/inbox-workspace-client";
 import { getServerTimestampMs } from "@/lib/query/clock";
 import { requireSession } from "@/server/dal/auth-guard";
 import { taskRepository } from "@/server/dal/task-repository";

@@ -71,6 +71,13 @@
       "when": 1795772452908,
       "tag": "0009_operations_phase_2",
       "breakpoints": true
+    },
+    {
+      "idx": 10,
+      "version": "6",
+      "when": 1795802432773,
+      "tag": "0010_perf_indexes_and_dedup",
+      "breakpoints": true
     }
   ]
 }

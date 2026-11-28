@@ -1,9 +1,11 @@
 "use client";
 
 import {
+  useCallback,
   useEffect,
   useMemo,
   useOptimistic,
+  useRef,
   useState,
   useTransition,
 } from "react";
@@ -33,15 +35,9 @@ import {
   lockHabitMonthAction,
   logHabitDayAction,
 } from "@/actions/habits";
-import { BulkImportHabitsDialog } from "@/components/habits/bulk-import-habits-dialog";
-import { BulkImportHistoryDialog } from "@/components/habits/bulk-import-history-dialog";
-import { CreateHabitDialog } from "@/components/habits/create-habit-dialog";
-import { HabitSettingsSheet } from "@/components/habits/habit-settings-sheet";
 import { HabitsMatrix } from "@/components/habits/habits-matrix";
-import { ManageMonthRosterDialog } from "@/components/habits/manage-month-roster-dialog";
-import { MonthLockDialog } from "@/components/habits/month-lock-dialog";
 import { useDetailSheet } from "@/components/shell/detail-sheet-context";
-import { useWorkspaceChrome } from "@/components/shell/workspace-chrome-context";
+import { useWorkspaceUserId } from "@/components/shell/workspace-chrome-context";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/skeleton";
@@ -67,6 +63,49 @@ import {
 } from "@/server/domain/habit-analytics";
 import type { HabitMonthWorkspace } from "@/server/services/habit-service";
 import { useWorkspaceUIStore } from "@/stores/workspace-ui-store";
+
+const CreateHabitDialog = dynamic(
+  () =>
+    import("@/components/habits/create-habit-dialog").then(
+      (mod) => mod.CreateHabitDialog
+    ),
+  { ssr: false }
+);
+const BulkImportHabitsDialog = dynamic(
+  () =>
+    import("@/components/habits/bulk-import-habits-dialog").then(
+      (mod) => mod.BulkImportHabitsDialog
+    ),
+  { ssr: false }
+);
+const BulkImportHistoryDialog = dynamic(
+  () =>
+    import("@/components/habits/bulk-import-history-dialog").then(
+      (mod) => mod.BulkImportHistoryDialog
+    ),
+  { ssr: false }
+);
+const ManageMonthRosterDialog = dynamic(
+  () =>
+    import("@/components/habits/manage-month-roster-dialog").then(
+      (mod) => mod.ManageMonthRosterDialog
+    ),
+  { ssr: false }
+);
+const HabitSettingsSheet = dynamic(
+  () =>
+    import("@/components/habits/habit-settings-sheet").then(
+      (mod) => mod.HabitSettingsSheet
+    ),
+  { ssr: false }
+);
+const MonthLockDialog = dynamic(
+  () =>
+    import("@/components/habits/month-lock-dialog").then(
+      (mod) => mod.MonthLockDialog
+    ),
+  { ssr: false }
+);
 
 const HabitsAnalyticsCharts = dynamic(
   () =>
@@ -160,7 +199,7 @@ export function HabitsWorkspaceView({
 }: HabitsWorkspaceViewProps) {
   const router = useRouter();
   const { openDetail } = useDetailSheet();
-  const { userId } = useWorkspaceChrome();
+  const userId = useWorkspaceUserId();
   const invalidate = useWorkspaceInvalidation(userId);
   const [, startTransition] = useTransition();
 
@@ -191,7 +230,9 @@ export function HabitsWorkspaceView({
   const activeScoringMode: ScoringMode = modeTouched
     ? storedScoringMode
     : initialModeOverride ?? storedScoringMode;
-  const [optimisticDirty, setOptimisticDirty] = useState(false);
+  const pendingMutationCountRef = useRef(0);
+  const [pendingMutationCount, setPendingMutationCount] = useState(0);
+  const optimisticDirty = pendingMutationCount > 0;
 
   const [optimisticLogsByKey, applyOptimisticLog] = useOptimistic<
     Record<string, HabitLogRecord>,
@@ -295,7 +336,7 @@ export function HabitsWorkspaceView({
         toast.error(result.error.message);
         return;
       }
-      await invalidate(["habits", "today", "sidebar", "admin"]);
+      await invalidate(["habits", "today", "sidebar"]);
       toast.success(
         `Carried over ${result.data.habitIds.length} habits from ${workspace.previousRosterSource!.monthLabel} into ${analytics.calendar.monthLabel}.`
       );
@@ -307,68 +348,98 @@ export function HabitsWorkspaceView({
     setStoredScoringMode(nextMode);
   };
 
-  const handleCycleLog = (
-    habit: HabitRecord,
-    dateKey: string,
-    nextStatus: HabitLogStatus | null
-  ) => {
-    setOptimisticDirty(true);
-    startTransition(async () => {
-      applyOptimisticLog({
-        habitId: habit.id,
-        userId: habit.userId,
-        dateKey,
-        status: nextStatus,
-        preserveNote: true,
+  const handleCycleLog = useCallback(
+    (
+      habit: HabitRecord,
+      dateKey: string,
+      nextStatus: HabitLogStatus | null
+    ) => {
+      pendingMutationCountRef.current += 1;
+      setPendingMutationCount(pendingMutationCountRef.current);
+      startTransition(async () => {
+        try {
+          applyOptimisticLog({
+            habitId: habit.id,
+            userId: habit.userId,
+            dateKey,
+            status: nextStatus,
+            preserveNote: true,
+          });
+
+          const result = await logHabitDayAction({
+            habitId: habit.id,
+            dateKey,
+            status: nextStatus,
+          });
+
+          if (!result.ok) {
+            toast.error(result.error.message);
+          } else {
+            await invalidate(
+              result.data.syncedTaskCount > 0
+                ? ["habits", "today", "tasks", "sidebar"]
+                : ["habits", "today"]
+            );
+          }
+        } finally {
+          pendingMutationCountRef.current = Math.max(
+            0,
+            pendingMutationCountRef.current - 1
+          );
+          setPendingMutationCount(pendingMutationCountRef.current);
+        }
       });
+    },
+    [applyOptimisticLog, invalidate]
+  );
 
-      const result = await logHabitDayAction({
-        habitId: habit.id,
-        dateKey,
-        status: nextStatus,
+  const handleSaveCellDetail = useCallback(
+    (
+      habit: HabitRecord,
+      dateKey: string,
+      nextStatus: HabitLogStatus | null,
+      nextNote: string | null
+    ) => {
+      pendingMutationCountRef.current += 1;
+      setPendingMutationCount(pendingMutationCountRef.current);
+      startTransition(async () => {
+        try {
+          applyOptimisticLog({
+            habitId: habit.id,
+            userId: habit.userId,
+            dateKey,
+            status: nextStatus,
+            note: nextNote,
+            preserveNote: false,
+          });
+
+          const result = await logHabitDayAction({
+            habitId: habit.id,
+            dateKey,
+            status: nextStatus,
+            note: nextNote,
+          });
+
+          if (!result.ok) {
+            toast.error(result.error.message);
+          } else {
+            await invalidate(
+              result.data.syncedTaskCount > 0
+                ? ["habits", "today", "tasks", "sidebar"]
+                : ["habits", "today"]
+            );
+          }
+        } finally {
+          pendingMutationCountRef.current = Math.max(
+            0,
+            pendingMutationCountRef.current - 1
+          );
+          setPendingMutationCount(pendingMutationCountRef.current);
+        }
       });
-
-      if (!result.ok) {
-        toast.error(result.error.message);
-      } else {
-        await invalidate(["habits", "today", "tasks", "sidebar"]);
-      }
-      setOptimisticDirty(false);
-    });
-  };
-
-  const handleSaveCellDetail = (
-    habit: HabitRecord,
-    dateKey: string,
-    nextStatus: HabitLogStatus | null,
-    nextNote: string | null
-  ) => {
-    setOptimisticDirty(true);
-    startTransition(async () => {
-      applyOptimisticLog({
-        habitId: habit.id,
-        userId: habit.userId,
-        dateKey,
-        status: nextStatus,
-        note: nextNote,
-        preserveNote: false,
-      });
-
-      const result = await logHabitDayAction({
-        habitId: habit.id,
-        dateKey,
-        status: nextStatus,
-        note: nextNote,
-      });
-
-      if (!result.ok) {
-        toast.error(result.error.message);
-      } else {
-        await invalidate(["habits", "today", "tasks", "sidebar"]);
-      }
-      setOptimisticDirty(false);
-    });
-  };
+    },
+    [applyOptimisticLog, invalidate]
+  );
 
   const handleRestoreArchived = (habit: HabitRecord) => {
     startTransition(async () => {
@@ -414,48 +485,60 @@ export function HabitsWorkspaceView({
 
   return (
     <div className="min-w-0 space-y-4">
-      <CreateHabitDialog
-        open={createOpen}
-        onOpenChange={setCreateOpen}
-        todayDateKey={workspace.todayDateKey}
-        targetYearMonth={workspace.yearMonth}
-        projects={projects}
-      />
-      <BulkImportHabitsDialog
-        open={bulkOpen}
-        onOpenChange={setBulkOpen}
-        targetYearMonth={workspace.yearMonth}
-        onSwitchToHistoryImport={() => setHistoryOpen(true)}
-      />
-      <BulkImportHistoryDialog
-        open={historyOpen}
-        onOpenChange={setHistoryOpen}
-        todayDateKey={workspace.todayDateKey}
-      />
-      <ManageMonthRosterDialog
-        key={`${workspace.yearMonth}-${rosterSession}`}
-        open={rosterOpen}
-        onOpenChange={setRosterOpen}
-        yearMonth={workspace.yearMonth}
-        monthLabel={analytics.calendar.monthLabel}
-        allHabits={workspace.allHabits}
-        initialSelectedIds={rosterInitialIds}
-        previousRosterSource={workspace.previousRosterSource}
-      />
-      <HabitSettingsSheet
-        open={settingsOpen}
-        onOpenChange={setSettingsOpen}
-        settings={workspace.settings}
-        timezone={timezone}
-      />
-      <MonthLockDialog
-        open={unlockOpen}
-        onOpenChange={setUnlockOpen}
-        yearMonth={workspace.yearMonth}
-        monthLabel={analytics.calendar.monthLabel}
-        hasPin={workspace.settings.hasMonthLockPin}
-        isAutoLocked={monthLock.phase === "locked_auto"}
-      />
+      {createOpen ? (
+        <CreateHabitDialog
+          open={createOpen}
+          onOpenChange={setCreateOpen}
+          todayDateKey={workspace.todayDateKey}
+          targetYearMonth={workspace.yearMonth}
+          projects={projects}
+        />
+      ) : null}
+      {bulkOpen ? (
+        <BulkImportHabitsDialog
+          open={bulkOpen}
+          onOpenChange={setBulkOpen}
+          targetYearMonth={workspace.yearMonth}
+          onSwitchToHistoryImport={() => setHistoryOpen(true)}
+        />
+      ) : null}
+      {historyOpen ? (
+        <BulkImportHistoryDialog
+          open={historyOpen}
+          onOpenChange={setHistoryOpen}
+          todayDateKey={workspace.todayDateKey}
+        />
+      ) : null}
+      {rosterOpen ? (
+        <ManageMonthRosterDialog
+          key={`${workspace.yearMonth}-${rosterSession}`}
+          open={rosterOpen}
+          onOpenChange={setRosterOpen}
+          yearMonth={workspace.yearMonth}
+          monthLabel={analytics.calendar.monthLabel}
+          allHabits={workspace.allHabits}
+          initialSelectedIds={rosterInitialIds}
+          previousRosterSource={workspace.previousRosterSource}
+        />
+      ) : null}
+      {settingsOpen ? (
+        <HabitSettingsSheet
+          open={settingsOpen}
+          onOpenChange={setSettingsOpen}
+          settings={workspace.settings}
+          timezone={timezone}
+        />
+      ) : null}
+      {unlockOpen ? (
+        <MonthLockDialog
+          open={unlockOpen}
+          onOpenChange={setUnlockOpen}
+          yearMonth={workspace.yearMonth}
+          monthLabel={analytics.calendar.monthLabel}
+          hasPin={workspace.settings.hasMonthLockPin}
+          isAutoLocked={monthLock.phase === "locked_auto"}
+        />
+      ) : null}
 
       {/* Toolbar: Month Switcher, Scoring Mode Toggle, Actions */}
       <div className="flex flex-wrap items-center justify-between gap-2.5">

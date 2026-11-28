@@ -128,7 +128,11 @@ export function QuickCaptureDialog({
   };
 
   const handleKeyDown = (event: KeyboardEvent<HTMLInputElement>) => {
-    if (event.key === "Tab" && !event.shiftKey && !event.metaKey && !event.ctrlKey) {
+    // Avoid trapping standard Tab focus traversal (WCAG 2.1.2); use Alt+M or Ctrl+Tab to switch mode.
+    if (
+      (event.altKey && event.key.toLowerCase() === "m") ||
+      (event.ctrlKey && event.key === "Tab")
+    ) {
       event.preventDefault();
       setDefaultKind((prev) => (prev === "task" ? "note" : "task"));
       return;
@@ -214,7 +218,7 @@ export function QuickCaptureDialog({
           <DialogDescription className="text-[11px] text-muted-foreground">
             Type naturally (e.g. &ldquo;Pay Umeme bill tomorrow 9am&rdquo;). Press{" "}
             <kbd className="mono-tabular rounded border border-border bg-background px-1 py-0.5 text-[10px]">
-              Tab
+              Alt+M
             </kbd>{" "}
             or prefix with{" "}
             <code className="mono-tabular rounded border border-border bg-background px-1 py-0.5 text-[10px]">

@@ -62,6 +62,8 @@ import {
 } from "@/components/ui/select";
 import { Textarea } from "@/components/ui/textarea";
 import { setEphemeralRunSecrets } from "@/lib/ephemeral-run-secrets";
+import { getBrowserQueryClient } from "@/lib/query/query-client";
+import { workspaceQueryKeys } from "@/lib/query/query-keys";
 import { cn } from "@/lib/utils";
 import {
   getOperationDomainPreset,
@@ -199,8 +201,15 @@ export function GuestOperationRunner({
       }
 
       if (Object.keys(secrets).length > 0) {
-        setEphemeralRunSecrets(result.data.run.id, secrets);
+        setEphemeralRunSecrets(
+          result.data.run.runnerId,
+          result.data.run.id,
+          secrets
+        );
       }
+      await getBrowserQueryClient().invalidateQueries({
+        queryKey: workspaceQueryKeys.operationsRoot(result.data.run.runnerId),
+      });
       toast.success("Saved run started.");
       router.push(`/app/operations/runs/${result.data.run.id}`);
     });
@@ -221,6 +230,9 @@ export function GuestOperationRunner({
         toast.error(result.error.message);
         return;
       }
+      await getBrowserQueryClient().invalidateQueries({
+        queryKey: workspaceQueryKeys.operationsRoot(result.data.forked.ownerId),
+      });
       toast.success("Forked to your workspace.");
       router.push(`/app/operations/${result.data.forked.id}`);
     });
@@ -286,7 +298,7 @@ export function GuestOperationRunner({
               className={cn(
                 "mono-tabular mt-0.5 inline-flex size-6 shrink-0 items-center justify-center rounded-md border text-[11px] font-semibold",
                 isDone
-                  ? "border-done bg-done text-white"
+                  ? "border-done bg-done text-primary-foreground"
                   : "border-border bg-background text-foreground"
               )}
             >
@@ -417,6 +429,7 @@ export function GuestOperationRunner({
           <div className="rounded-md border border-overdue/30 bg-overdue/5">
             <button
               type="button"
+              aria-expanded={isRollbackOpen}
               onClick={() => toggleRollback(step.key)}
               className="flex w-full items-center justify-between px-3 py-2 text-left text-xs font-medium text-overdue"
             >
@@ -457,7 +470,7 @@ export function GuestOperationRunner({
               }}
               className={cn(
                 "h-9 gap-1.5 px-3 text-xs md:h-8",
-                isDone && "bg-done text-white hover:bg-done/90"
+                isDone && "bg-done text-primary-foreground hover:bg-done/90"
               )}
             >
               {isDone ? (
@@ -777,6 +790,7 @@ export function GuestOperationRunner({
         <section className="rounded-lg border border-border bg-card">
           <button
             type="button"
+            aria-expanded={preflightOpen}
             onClick={() => setPreflightOpen((o) => !o)}
             className="flex w-full items-center justify-between px-4 py-3 text-left"
           >

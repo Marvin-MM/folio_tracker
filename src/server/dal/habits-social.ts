@@ -7,7 +7,6 @@ import {
   inArray,
   isNull,
   ne,
-  sql,
 } from "drizzle-orm";
 import { ForbiddenError, NotFoundError } from "@/server/dal/errors";
 import {
@@ -73,6 +72,7 @@ export interface BasicUserProfile {
   email: string;
   timezone: string;
   emailVerified: boolean;
+  isSuspended: boolean;
 }
 
 export interface MonitorWithUser extends HabitMonitorRecord {
@@ -205,6 +205,11 @@ export interface HabitSocialRepository {
     userId: string,
     nowMs: number
   ): Promise<KnownCollaborator[]>;
+  isProjectCollaborator(
+    ownerId: string,
+    targetUserId: string,
+    executor?: DbExecutor
+  ): Promise<boolean>;
   findUserByNormalizedEmail(
     normalizedEmail: string,
     executor?: DbExecutor
@@ -260,7 +265,8 @@ export interface HabitSocialRepository {
   ): Promise<HabitMonitorRecord | null>;
   listActiveMonitorPairsPage(
     limit: number,
-    offset: number
+    offset: number,
+    afterId?: string | null
   ): Promise<ActiveMonitorDigestCandidate[]>;
   createMonitorRequest(
     input: CreateMonitorRequestRowInput,
@@ -422,6 +428,34 @@ export class DrizzleHabitSocialRepository implements HabitSocialRepository {
     );
   }
 
+  async isProjectCollaborator(
+    ownerId: string,
+    targetUserId: string,
+    executor: DbExecutor = this.database
+  ): Promise<boolean> {
+    if (!ownerId || !targetUserId || ownerId === targetUserId) return false;
+    const ownerProjects = await executor
+      .select({ projectId: projectMembers.projectId })
+      .from(projectMembers)
+      .where(eq(projectMembers.userId, ownerId));
+    if (ownerProjects.length === 0) return false;
+
+    const [match] = await executor
+      .select({ projectId: projectMembers.projectId })
+      .from(projectMembers)
+      .where(
+        and(
+          eq(projectMembers.userId, targetUserId),
+          inArray(
+            projectMembers.projectId,
+            ownerProjects.map((p) => p.projectId)
+          )
+        )
+      )
+      .limit(1);
+    return Boolean(match);
+  }
+
   async findUserByNormalizedEmail(
     normalizedEmail: string,
     executor: DbExecutor = this.database
@@ -434,9 +468,10 @@ export class DrizzleHabitSocialRepository implements HabitSocialRepository {
         email: users.email,
         timezone: users.timezone,
         emailVerified: users.emailVerified,
+        isSuspended: users.isSuspended,
       })
       .from(users)
-      .where(sql`lower(${users.email}) = ${clean}`)
+      .where(eq(users.email, clean))
       .limit(1);
 
     return row ?? null;
@@ -453,6 +488,7 @@ export class DrizzleHabitSocialRepository implements HabitSocialRepository {
         email: users.email,
         timezone: users.timezone,
         emailVerified: users.emailVerified,
+        isSuspended: users.isSuspended,
       })
       .from(users)
       .where(eq(users.id, userId))
@@ -782,15 +818,22 @@ export class DrizzleHabitSocialRepository implements HabitSocialRepository {
 
   async listActiveMonitorPairsPage(
     limit = 200,
-    offset = 0
+    offset = 0,
+    afterId?: string | null
   ): Promise<ActiveMonitorDigestCandidate[]> {
-    const monitorRows = await this.database
+    const conditions = [eq(habitMonitors.status, "active")];
+    if (afterId) {
+      conditions.push(gt(habitMonitors.id, afterId));
+    }
+
+    const baseQuery = this.database
       .select()
       .from(habitMonitors)
-      .where(eq(habitMonitors.status, "active"))
+      .where(and(...conditions))
       .orderBy(asc(habitMonitors.id))
-      .limit(limit)
-      .offset(offset);
+      .limit(limit);
+
+    const monitorRows = afterId ? await baseQuery : await baseQuery.offset(offset);
 
     if (monitorRows.length === 0) return [];
 
@@ -808,6 +851,7 @@ export class DrizzleHabitSocialRepository implements HabitSocialRepository {
           id: users.id,
           name: users.name,
           timezone: users.timezone,
+          isSuspended: users.isSuspended,
         })
         .from(users)
         .where(inArray(users.id, userIds)),
@@ -837,7 +881,9 @@ export class DrizzleHabitSocialRepository implements HabitSocialRepository {
       .map((monitor): ActiveMonitorDigestCandidate | null => {
         const owner = userMap.get(monitor.ownerId);
         const watcher = userMap.get(monitor.monitorUserId);
-        if (!owner || !watcher) return null;
+        if (!owner || !watcher || owner.isSuspended || watcher.isSuspended) {
+          return null;
+        }
 
         const globalSettings: HabitTrackerSettingsRecord =
           settingsMap.get(monitor.ownerId) ?? {
@@ -1310,6 +1356,7 @@ export class DrizzleHabitSocialRepository implements HabitSocialRepository {
         reactionType: input.reactionType,
         createdAt: input.nowMs,
       })
+      .onConflictDoNothing()
       .returning();
 
     return { active: true, reaction: created ?? null };

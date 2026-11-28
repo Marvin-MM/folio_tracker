@@ -26,7 +26,7 @@ describe("TanStack Query keys, retry policy, and targeted invalidation", () => {
     expect(workspaceQueryKeys.habitsMonth("user-a", "2026-11")).toEqual([
       "workspace",
       "user-a",
-      "habits",
+      "habits-board",
       "month",
       "2026-11",
     ]);
@@ -35,15 +35,18 @@ describe("TanStack Query keys, retry policy, and targeted invalidation", () => {
     ).toEqual([
       "workspace",
       "user-a",
-      "habits",
-      "friend",
+      "habits-friend",
       "owner-1",
       "2026-11",
       "2026-W47",
     ]);
+    // Disambiguated roots prevent invalidating habits board from thrashing circle/friend caches
+    expect(workspaceQueryKeys.habitsRoot("user-a")).not.toEqual(
+      workspaceQueryKeys.habitsCircleRoot("user-a").slice(0, 3)
+    );
   });
 
-  it("never retries 4xx client/auth errors and retries transient errors up to 2 times", () => {
+  it("never retries 4xx client/auth errors (except 408) and retries transient errors up to 2 times", () => {
     expect(
       shouldRetryWorkspaceQuery(0, new WorkspaceHttpError(401, "UNAUTHORIZED", "No"))
     ).toBe(false);
@@ -53,6 +56,15 @@ describe("TanStack Query keys, retry policy, and targeted invalidation", () => {
     expect(
       shouldRetryWorkspaceQuery(0, new WorkspaceHttpError(404, "NOT_FOUND", "No"))
     ).toBe(false);
+    expect(
+      shouldRetryWorkspaceQuery(0, new WorkspaceHttpError(409, "CONFLICT", "No"))
+    ).toBe(false);
+    expect(
+      shouldRetryWorkspaceQuery(0, new WorkspaceHttpError(429, "RATE_LIMIT", "No"))
+    ).toBe(false);
+    expect(
+      shouldRetryWorkspaceQuery(0, new WorkspaceHttpError(408, "TIMEOUT", "Retry"))
+    ).toBe(true);
     expect(
       shouldRetryWorkspaceQuery(0, new WorkspaceHttpError(503, "UNAVAILABLE", "Retry"))
     ).toBe(true);

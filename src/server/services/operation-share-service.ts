@@ -61,6 +61,16 @@ function normalizeEmail(raw: string): string {
   return raw.trim().toLowerCase();
 }
 
+export interface SafeOperationPendingInvitation {
+  id: string;
+  operationId: string;
+  role: OperationMemberRole;
+  status: OperationInvitationRecord["status"];
+  targetEmail: string;
+  expiresAt: number;
+  createdAt: number;
+}
+
 export interface OperationShareDashboardPayload {
   operationId: string;
   operationTitle: string;
@@ -71,7 +81,7 @@ export interface OperationShareDashboardPayload {
   hasUnlistedLink: boolean;
   linkedProject: { id: string; name: string; colorToken: string } | null;
   members: OperationMemberWithUser[];
-  pendingInvitations: OperationInvitationRecord[];
+  pendingInvitations: SafeOperationPendingInvitation[];
   quickPickContacts: QuickPickShareContact[];
 }
 
@@ -90,8 +100,6 @@ export interface SendOperationInviteResult {
   /** Uniform anti-enumeration status text safe to display in UI. */
   message: string;
   invitationId: string | null;
-  /** Returned ONLY when an external invite URL was minted for sharing manually. */
-  inviteUrl: string | null;
 }
 
 export interface OperationShareServiceDeps {
@@ -172,6 +180,20 @@ export class OperationShareService {
       (c) => !existingMemberIds.has(c.userId)
     );
 
+    const safePendingInvitations: SafeOperationPendingInvitation[] =
+      pendingInvitations.map((inv) => ({
+        id: inv.id,
+        operationId: inv.operationId,
+        role: inv.role,
+        status: inv.status,
+        // Mask email on user-targeted invites & never expose tokenHash/targetUserId
+        targetEmail: inv.targetUserId
+          ? maskEmailHint(inv.targetEmail)
+          : inv.targetEmail,
+        expiresAt: inv.expiresAt,
+        createdAt: inv.createdAt,
+      }));
+
     return {
       operationId: operation.id,
       operationTitle: operation.title,
@@ -188,7 +210,7 @@ export class OperationShareService {
           }
         : null,
       members,
-      pendingInvitations,
+      pendingInvitations: safePendingInvitations,
       quickPickContacts: filteredContacts,
     };
   }
@@ -228,6 +250,17 @@ export class OperationShareService {
           tx
         );
         assertOperationCapability(recheck, "canManageSharing");
+
+        const isAllowedContact = await this.social.isQuickPickContact(
+          ownerId,
+          input.targetUserId,
+          tx
+        );
+        if (!isAllowedContact) {
+          throw new ForbiddenError(
+            "Quick-invite is only available for people in your follows, Accountability Circle, or shared projects."
+          );
+        }
 
         const ownerRow = await this.users.getById(ownerId, tx);
         const targetUser = await this.users.getById(input.targetUserId, tx);
@@ -287,7 +320,6 @@ export class OperationShareService {
     return {
       message: "Invitation sent.",
       invitationId: invitation.id,
-      inviteUrl: null,
     };
   }
 
@@ -353,7 +385,6 @@ export class OperationShareService {
           // Uniform anti-enumeration response — do not reveal whether pending is in-app vs external
           return {
             invitationId: existingPending.id,
-            inviteUrl: null as string | null,
             event: null as AppDomainEvent | null,
           };
         }
@@ -380,7 +411,6 @@ export class OperationShareService {
 
           return {
             invitationId: created.id,
-            inviteUrl: null as string | null,
             event: {
               id: `op-inv-inapp-${created.id}`,
               name: "app/operation.invited_in_app" as const,
@@ -414,7 +444,6 @@ export class OperationShareService {
 
         return {
           invitationId: created.id,
-          inviteUrl,
           event: {
             id: `op-inv-email-${created.id}`,
             name: "app/operation.invited_email" as const,
@@ -443,11 +472,10 @@ export class OperationShareService {
       }
     }
 
-    // Uniform message regardless of existing user vs non-user (anti-enumeration)
+    // Strict anti-enumeration: uniform payload regardless of existing user vs non-user
     return {
       message: "Invitation sent.",
       invitationId: txResult.invitationId,
-      inviteUrl: txResult.inviteUrl,
     };
   }
 
@@ -504,10 +532,13 @@ export class OperationShareService {
           throw new NotFoundError("Invitation not found.");
         }
 
-        const matchesUser =
-          invite.targetUserId === userId ||
-          normalizeEmail(userRow.email) === normalizeEmail(invite.targetEmail);
-        if (!matchesUser) {
+        if (!userRow.emailVerified) {
+          throw new ForbiddenError(
+            "Please verify your email address before accepting invitations."
+          );
+        }
+
+        if (invite.targetUserId !== userId) {
           throw new ForbiddenError("This invitation is addressed to another account.");
         }
 
@@ -607,10 +638,7 @@ export class OperationShareService {
         if (!userRow || !invite) {
           throw new NotFoundError("Invitation not found.");
         }
-        const matchesUser =
-          invite.targetUserId === userId ||
-          normalizeEmail(userRow.email) === normalizeEmail(invite.targetEmail);
-        if (!matchesUser) {
+        if (invite.targetUserId !== userId) {
           throw new ForbiddenError();
         }
         const updated = await this.social.updateInvitationStatusAtomically(
@@ -676,15 +704,15 @@ export class OperationShareService {
       throw new ValidationError("Cannot change the owner's own role.");
     }
 
-    return withDbRetry(() =>
-      this.social.upsertMember({
-        operationId,
-        userId: targetUserId,
-        role,
-        grantedById: ownerId,
-        nowMs: this.now(),
-      })
+    await this.enforceInviteRateLimit(ownerId);
+
+    const updated = await withDbRetry(() =>
+      this.social.updateMemberRole(operationId, targetUserId, role)
     );
+    if (!updated) {
+      throw new NotFoundError("Member not found on this operation.");
+    }
+    return updated;
   }
 
   async revokeMember(

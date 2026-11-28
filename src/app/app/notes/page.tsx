@@ -1,5 +1,5 @@
 import type { Metadata } from "next";
-import { NotesWorkspaceClient } from "@/components/workspace/workspace-query-views";
+import { NotesWorkspaceClient } from "@/components/workspace/notes-workspace-client";
 import { getServerTimestampMs } from "@/lib/query/clock";
 import { requireSession } from "@/server/dal/auth-guard";
 import { noteRepository } from "@/server/dal/note-repository";

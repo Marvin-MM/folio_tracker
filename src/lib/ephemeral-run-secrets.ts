@@ -10,29 +10,41 @@
  */
 const runSecretsMemory = new Map<string, Record<string, string>>();
 
+function getSecretKey(userId: string, runId: string): string {
+  return `${userId}:${runId}`;
+}
+
 export function setEphemeralRunSecrets(
+  userId: string,
   runId: string,
   secrets: Record<string, string>
 ): void {
+  if (!userId || !runId) return;
+  const key = getSecretKey(userId, runId);
   const cleaned: Record<string, string> = {};
-  for (const [key, value] of Object.entries(secrets)) {
+  for (const [varKey, value] of Object.entries(secrets)) {
     if (value.length > 0) {
-      cleaned[key] = value;
+      cleaned[varKey] = value;
     }
   }
   if (Object.keys(cleaned).length === 0) {
-    runSecretsMemory.delete(runId);
+    runSecretsMemory.delete(key);
     return;
   }
-  runSecretsMemory.set(runId, cleaned);
+  runSecretsMemory.set(key, cleaned);
 }
 
-export function getEphemeralRunSecrets(runId: string): Record<string, string> {
-  return { ...(runSecretsMemory.get(runId) ?? {}) };
+export function getEphemeralRunSecrets(
+  userId: string,
+  runId: string
+): Record<string, string> {
+  if (!userId || !runId) return {};
+  return { ...(runSecretsMemory.get(getSecretKey(userId, runId)) ?? {}) };
 }
 
-export function clearEphemeralRunSecrets(runId: string): void {
-  runSecretsMemory.delete(runId);
+export function clearEphemeralRunSecrets(userId: string, runId: string): void {
+  if (!userId || !runId) return;
+  runSecretsMemory.delete(getSecretKey(userId, runId));
 }
 
 export function clearAllEphemeralRunSecrets(): void {

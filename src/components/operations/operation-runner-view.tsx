@@ -76,7 +76,7 @@ import {
   setEphemeralRunSecrets,
 } from "@/lib/ephemeral-run-secrets";
 import {
-  clearPendingOfflineMutations,
+  acknowledgeOfflineMutations,
   countPendingOfflineMutations,
   loadOfflineRunCache,
   queueOfflinePreflightMutation,
@@ -180,7 +180,7 @@ export function OperationRunnerView({
   );
   // STRICTLY RAM-ONLY secret values — NEVER saved to Turso or localStorage!
   const [secretValues, setSecretValues] = useState<Record<string, string>>(() =>
-    getEphemeralRunSecrets(run.id)
+    getEphemeralRunSecrets(userId, run.id)
   );
   const [checkedPrereqs, setCheckedPrereqs] = useState<string[]>(
     detail.prerequisitesChecked
@@ -199,6 +199,18 @@ export function OperationRunnerView({
   const isOffline = !browserOnline || networkDropped;
   const [pendingOfflineCount, setPendingOfflineCount] = useState(0);
   const [isSyncingOffline, setIsSyncingOffline] = useState(false);
+  const [syncErrorMessage, setSyncErrorMessage] = useState<string | null>(null);
+  const [allowDiscardUnsynced, setAllowDiscardUnsynced] = useState(false);
+  const isFlushingRef = useRef(false);
+  const quotaWarnedRef = useRef(false);
+
+  const handleStorageQuotaError = useCallback(() => {
+    if (quotaWarnedRef.current) return;
+    quotaWarnedRef.current = true;
+    toast.warning(
+      "Browser local storage is full — offline backup could not be saved locally. Keep this tab open until reconnected."
+    );
+  }, []);
 
   // Dialog states
   const [completeDialogOpen, setCompleteDialogOpen] = useState(false);
@@ -237,60 +249,149 @@ export function OperationRunnerView({
     checkedPrereqsRef.current = checkedPrereqs;
   }, [checkedPrereqs]);
 
-  const flushOfflineQueue = useCallback(async () => {
-    if (isReadOnly) return;
-    const cached = loadOfflineRunCache(userId, run.id);
-    if (!cached || countPendingOfflineMutations(cached) === 0) {
+  const flushOfflineQueue = useCallback(async (): Promise<boolean> => {
+    if (isReadOnly) return true;
+    if (isFlushingRef.current) return false;
+
+    const initialCached = loadOfflineRunCache(userId, run.id);
+    if (!initialCached || countPendingOfflineMutations(initialCached) === 0) {
       setPendingOfflineCount(0);
-      return;
+      setSyncErrorMessage(null);
+      return true;
     }
 
+    isFlushingRef.current = true;
     setIsSyncingOffline(true);
-    try {
-      const stepUpdates = Object.values(cached.pendingStepMutations).map(
-        (m) => ({
-          stepKey: m.stepKey,
-          status: m.status,
-          note: m.note,
-        })
-      );
-      const result = await syncOfflineRunMutationsAction({
-        runId: run.id,
-        preflight: cached.pendingPreflight
-          ? {
-              title: cached.pendingPreflight.title,
-              variablesValues: stripSecretVariables(
-                cached.pendingPreflight.variablesValues ?? {},
-                pinnedVersion.variables
-              ),
-              prerequisitesChecked:
-                cached.pendingPreflight.prerequisitesChecked,
-            }
-          : undefined,
-        stepUpdates,
-      });
+    setSyncErrorMessage(null);
+    let syncedAny = false;
 
-      if (result.ok) {
-        clearPendingOfflineMutations(userId, run.id, pinnedVersion.variables);
-        setPendingOfflineCount(0);
-        setNetworkDropped(false);
-        await invalidate(["operations"]);
-        toast.success("Offline progress synced.");
+    try {
+      // Drain loop: if the user queues new step edits or notes mid-flight while
+      // a sync request is in progress, only acknowledged mutation IDs are removed
+      // and the next iteration immediately flushes the newly arrived changes.
+      for (let pass = 0; pass < 4; pass += 1) {
+        const cached = loadOfflineRunCache(userId, run.id);
+        if (!cached || countPendingOfflineMutations(cached) === 0) {
+          setPendingOfflineCount(0);
+          setAllowDiscardUnsynced(false);
+          setNetworkDropped(false);
+          if (syncedAny) {
+            await invalidate(["operations"]);
+            toast.success("Offline progress synced.");
+          }
+          return true;
+        }
+
+        const preflightMutationId = cached.pendingPreflight?.mutationId ?? null;
+        const stepMutationIds: Record<string, string> = {};
+        const stepUpdates = Object.values(cached.pendingStepMutations).map(
+          (m) => {
+            stepMutationIds[m.stepKey] = m.mutationId;
+            return {
+              stepKey: m.stepKey,
+              status: m.status,
+              note: m.note,
+              queuedAtMs: m.queuedAtMs,
+            };
+          }
+        );
+
+        const result = await syncOfflineRunMutationsAction({
+          runId: run.id,
+          preflight: cached.pendingPreflight
+            ? {
+                title: cached.pendingPreflight.title,
+                variablesValues: stripSecretVariables(
+                  cached.pendingPreflight.variablesValues ?? {},
+                  pinnedVersion.variables
+                ),
+                prerequisitesChecked:
+                  cached.pendingPreflight.prerequisitesChecked,
+              }
+            : undefined,
+          stepUpdates,
+        });
+
+        if (!result.ok) {
+          setSyncErrorMessage(result.error.message);
+          toast.error(`Offline sync failed: ${result.error.message}`);
+          return false;
+        }
+
+        syncedAny = true;
+        const afterAck = acknowledgeOfflineMutations(
+          userId,
+          run.id,
+          pinnedVersion.variables,
+          { preflightMutationId, stepMutationIds }
+        );
+        const remainingCount = countPendingOfflineMutations(afterAck);
+        setPendingOfflineCount(remainingCount);
+
+        if (remainingCount === 0) {
+          // Reconcile cleanly with authoritative server snapshot once fully drained
+          const serverMap = buildInitialStepStateMap(result.data);
+          setStepStates(serverMap);
+          stepStatesRef.current = serverMap;
+          const serverVars = stripSecretVariables(
+            result.data.variablesValues,
+            pinnedVersion.variables
+          );
+          setNonSecretValues(serverVars);
+          nonSecretRef.current = serverVars;
+          setCheckedPrereqs(result.data.prerequisitesChecked);
+          checkedPrereqsRef.current = result.data.prerequisitesChecked;
+          setNetworkDropped(false);
+          setAllowDiscardUnsynced(false);
+          await invalidate(["operations"]);
+          toast.success("Offline progress synced.");
+          return true;
+        }
       }
+
+      const finalCached = loadOfflineRunCache(userId, run.id);
+      const finalCount = countPendingOfflineMutations(finalCached);
+      setPendingOfflineCount(finalCount);
+      if (syncedAny) {
+        await invalidate(["operations"]);
+      }
+      return finalCount === 0;
     } catch {
-      // Remain queued until connectivity stabilizes
+      setNetworkDropped(true);
+      const errMsg =
+        "Unable to reach server to sync offline changes. Changes remain safely queued locally.";
+      setSyncErrorMessage(errMsg);
+      toast.error(errMsg);
+      return false;
     } finally {
+      isFlushingRef.current = false;
       setIsSyncingOffline(false);
     }
-  }, [isReadOnly, userId, run.id, pinnedVersion.variables, invalidate]);
+  }, [
+    isReadOnly,
+    userId,
+    run.id,
+    pinnedVersion.variables,
+    invalidate,
+    setAllowDiscardUnsynced,
+    setNonSecretValues,
+    setCheckedPrereqs,
+  ]);
 
-  // Hydrate offline cache on mount + auto-flush when browser comes back online
+  // Hydrate offline cache on mount + reconcile refreshed server detail when queue is empty
   useEffect(() => {
     if (typeof window === "undefined") return;
     let cancelled = false;
 
     const hydrateAndMaybeSync = async () => {
-      if (isReadOnly) return;
+      if (isReadOnly) {
+        setStepStates(buildInitialStepStateMap(detail));
+        setNonSecretValues(
+          stripSecretVariables(detail.variablesValues, pinnedVersion.variables)
+        );
+        setCheckedPrereqs(detail.prerequisitesChecked);
+        return;
+      }
       const cached = loadOfflineRunCache(userId, run.id);
       if (cached) {
         const pendingCount = countPendingOfflineMutations(cached);
@@ -313,13 +414,28 @@ export function OperationRunnerView({
         }
       }
 
+      const freshMap = buildInitialStepStateMap(detail);
+      if (!cancelled) {
+        setStepStates(freshMap);
+        stepStatesRef.current = freshMap;
+        const freshVars = stripSecretVariables(
+          detail.variablesValues,
+          pinnedVersion.variables
+        );
+        setNonSecretValues(freshVars);
+        nonSecretRef.current = freshVars;
+        setCheckedPrereqs(detail.prerequisitesChecked);
+        checkedPrereqsRef.current = detail.prerequisitesChecked;
+      }
+
       saveOfflineRunSnapshot({
         userId,
         runId: run.id,
         variablesSchema: pinnedVersion.variables,
         variablesValues: detail.variablesValues,
         prerequisitesChecked: detail.prerequisitesChecked,
-        stepStates: buildInitialStepStateMap(detail),
+        stepStates: freshMap,
+        onQuotaError: handleStorageQuotaError,
       });
     };
 
@@ -342,6 +458,7 @@ export function OperationRunnerView({
     pinnedVersion.variables,
     detail,
     flushOfflineQueue,
+    handleStorageQuotaError,
   ]);
 
   // Progress counts
@@ -380,6 +497,7 @@ export function OperationRunnerView({
           variablesValues: safeNonSecret,
           prerequisitesChecked: nextCheckedPrereqs,
           stepStates: stepStatesRef.current,
+          onQuotaError: handleStorageQuotaError,
         });
         setPendingOfflineCount(countPendingOfflineMutations(cached));
         return;
@@ -402,7 +520,9 @@ export function OperationRunnerView({
           variablesValues: safeNonSecret,
           prerequisitesChecked: nextCheckedPrereqs,
           stepStates: stepStatesRef.current,
+          onQuotaError: handleStorageQuotaError,
         });
+        void invalidate(["operations"]);
       } catch {
         setNetworkDropped(true);
         const cached = queueOfflinePreflightMutation({
@@ -412,11 +532,19 @@ export function OperationRunnerView({
           variablesValues: safeNonSecret,
           prerequisitesChecked: nextCheckedPrereqs,
           stepStates: stepStatesRef.current,
+          onQuotaError: handleStorageQuotaError,
         });
         setPendingOfflineCount(countPendingOfflineMutations(cached));
       }
     },
-    [isReadOnly, pinnedVersion.variables, userId, run.id]
+    [
+      isReadOnly,
+      pinnedVersion.variables,
+      userId,
+      run.id,
+      handleStorageQuotaError,
+      invalidate,
+    ]
   );
 
   const handleStepStatusChange = useCallback(
@@ -427,12 +555,13 @@ export function OperationRunnerView({
     ) => {
       if (isReadOnly) return;
       const nowMs = Date.now();
-      const prevEntry = stepStatesRef.current[stepKey];
+      const prevMap = stepStatesRef.current;
+      const prevEntry = prevMap[stepKey];
       const nextNote =
         noteOverride !== undefined ? noteOverride : (prevEntry?.note ?? null);
 
       const nextMap: StepStateMap = {
-        ...stepStatesRef.current,
+        ...prevMap,
         [stepKey]: {
           status,
           note: nextNote,
@@ -452,6 +581,7 @@ export function OperationRunnerView({
           prerequisitesChecked: checkedPrereqsRef.current,
           stepStates: nextMap,
           mutation: { stepKey, status, note: nextNote },
+          onQuotaError: handleStorageQuotaError,
         });
         setPendingOfflineCount(countPendingOfflineMutations(cached));
         return;
@@ -465,6 +595,14 @@ export function OperationRunnerView({
           note: nextNote,
         });
         if (!result.ok) {
+          // Roll back optimistic state on authoritative server rejection
+          setStepStates((current) => {
+            const rolled = { ...current };
+            if (prevEntry) rolled[stepKey] = prevEntry;
+            else delete rolled[stepKey];
+            stepStatesRef.current = rolled;
+            return rolled;
+          });
           toast.error(result.error.message);
           return;
         }
@@ -475,7 +613,9 @@ export function OperationRunnerView({
           variablesValues: nonSecretRef.current,
           prerequisitesChecked: checkedPrereqsRef.current,
           stepStates: nextMap,
+          onQuotaError: handleStorageQuotaError,
         });
+        void invalidate(["operations"]);
       } catch {
         setNetworkDropped(true);
         const cached = queueOfflineStepMutation({
@@ -486,11 +626,19 @@ export function OperationRunnerView({
           prerequisitesChecked: checkedPrereqsRef.current,
           stepStates: nextMap,
           mutation: { stepKey, status, note: nextNote },
+          onQuotaError: handleStorageQuotaError,
         });
         setPendingOfflineCount(countPendingOfflineMutations(cached));
       }
     },
-    [isReadOnly, userId, run.id, pinnedVersion.variables]
+    [
+      isReadOnly,
+      userId,
+      run.id,
+      pinnedVersion.variables,
+      handleStorageQuotaError,
+      invalidate,
+    ]
   );
 
   // Keyboard shortcuts: J (next), K (prev), Space (toggle done)
@@ -606,10 +754,17 @@ export function OperationRunnerView({
     });
   };
 
-  const handleCompleteRun = () => {
+  const handleCompleteRun = (forceDiscardUnsynced = false) => {
     startTransition(async () => {
-      if (pendingOfflineCount > 0) {
-        await flushOfflineQueue();
+      if (pendingOfflineCount > 0 && !forceDiscardUnsynced) {
+        const synced = await flushOfflineQueue();
+        if (!synced) {
+          setAllowDiscardUnsynced(true);
+          toast.error(
+            "Offline changes could not be synced yet. Retry sync or confirm discarding unsynced local edits before completing."
+          );
+          return;
+        }
       }
       const result = await completeOperationRunAction({
         runId: run.id,
@@ -623,8 +778,9 @@ export function OperationRunnerView({
       }
 
       removeOfflineRunCache(userId, run.id);
-      clearEphemeralRunSecrets(run.id);
+      clearEphemeralRunSecrets(userId, run.id);
       setCompleteDialogOpen(false);
+      setAllowDiscardUnsynced(false);
       await invalidate(["operations", "habits", "today", "tasks", "sidebar"]);
 
       if (result.data.habitAutoLogged) {
@@ -651,7 +807,7 @@ export function OperationRunnerView({
         return;
       }
       removeOfflineRunCache(userId, run.id);
-      clearEphemeralRunSecrets(run.id);
+      clearEphemeralRunSecrets(userId, run.id);
       await invalidate(["operations"]);
       toast.success("Run abandoned.");
       router.push(`/app/operations/${operation.id}`);
@@ -837,6 +993,7 @@ export function OperationRunnerView({
           <div className="rounded-md border border-overdue/30 bg-background">
             <button
               type="button"
+              aria-expanded={rollbackExpanded}
               onClick={() =>
                 setExpandedRollbackKeys((prev) =>
                   prev.includes(step.key)
@@ -1147,6 +1304,7 @@ export function OperationRunnerView({
         <section className="rounded-lg border border-border bg-card">
           <button
             type="button"
+            aria-expanded={preflightOpen}
             onClick={() => setPreflightOpen((prev) => !prev)}
             className="flex h-10 w-full items-center justify-between px-4 text-left text-xs font-semibold text-foreground"
           >
@@ -1250,7 +1408,11 @@ export function OperationRunnerView({
                                   [variable.key]: nextVal,
                                 };
                                 setSecretValues(nextSecrets);
-                                setEphemeralRunSecrets(run.id, nextSecrets);
+                                setEphemeralRunSecrets(
+                                  userId,
+                                  run.id,
+                                  nextSecrets
+                                );
                               } else {
                                 setNonSecretValues((prev) => ({
                                   ...prev,
@@ -1440,8 +1602,34 @@ export function OperationRunnerView({
         </div>
       )}
 
+      {/* Inline Sync Error Banner */}
+      {syncErrorMessage && pendingOfflineCount > 0 ? (
+        <div
+          role="alert"
+          className="flex flex-wrap items-center justify-between gap-2 rounded-md border border-overdue/40 bg-overdue/10 px-3 py-2 text-xs text-overdue"
+        >
+          <span>{syncErrorMessage}</span>
+          <Button
+            type="button"
+            size="sm"
+            variant="outline"
+            disabled={isSyncingOffline}
+            onClick={() => void flushOfflineQueue()}
+            className="h-8 border-overdue/40 text-xs text-overdue hover:bg-overdue/10"
+          >
+            Retry sync
+          </Button>
+        </div>
+      ) : null}
+
       {/* Complete Run Dialog */}
-      <Dialog open={completeDialogOpen} onOpenChange={setCompleteDialogOpen}>
+      <Dialog
+        open={completeDialogOpen}
+        onOpenChange={(open) => {
+          setCompleteDialogOpen(open);
+          if (!open) setAllowDiscardUnsynced(false);
+        }}
+      >
         <DialogContent className="sm:max-w-md">
           <DialogHeader>
             <DialogTitle className="text-sm">Complete Operation Run</DialogTitle>
@@ -1458,6 +1646,24 @@ export function OperationRunnerView({
           </DialogHeader>
 
           <div className="space-y-3 py-1">
+            {pendingOfflineCount > 0 ? (
+              <div
+                role="alert"
+                className="space-y-1.5 rounded-md border border-reminder/45 bg-reminder/10 p-3 text-xs text-foreground"
+              >
+                <p className="font-medium text-reminder">
+                  {pendingOfflineCount} unsynced offline change
+                  {pendingOfflineCount === 1 ? "" : "s"} pending
+                </p>
+                <p className="text-[11px] text-muted-foreground">
+                  Completing will sync your local notes and step statuses first.
+                  {allowDiscardUnsynced
+                    ? " Sync failed — you can retry sync or discard those local edits and complete anyway."
+                    : ""}
+                </p>
+              </div>
+            ) : null}
+
             {operation.ownerId === userId ? (
               <label className="flex cursor-pointer items-center justify-between gap-3 rounded-md border border-border bg-card p-3 text-xs">
                 <span className="flex items-center gap-2">
@@ -1501,19 +1707,31 @@ export function OperationRunnerView({
             >
               Keep running
             </Button>
+            {allowDiscardUnsynced && pendingOfflineCount > 0 ? (
+              <Button
+                type="button"
+                variant="destructive"
+                size="sm"
+                disabled={isPending}
+                onClick={() => handleCompleteRun(true)}
+                className="h-9 gap-1.5 text-xs md:h-8"
+              >
+                Complete &amp; discard unsynced
+              </Button>
+            ) : null}
             <Button
               type="button"
               size="sm"
-              disabled={isPending}
-              onClick={handleCompleteRun}
+              disabled={isPending || isSyncingOffline}
+              onClick={() => handleCompleteRun(false)}
               className="h-9 gap-1.5 text-xs md:h-8"
             >
-              {isPending ? (
+              {isPending || isSyncingOffline ? (
                 <Loader2 className="size-3.5 animate-spin" />
               ) : (
                 <CheckCircle2 className="size-3.5" />
               )}
-              Complete Run
+              {pendingOfflineCount > 0 ? "Sync & Complete Run" : "Complete Run"}
             </Button>
           </DialogFooter>
         </DialogContent>

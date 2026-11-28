@@ -1,37 +1,18 @@
 import type { Metadata } from "next";
 import { notFound } from "next/navigation";
-import { ProjectWorkspaceClient } from "@/components/workspace/workspace-query-views";
+import { ProjectWorkspaceClient } from "@/components/workspace/project-workspace-client";
 import { getServerTimestampMs } from "@/lib/query/clock";
 import { requireSession } from "@/server/dal/auth-guard";
 import { ForbiddenError, NotFoundError } from "@/server/dal/errors";
 import { projectService } from "@/server/services/project-service";
 
+export const metadata: Metadata = {
+  title: "Project",
+};
 
 interface ProjectPageProps {
   params: Promise<{ projectId: string }>;
   searchParams: Promise<{ tab?: string; item?: string }>;
-}
-
-export async function generateMetadata({
-  params,
-}: ProjectPageProps): Promise<Metadata> {
-  try {
-    const [{ user }, { projectId }] = await Promise.all([
-      requireSession(),
-      params,
-    ]);
-    const workspace = await projectService.getProjectWorkspace(
-      projectId,
-      user.id
-    );
-    return {
-      title: workspace.project.name,
-    };
-  } catch {
-    return {
-      title: "Project",
-    };
-  }
 }
 
 export default async function ProjectPage({

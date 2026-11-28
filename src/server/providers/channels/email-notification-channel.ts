@@ -142,12 +142,12 @@ export class EmailNotificationChannel implements NotificationChannel {
       this.notifRepo.countPushSubscriptionsForUser(payload.userId),
     ]);
 
-    if (!user) {
+    if (!user || user.isSuspended) {
       return {
         channel: this.name,
         delivered: false,
         skipped: true,
-        detail: "User not found.",
+        detail: !user ? "User not found." : "User account is suspended.",
       };
     }
 

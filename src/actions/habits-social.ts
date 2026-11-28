@@ -1,6 +1,5 @@
 "use server";
 
-import { revalidatePath } from "next/cache";
 import { z } from "zod";
 import { requireSession } from "@/server/dal/auth-guard";
 import {
@@ -129,11 +128,9 @@ const toggleReactionSchema = z.object({
   reactionType: z.enum(HABIT_REACTION_TYPES),
 });
 
-function revalidateCirclePaths(ownerId?: string) {
-  // External token acceptance still refreshes server routes; in-app circle mutations use TanStack Query.
-  if (ownerId) {
-    revalidatePath(`/app/habits/circle/${ownerId}`);
-  }
+// Client freshness on `/app/habits/circle*` is driven by TanStack Query domain invalidation.
+function revalidateCirclePaths(_ownerId?: string) {
+  void _ownerId;
 }
 
 export async function inviteCollaboratorMonitorAction(

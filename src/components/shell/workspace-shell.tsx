@@ -1,10 +1,17 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useState } from "react";
+import {
+  Suspense,
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+} from "react";
 import dynamic from "next/dynamic";
+import { useQueryClient } from "@tanstack/react-query";
 import { Menu, Plus, WifiOff } from "lucide-react";
 import { BrandMark } from "@/components/brand-mark";
-import { DetailSheet } from "@/components/shell/detail-sheet";
 import { DetailSheetProvider } from "@/components/shell/detail-sheet-context";
 import { LeftRail, type ShellUser } from "@/components/shell/left-rail";
 import { NotificationBell } from "@/components/shell/notification-bell";
@@ -20,10 +27,18 @@ import {
 } from "@/components/ui/sheet";
 import { useWorkspaceBootstrapQuery } from "@/hooks/use-workspace-queries";
 import { APP_NAME } from "@/lib/constants";
+import { clearAllEphemeralRunSecrets } from "@/lib/ephemeral-run-secrets";
+import { invalidateWorkspaceDomains } from "@/lib/query/query-keys";
 import { cn } from "@/lib/utils";
 import type { SidebarSummary } from "@/server/dal/workspace-repository";
 import type { NotificationRecord } from "@/server/db/schema";
 import { useWorkspaceUIStore } from "@/stores/workspace-ui-store";
+
+const DetailSheet = dynamic(
+  () =>
+    import("@/components/shell/detail-sheet").then((mod) => mod.DetailSheet),
+  { ssr: false }
+);
 
 const QuickCaptureDialog = dynamic(
   () =>
@@ -38,14 +53,15 @@ interface WorkspaceShellProps {
   summary: SidebarSummary;
   initialNotifications: NotificationRecord[];
   initialFetchedAtMs: number;
+  initialRailCollapsed?: boolean;
   children: React.ReactNode;
 }
 
 /**
  * Three-Zone App Shell:
- * 1. Left Rail (220px collapsible desktop rail, persisted via Zustand; Sheet drawer on mobile)
+ * 1. Left Rail (220px collapsible desktop rail, persisted via Zustand + cookie for 0 CLS; Sheet drawer on mobile)
  * 2. Main Canvas (scrollable route content preserving scroll position + Skip link + Offline banner)
- * 3. Right Slide-Over Detail Sheet (440px non-blocking interactive inspector)
+ * 3. Right Slide-Over Detail Sheet (440px lazy-loaded non-blocking interactive inspector)
  * + Lazy-loaded Global ⌘K Quick Capture dialog & Query-backed Notification Bell
  */
 export function WorkspaceShell({
@@ -53,16 +69,84 @@ export function WorkspaceShell({
   summary,
   initialNotifications,
   initialFetchedAtMs,
+  initialRailCollapsed = false,
   children,
 }: WorkspaceShellProps) {
+  const queryClient = useQueryClient();
   const railCollapsed = useWorkspaceUIStore((s) => s.railCollapsed);
   const toggleRailCollapsed = useWorkspaceUIStore((s) => s.toggleRailCollapsed);
   const mobileMenuOpen = useWorkspaceUIStore((s) => s.mobileMenuOpen);
   const setMobileMenuOpen = useWorkspaceUIStore((s) => s.setMobileMenuOpen);
   const quickCaptureOpen = useWorkspaceUIStore((s) => s.quickCaptureOpen);
   const setQuickCaptureOpen = useWorkspaceUIStore((s) => s.setQuickCaptureOpen);
+  const hasActiveDetail = useWorkspaceUIStore((s) => s.activeDetail !== null);
   const isOnline = useWorkspaceUIStore((s) => s.isOnline);
   const [quickCaptureMounted, setQuickCaptureMounted] = useState(false);
+  const [railHydrated, setRailHydrated] = useState(false);
+
+  // Align client Zustand rail state with SSR cookie without triggering 220px -> 52px CLS
+  useEffect(() => {
+    const syncHydrated = () => {
+      const store = useWorkspaceUIStore.getState();
+      if (store.railCollapsed !== initialRailCollapsed) {
+        // Prefer persisted cookie when localStorage hasn't diverged, else keep user's choice
+        document.cookie = `folio-rail-collapsed=${store.railCollapsed ? "1" : "0"}; Path=/; Max-Age=31536000; SameSite=Lax`;
+      }
+      setRailHydrated(true);
+    };
+    if (!useWorkspaceUIStore.persist?.hasHydrated()) {
+      void Promise.resolve(useWorkspaceUIStore.persist?.rehydrate()).finally(
+        syncHydrated
+      );
+    } else {
+      syncHydrated();
+    }
+  }, [initialRailCollapsed]);
+
+  const effectiveRailCollapsed = railHydrated
+    ? railCollapsed
+    : initialRailCollapsed;
+
+  // Cross-tenant safety guard: if `user.id` transitions inside the same browser
+  // SPA lifecycle (e.g. session expiry + soft re-login), immediately purge
+  // ephemeral UI state, RAM secrets, and any cached queries belonging to another user.
+  const activeUserIdRef = useRef<string>(user.id);
+  useEffect(() => {
+    if (activeUserIdRef.current !== user.id) {
+      activeUserIdRef.current = user.id;
+      clearAllEphemeralRunSecrets();
+      useWorkspaceUIStore.getState().resetSessionState();
+      queryClient.removeQueries({
+        predicate: (query) =>
+          Array.isArray(query.queryKey) &&
+          query.queryKey[0] === "workspace" &&
+          query.queryKey[1] !== user.id,
+      });
+    }
+  }, [queryClient, user.id]);
+
+  // Listen for Service Worker notification quick-actions (`snooze_15m`, `mark_done`)
+  // and immediately refresh affected workspace views.
+  useEffect(() => {
+    if (typeof window === "undefined" || typeof BroadcastChannel === "undefined") {
+      return;
+    }
+    const channel = new BroadcastChannel("folio-sw-sync");
+    const onMessage = () => {
+      void invalidateWorkspaceDomains(queryClient, user.id, [
+        "tasks",
+        "reminders",
+        "notifications",
+        "projects",
+        "sidebar",
+      ]);
+    };
+    channel.addEventListener("message", onMessage);
+    return () => {
+      channel.removeEventListener("message", onMessage);
+      channel.close();
+    };
+  }, [queryClient, user.id]);
 
   const bootstrapQuery = useWorkspaceBootstrapQuery(
     user.id,
@@ -108,25 +192,25 @@ export function WorkspaceShell({
     return () => window.removeEventListener("keydown", handleKeyDown);
   }, []);
 
-  const chromeValue = useMemo(
+  const actionsValue = useMemo(
     () => ({
       userId: user.id,
       openQuickCapture,
+    }),
+    [user.id, openQuickCapture]
+  );
+
+  const dataValue = useMemo(
+    () => ({
       notifications: liveNotifications,
       projects: liveSummary.projects,
       timezone: liveTimezone,
     }),
-    [
-      user.id,
-      openQuickCapture,
-      liveNotifications,
-      liveSummary.projects,
-      liveTimezone,
-    ]
+    [liveNotifications, liveSummary.projects, liveTimezone]
   );
 
   return (
-    <WorkspaceChromeProvider value={chromeValue}>
+    <WorkspaceChromeProvider actionsValue={actionsValue} dataValue={dataValue}>
       <DetailSheetProvider>
         <TimezoneSync currentTimezone={liveTimezone} />
         {quickCaptureMounted || quickCaptureOpen ? (
@@ -192,16 +276,18 @@ export function WorkspaceShell({
               <SheetDescription className="sr-only">
                 Workspace smart views, projects, and account controls.
               </SheetDescription>
-              <LeftRail
-                user={{
-                  ...user,
-                  name: liveUserName,
-                  timezone: liveTimezone,
-                  isAdmin: liveIsAdmin,
-                }}
-                summary={liveSummary}
-                onNavigate={() => setMobileMenuOpen(false)}
-              />
+              <Suspense fallback={null}>
+                <LeftRail
+                  user={{
+                    ...user,
+                    name: liveUserName,
+                    timezone: liveTimezone,
+                    isAdmin: liveIsAdmin,
+                  }}
+                  summary={liveSummary}
+                  onNavigate={() => setMobileMenuOpen(false)}
+                />
+              </Suspense>
             </SheetContent>
           </Sheet>
 
@@ -210,20 +296,22 @@ export function WorkspaceShell({
             aria-label="Primary sidebar"
             className={cn(
               "hidden h-full shrink-0 border-r border-sidebar-border transition-[width] duration-150 md:block",
-              railCollapsed ? "w-[52px]" : "w-[220px]"
+              effectiveRailCollapsed ? "w-[52px]" : "w-[220px]"
             )}
           >
-            <LeftRail
-              user={{
-                ...user,
-                name: liveUserName,
-                timezone: liveTimezone,
-                isAdmin: liveIsAdmin,
-              }}
-              summary={liveSummary}
-              collapsed={railCollapsed}
-              onToggleCollapse={toggleRailCollapsed}
-            />
+            <Suspense fallback={null}>
+              <LeftRail
+                user={{
+                  ...user,
+                  name: liveUserName,
+                  timezone: liveTimezone,
+                  isAdmin: liveIsAdmin,
+                }}
+                summary={liveSummary}
+                collapsed={effectiveRailCollapsed}
+                onToggleCollapse={toggleRailCollapsed}
+              />
+            </Suspense>
           </aside>
 
           {/* Zone 2: Main Canvas */}
@@ -248,8 +336,8 @@ export function WorkspaceShell({
             {children}
           </main>
 
-          {/* Zone 3: Right Slide-Over Detail Sheet (440px) */}
-          <DetailSheet timezone={liveTimezone} />
+          {/* Zone 3: Right Slide-Over Detail Sheet (440px, lazy-loaded on first inspect) */}
+          {hasActiveDetail ? <DetailSheet timezone={liveTimezone} /> : null}
         </div>
       </DetailSheetProvider>
     </WorkspaceChromeProvider>

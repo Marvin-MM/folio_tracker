@@ -236,12 +236,19 @@ export class HabitCommentService {
           tx
         );
 
-        // Determine notification recipient: monitor -> owner; owner reply -> parent author
+        // Determine notification recipient: monitor -> owner; owner reply -> active monitor only
         let recipientUserId: string | null = null;
         if (!isOwner) {
           recipientUserId = input.ownerId;
         } else if (parentComment && parentComment.authorId !== input.ownerId) {
-          recipientUserId = parentComment.authorId;
+          const activeParentMonitor = await this.social.getActiveMonitor(
+            input.ownerId,
+            parentComment.authorId,
+            tx
+          );
+          if (activeParentMonitor) {
+            recipientUserId = parentComment.authorId;
+          }
         }
 
         return {

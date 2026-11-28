@@ -169,20 +169,26 @@ export const auth = betterAuth({
   session: {
     expiresIn: 60 * 60 * 24 * 14, // 14 days
     updateAge: 60 * 60 * 24, // refresh daily
+    // Zero-TTL session validation: revocations and suspensions take effect
+    // immediately against Turso rather than lingering in a signed cookie cache.
     cookieCache: {
-      enabled: true,
-      maxAge: 300, // 5-minute signed cookie cache
+      enabled: false,
     },
   },
   databaseHooks: {
     user: {
       create: {
         before: async (user) => {
+          const normalizedEmail =
+            typeof user.email === "string"
+              ? user.email.trim().toLowerCase()
+              : user.email;
           const shouldPromote =
-            Boolean(user.emailVerified) && isAdminEmail(user.email);
+            Boolean(user.emailVerified) && isAdminEmail(normalizedEmail);
           return {
             data: {
               ...user,
+              email: normalizedEmail,
               role: shouldPromote ? "admin" : "user",
               isSuspended: false,
             },
@@ -191,13 +197,21 @@ export const auth = betterAuth({
       },
       update: {
         before: async (user) => {
-          if (user.emailVerified === true && typeof user.email === "string") {
+          const normalizedEmail =
+            typeof user.email === "string"
+              ? user.email.trim().toLowerCase()
+              : undefined;
+          if (user.emailVerified === true && normalizedEmail) {
             return {
               data: {
                 ...user,
-                role: isAdminEmail(user.email) ? "admin" : "user",
+                email: normalizedEmail,
+                role: isAdminEmail(normalizedEmail) ? "admin" : "user",
               },
             };
+          }
+          if (normalizedEmail) {
+            return { data: { ...user, email: normalizedEmail } };
           }
           return { data: user };
         },

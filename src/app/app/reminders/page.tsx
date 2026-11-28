@@ -1,5 +1,5 @@
 import type { Metadata } from "next";
-import { RemindersWorkspaceClient } from "@/components/workspace/workspace-query-views";
+import { RemindersWorkspaceClient } from "@/components/workspace/reminders-workspace-client";
 import { getServerTimestampMs } from "@/lib/query/clock";
 import { requireSession } from "@/server/dal/auth-guard";
 import { reminderRepository } from "@/server/dal/reminder-repository";

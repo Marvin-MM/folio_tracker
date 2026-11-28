@@ -1,0 +1,45 @@
+DROP INDEX `habit_month_locks_user_month_idx`;--> statement-breakpoint
+CREATE INDEX `sessions_expires_at_idx` ON `sessions` (`expires_at`);--> statement-breakpoint
+CREATE INDEX `users_created_at_idx` ON `users` (`created_at`);--> statement-breakpoint
+CREATE INDEX `verifications_expires_at_idx` ON `verifications` (`expires_at`);--> statement-breakpoint
+CREATE INDEX `notes_user_project_pinned_updated_idx` ON `notes` (`user_id`,`project_id`,`is_pinned`,`updated_at`);--> statement-breakpoint
+CREATE INDEX `notes_project_pinned_updated_idx` ON `notes` (`project_id`,`is_pinned`,`updated_at`);--> statement-breakpoint
+CREATE INDEX `project_activities_actor_id_idx` ON `project_activities` (`actor_id`);--> statement-breakpoint
+CREATE INDEX `project_activities_created_at_idx` ON `project_activities` (`created_at`);--> statement-breakpoint
+CREATE INDEX `project_invitations_invited_by_idx` ON `project_invitations` (`invited_by_id`);--> statement-breakpoint
+CREATE INDEX `project_invitations_status_expires_idx` ON `project_invitations` (`status`,`expires_at`);--> statement-breakpoint
+CREATE INDEX `project_members_user_role_idx` ON `project_members` (`user_id`,`role`);--> statement-breakpoint
+CREATE INDEX `tasks_user_project_pos_id_idx` ON `tasks` (`user_id`,`project_id`,`position`,`id`);--> statement-breakpoint
+CREATE INDEX `tasks_user_habit_date_idx` ON `tasks` (`user_id`,`habit_date_key`);--> statement-breakpoint
+CREATE INDEX `tasks_project_pos_id_idx` ON `tasks` (`project_id`,`position`,`id`);--> statement-breakpoint
+CREATE INDEX `tasks_project_assignee_idx` ON `tasks` (`project_id`,`assignee_id`);--> statement-breakpoint
+CREATE INDEX `tasks_created_at_idx` ON `tasks` (`created_at`);--> statement-breakpoint
+CREATE INDEX `tasks_status_completed_idx` ON `tasks` (`status`,`completed_at`);--> statement-breakpoint
+CREATE INDEX `reminders_status_sent_at_idx` ON `reminders` (`status`,`sent_at`);--> statement-breakpoint
+CREATE INDEX `notifications_user_created_idx` ON `notifications` (`user_id`,`created_at`);--> statement-breakpoint
+CREATE INDEX `notifications_user_type_entity_idx` ON `notifications` (`user_id`,`type`,`entity_id`);--> statement-breakpoint
+CREATE INDEX `notifications_is_read_idx` ON `notifications` (`is_read`);--> statement-breakpoint
+CREATE UNIQUE INDEX `notifications_dedup_system_uq` ON `notifications` (`user_id`,`type`,`entity_id`) WHERE "notifications"."entity_id" IS NOT NULL AND "notifications"."type" IN ('habit.nudge', 'habit.review_open', 'operation_stale');--> statement-breakpoint
+CREATE INDEX `habit_import_aliases_habit_id_idx` ON `habit_import_aliases` (`habit_id`);--> statement-breakpoint
+CREATE INDEX `habit_logs_logged_at_idx` ON `habit_logs` (`logged_at`);--> statement-breakpoint
+CREATE INDEX `habit_tracker_settings_evening_checkin_idx` ON `habit_tracker_settings` (`evening_checkin_time`);--> statement-breakpoint
+CREATE INDEX `habits_linked_project_id_idx` ON `habits` (`linked_project_id`);--> statement-breakpoint
+CREATE INDEX `habit_comments_author_id_idx` ON `habit_comments` (`author_id`);--> statement-breakpoint
+CREATE INDEX `habit_comments_owner_created_idx` ON `habit_comments` (`owner_id`,`created_at`);--> statement-breakpoint
+CREATE INDEX `habit_monitor_requests_status_expires_idx` ON `habit_monitor_requests` (`status`,`expires_at`);--> statement-breakpoint
+CREATE INDEX `habit_monitors_status_id_idx` ON `habit_monitors` (`status`,`id`);--> statement-breakpoint
+CREATE INDEX `habit_reactions_author_id_idx` ON `habit_reactions` (`author_id`);--> statement-breakpoint
+CREATE INDEX `operation_runs_version_id_idx` ON `operation_runs` (`version_id`);--> statement-breakpoint
+CREATE INDEX `operation_runs_runner_updated_idx` ON `operation_runs` (`runner_id`,`updated_at`);--> statement-breakpoint
+CREATE INDEX `operation_runs_runner_op_updated_idx` ON `operation_runs` (`runner_id`,`operation_id`,`updated_at`);--> statement-breakpoint
+CREATE INDEX `operation_versions_created_by_id_idx` ON `operation_versions` (`created_by_id`);--> statement-breakpoint
+CREATE INDEX `operations_forked_from_id_idx` ON `operations` (`forked_from_id`);--> statement-breakpoint
+CREATE INDEX `operations_vis_arch_updated_idx` ON `operations` (`visibility`,`is_archived`,`updated_at`);--> statement-breakpoint
+CREATE INDEX `operations_vis_arch_forks_idx` ON `operations` (`visibility`,`is_archived`,`fork_count`);--> statement-breakpoint
+CREATE INDEX `operations_proj_share_arch_idx` ON `operations` (`project_id`,`share_with_project`,`is_archived`);--> statement-breakpoint
+CREATE INDEX `operations_arch_review_idx` ON `operations` (`is_archived`,`review_cycle_days`);--> statement-breakpoint
+CREATE INDEX `operation_invitations_invited_by_id_idx` ON `operation_invitations` (`invited_by_id`);--> statement-breakpoint
+CREATE INDEX `operation_invitations_status_expires_idx` ON `operation_invitations` (`status`,`expires_at`);--> statement-breakpoint
+CREATE INDEX `operation_members_granted_by_id_idx` ON `operation_members` (`granted_by_id`);--> statement-breakpoint
+CREATE INDEX `operation_step_flags_reporter_id_idx` ON `operation_step_flags` (`reporter_id`);--> statement-breakpoint
+CREATE INDEX `operation_step_flags_resolved_by_id_idx` ON `operation_step_flags` (`resolved_by_id`);

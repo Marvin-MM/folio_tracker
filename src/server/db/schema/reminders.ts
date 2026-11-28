@@ -56,6 +56,7 @@ export const reminders = sqliteTable(
       table.status,
       table.remindAt
     ),
+    index("reminders_status_sent_at_idx").on(table.status, table.sentAt),
     check(
       "reminders_target_xor_check",
       sql`((${table.taskId} IS NOT NULL AND ${table.noteId} IS NULL) OR (${table.taskId} IS NULL AND ${table.noteId} IS NOT NULL))`

@@ -19,12 +19,8 @@ export function shouldRetryWorkspaceQuery(
   error: unknown
 ): boolean {
   if (error instanceof WorkspaceHttpError) {
-    if (
-      error.status === 400 ||
-      error.status === 401 ||
-      error.status === 403 ||
-      error.status === 404
-    ) {
+    // Never retry deterministic 4xx client/rate-limit/conflict responses (except 408 timeout)
+    if (error.status >= 400 && error.status < 500 && error.status !== 408) {
       return false;
     }
   }
@@ -62,6 +58,13 @@ export function getBrowserQueryClient(): QueryClient {
 
 export function clearBrowserQueryClient(): void {
   if (browserQueryClient) {
+    browserQueryClient.clear();
+  }
+}
+
+export async function cancelAndClearBrowserQueryClient(): Promise<void> {
+  if (browserQueryClient) {
+    await browserQueryClient.cancelQueries();
     browserQueryClient.clear();
   }
 }

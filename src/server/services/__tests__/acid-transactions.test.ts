@@ -31,6 +31,7 @@ function makeFailingReminderRepo(
       realReminders.listActiveForUserWithEntities.bind(realReminders),
     updateWithVersion: realReminders.updateWithVersion.bind(realReminders),
     markDispatched: realReminders.markDispatched.bind(realReminders),
+    markDispatchedBatch: realReminders.markDispatchedBatch.bind(realReminders),
     claimForDelivery: realReminders.claimForDelivery.bind(realReminders),
     cancelIfRevoked: realReminders.cancelIfRevoked.bind(realReminders),
     cancelActiveForTarget:

@@ -119,6 +119,18 @@ self.addEventListener("push", (event) => {
   event.waitUntil(self.registration.showNotification(payload.title, options));
 });
 
+function notifyOpenTabs(payload) {
+  try {
+    if (typeof BroadcastChannel !== "undefined") {
+      const channel = new BroadcastChannel("folio-sw-sync");
+      channel.postMessage(payload);
+      channel.close();
+    }
+  } catch {
+    // Ignore broadcast errors in restricted contexts
+  }
+}
+
 self.addEventListener("notificationclick", (event) => {
   event.notification.close();
 
@@ -138,7 +150,17 @@ self.addEventListener("notificationclick", (event) => {
           action: "snooze_15m",
           reminderId: data.reminderId,
         }),
-      }).catch(() => undefined)
+      })
+        .then((res) => {
+          if (res.ok) {
+            notifyOpenTabs({
+              type: "reminder_quick_action",
+              action: "snooze_15m",
+              reminderId: data.reminderId,
+            });
+          }
+        })
+        .catch(() => undefined)
     );
     return;
   }
@@ -157,7 +179,17 @@ self.addEventListener("notificationclick", (event) => {
           action: "mark_done",
           taskId: data.entityId,
         }),
-      }).catch(() => undefined)
+      })
+        .then((res) => {
+          if (res.ok) {
+            notifyOpenTabs({
+              type: "reminder_quick_action",
+              action: "mark_done",
+              taskId: data.entityId,
+            });
+          }
+        })
+        .catch(() => undefined)
     );
     return;
   }

@@ -123,6 +123,11 @@ export interface ReminderRepository {
     expectedVersion: number,
     executor?: DbExecutor
   ): Promise<ReminderRecord | null>;
+  markDispatchedBatch(
+    targets: Array<{ reminderId: string; expectedVersion: number }>,
+    dispatchedAt: number,
+    executor?: DbExecutor
+  ): Promise<number>;
   findUndispatchedScheduled(
     staleBeforeUtcMs: number,
     limit?: number
@@ -501,36 +506,29 @@ export class DrizzleReminderRepository implements ReminderRepository {
     projectId: string,
     executor: DbExecutor = this.database
   ): Promise<ScheduledReminderCancellationTarget[]> {
-    const [taskReminders, noteReminders] = await Promise.all([
-      executor
-        .select({
-          id: reminders.id,
-          userId: reminders.userId,
-          version: reminders.version,
-        })
-        .from(reminders)
-        .innerJoin(tasks, eq(reminders.taskId, tasks.id))
-        .where(
-          and(
-            eq(tasks.projectId, projectId),
-            eq(reminders.status, "scheduled")
-          )
-        ),
-      executor
-        .select({
-          id: reminders.id,
-          userId: reminders.userId,
-          version: reminders.version,
-        })
-        .from(reminders)
-        .innerJoin(notes, eq(reminders.noteId, notes.id))
-        .where(
-          and(
-            eq(notes.projectId, projectId),
-            eq(reminders.status, "scheduled")
-          )
-        ),
-    ]);
+    const taskReminders = await executor
+      .select({
+        id: reminders.id,
+        userId: reminders.userId,
+        version: reminders.version,
+      })
+      .from(reminders)
+      .innerJoin(tasks, eq(reminders.taskId, tasks.id))
+      .where(
+        and(eq(tasks.projectId, projectId), eq(reminders.status, "scheduled"))
+      );
+
+    const noteReminders = await executor
+      .select({
+        id: reminders.id,
+        userId: reminders.userId,
+        version: reminders.version,
+      })
+      .from(reminders)
+      .innerJoin(notes, eq(reminders.noteId, notes.id))
+      .where(
+        and(eq(notes.projectId, projectId), eq(reminders.status, "scheduled"))
+      );
 
     return [...taskReminders, ...noteReminders];
   }
@@ -546,54 +544,52 @@ export class DrizzleReminderRepository implements ReminderRepository {
 
     const ownedProjectIds = ownedProjects.map((p) => p.id);
 
-    const [directUserReminders, ownedProjectTaskReminders, ownedProjectNoteReminders] =
-      await Promise.all([
-        executor
-          .select({
-            id: reminders.id,
-            userId: reminders.userId,
-            version: reminders.version,
-          })
-          .from(reminders)
-          .where(
-            and(
-              eq(reminders.userId, userId),
-              eq(reminders.status, "scheduled")
+    const directUserReminders = await executor
+      .select({
+        id: reminders.id,
+        userId: reminders.userId,
+        version: reminders.version,
+      })
+      .from(reminders)
+      .where(
+        and(eq(reminders.userId, userId), eq(reminders.status, "scheduled"))
+      );
+
+    const ownedProjectTaskReminders =
+      ownedProjectIds.length > 0
+        ? await executor
+            .select({
+              id: reminders.id,
+              userId: reminders.userId,
+              version: reminders.version,
+            })
+            .from(reminders)
+            .innerJoin(tasks, eq(reminders.taskId, tasks.id))
+            .where(
+              and(
+                inArray(tasks.projectId, ownedProjectIds),
+                eq(reminders.status, "scheduled")
+              )
             )
-          ),
-        ownedProjectIds.length > 0
-          ? executor
-              .select({
-                id: reminders.id,
-                userId: reminders.userId,
-                version: reminders.version,
-              })
-              .from(reminders)
-              .innerJoin(tasks, eq(reminders.taskId, tasks.id))
-              .where(
-                and(
-                  inArray(tasks.projectId, ownedProjectIds),
-                  eq(reminders.status, "scheduled")
-                )
+        : [];
+
+    const ownedProjectNoteReminders =
+      ownedProjectIds.length > 0
+        ? await executor
+            .select({
+              id: reminders.id,
+              userId: reminders.userId,
+              version: reminders.version,
+            })
+            .from(reminders)
+            .innerJoin(notes, eq(reminders.noteId, notes.id))
+            .where(
+              and(
+                inArray(notes.projectId, ownedProjectIds),
+                eq(reminders.status, "scheduled")
               )
-          : Promise.resolve([]),
-        ownedProjectIds.length > 0
-          ? executor
-              .select({
-                id: reminders.id,
-                userId: reminders.userId,
-                version: reminders.version,
-              })
-              .from(reminders)
-              .innerJoin(notes, eq(reminders.noteId, notes.id))
-              .where(
-                and(
-                  inArray(notes.projectId, ownedProjectIds),
-                  eq(reminders.status, "scheduled")
-                )
-              )
-          : Promise.resolve([]),
-      ]);
+            )
+        : [];
 
     // Deduplicate by reminder ID
     const deduped = new Map<string, ScheduledReminderCancellationTarget>();
@@ -646,6 +642,31 @@ export class DrizzleReminderRepository implements ReminderRepository {
       .returning();
 
     return promoted ?? null;
+  }
+
+  async markDispatchedBatch(
+    targets: Array<{ reminderId: string; expectedVersion: number }>,
+    dispatchedAt: number,
+    executor: DbExecutor = this.database
+  ): Promise<number> {
+    if (targets.length === 0) return 0;
+    const chunkSize = 150;
+    let total = 0;
+
+    for (let i = 0; i < targets.length; i += chunkSize) {
+      const slice = targets.slice(i, i + chunkSize);
+      const predicates = slice.map((t) =>
+        and(eq(reminders.id, t.reminderId), eq(reminders.version, t.expectedVersion))
+      );
+      const updated = await executor
+        .update(reminders)
+        .set({ dispatchedAt })
+        .where(and(eq(reminders.status, "scheduled"), or(...predicates)))
+        .returning({ id: reminders.id });
+      total += updated.length;
+    }
+
+    return total;
   }
 
   async findUndispatchedScheduled(

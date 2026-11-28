@@ -479,7 +479,7 @@ export function BulkImportHistoryDialog({
       }
     }
 
-    await invalidate(["habits", "today", "tasks", "sidebar", "admin"]);
+    await invalidate(["habits", "today", "tasks", "sidebar"]);
 
     const totalHabits =
       preparedMeta.matchedTitleCount + preparedMeta.createdHabits.length;
@@ -667,7 +667,7 @@ export function BulkImportHistoryDialog({
       );
 
       if (chunks.length === 0) {
-        await invalidate(["habits", "today", "tasks", "sidebar", "admin"]);
+        await invalidate(["habits", "today", "tasks", "sidebar"]);
         toast.info("No matching habit marks to import.");
         setIsImporting(false);
         resetFormState();

@@ -98,7 +98,7 @@ export function ManageMonthRosterDialog({
         toast.error(res.error.message);
         return;
       }
-      await invalidate(["habits", "today", "sidebar", "admin"]);
+      await invalidate(["habits", "today", "sidebar"]);
       toast.success(
         `Saved ${res.data.habitIds.length} habit${res.data.habitIds.length === 1 ? "" : "s"} for ${monthLabel}.`
       );
@@ -213,7 +213,7 @@ export function ManageMonthRosterDialog({
                       checked && "bg-accent/30"
                     )}
                   >
-                    <div className="flex min-w-0 items-center gap-2.5">
+                    <span className="flex min-w-0 items-center gap-2.5">
                       <span
                         aria-hidden="true"
                         className={cn(
@@ -227,16 +227,16 @@ export function ManageMonthRosterDialog({
                           <Check className="size-2.5 stroke-[2.5]" />
                         ) : null}
                       </span>
-                      <div className="min-w-0">
-                        <p className="truncate font-medium text-foreground">
+                      <span className="block min-w-0">
+                        <span className="block truncate font-medium text-foreground">
                           {habit.title}
-                        </p>
-                        <p className="mono-tabular text-[10px] text-muted-foreground">
+                        </span>
+                        <span className="mono-tabular block text-[10px] text-muted-foreground">
                           Started {habit.startDate}
                           {habit.category ? ` · ${habit.category}` : ""}
-                        </p>
-                      </div>
-                    </div>
+                        </span>
+                      </span>
+                    </span>
 
                     {habit.isArchived ? (
                       <Badge

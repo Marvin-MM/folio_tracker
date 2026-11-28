@@ -1,4 +1,4 @@
-import { and, asc, count, desc, eq, gt, inArray, sql } from "drizzle-orm";
+import { and, asc, count, desc, eq, gt, inArray } from "drizzle-orm";
 import { db, type AppDatabase, type DbExecutor } from "@/server/db";
 import {
   notes,
@@ -97,6 +97,10 @@ export interface ProjectRepository {
     userId: string,
     executor?: DbExecutor
   ): Promise<SoleOwnedSharedProjectSummary[]>;
+  reassignCoOwnedProjectsBeforeUserDeletion(
+    userId: string,
+    executor?: DbExecutor
+  ): Promise<number>;
   findMemberByEmail(
     projectId: string,
     email: string,
@@ -389,6 +393,52 @@ export class DrizzleProjectRepository implements ProjectRepository {
     return blocked;
   }
 
+  async reassignCoOwnedProjectsBeforeUserDeletion(
+    userId: string,
+    executor: DbExecutor = this.database
+  ): Promise<number> {
+    const ownedProjects = await executor
+      .select({ id: projects.id })
+      .from(projects)
+      .where(eq(projects.ownerId, userId));
+
+    if (ownedProjects.length === 0) return 0;
+
+    const projectIds = ownedProjects.map((p) => p.id);
+    const otherOwners = await executor
+      .select({
+        projectId: projectMembers.projectId,
+        userId: projectMembers.userId,
+      })
+      .from(projectMembers)
+      .where(
+        and(
+          inArray(projectMembers.projectId, projectIds),
+          eq(projectMembers.role, "owner")
+        )
+      )
+      .orderBy(asc(projectMembers.joinedAt));
+
+    const replacementByProject = new Map<string, string>();
+    for (const row of otherOwners) {
+      if (row.userId !== userId && !replacementByProject.has(row.projectId)) {
+        replacementByProject.set(row.projectId, row.userId);
+      }
+    }
+
+    let reassigned = 0;
+    const now = Date.now();
+    for (const [projectId, nextOwnerId] of replacementByProject) {
+      await executor
+        .update(projects)
+        .set({ ownerId: nextOwnerId, updatedAt: now })
+        .where(and(eq(projects.id, projectId), eq(projects.ownerId, userId)));
+      reassigned += 1;
+    }
+
+    return reassigned;
+  }
+
   async findMemberByEmail(
     projectId: string,
     email: string,
@@ -407,7 +457,7 @@ export class DrizzleProjectRepository implements ProjectRepository {
       .where(
         and(
           eq(projectMembers.projectId, projectId),
-          sql`lower(${users.email}) = ${normalized}`
+          eq(users.email, normalized)
         )
       )
       .limit(1);
@@ -549,7 +599,7 @@ export class DrizzleProjectRepository implements ProjectRepository {
       .where(
         and(
           eq(projectInvitations.projectId, projectId),
-          sql`lower(${projectInvitations.email}) = ${normalized}`,
+          eq(projectInvitations.email, normalized),
           eq(projectInvitations.status, "pending")
         )
       )

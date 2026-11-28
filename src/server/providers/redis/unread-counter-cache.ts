@@ -12,6 +12,19 @@ export interface UnreadCounterCache {
   reset(userId: string): Promise<void>;
 }
 
+const ATOMIC_ADJUST_IF_EXISTS_LUA = `
+if redis.call("EXISTS", KEYS[1]) == 1 then
+  local nextVal = tonumber(redis.call("INCRBY", KEYS[1], tonumber(ARGV[1])))
+  if nextVal < 0 then
+    nextVal = 0
+    redis.call("SET", KEYS[1], 0)
+  end
+  redis.call("EXPIRE", KEYS[1], tonumber(ARGV[2]))
+  return nextVal
+end
+return nil
+`;
+
 function buildKey(userId: string): string {
   return `unread_notifications:${userId}`;
 }
@@ -97,12 +110,13 @@ export class IoRedisUnreadCounterCache implements UnreadCounterCache {
   async increment(userId: string, delta = 1): Promise<void> {
     try {
       if (this.client.status === "wait") await this.client.connect();
-      const key = buildKey(userId);
-      const exists = await this.client.exists(key);
-      if (exists) {
-        await this.client.incrby(key, delta);
-        await this.client.expire(key, UNREAD_COUNTER_TTL_SECONDS);
-      }
+      await this.client.eval(
+        ATOMIC_ADJUST_IF_EXISTS_LUA,
+        1,
+        buildKey(userId),
+        String(Math.trunc(delta)),
+        String(UNREAD_COUNTER_TTL_SECONDS)
+      );
     } catch {
       await this.fallback.increment(userId, delta);
     }
@@ -111,16 +125,13 @@ export class IoRedisUnreadCounterCache implements UnreadCounterCache {
   async decrement(userId: string, delta = 1): Promise<void> {
     try {
       if (this.client.status === "wait") await this.client.connect();
-      const key = buildKey(userId);
-      const exists = await this.client.exists(key);
-      if (exists) {
-        const next = await this.client.decrby(key, delta);
-        if (next < 0) {
-          await this.client.set(key, "0", "EX", UNREAD_COUNTER_TTL_SECONDS);
-        } else {
-          await this.client.expire(key, UNREAD_COUNTER_TTL_SECONDS);
-        }
-      }
+      await this.client.eval(
+        ATOMIC_ADJUST_IF_EXISTS_LUA,
+        1,
+        buildKey(userId),
+        String(-Math.abs(Math.trunc(delta))),
+        String(UNREAD_COUNTER_TTL_SECONDS)
+      );
     } catch {
       await this.fallback.decrement(userId, delta);
     }
@@ -161,12 +172,11 @@ export class UpstashUnreadCounterCache implements UnreadCounterCache {
 
   async increment(userId: string, delta = 1): Promise<void> {
     try {
-      const key = buildKey(userId);
-      const exists = await this.client.exists(key);
-      if (exists) {
-        await this.client.incrby(key, delta);
-        await this.client.expire(key, UNREAD_COUNTER_TTL_SECONDS);
-      }
+      await this.client.eval(
+        ATOMIC_ADJUST_IF_EXISTS_LUA,
+        [buildKey(userId)],
+        [Math.trunc(delta), UNREAD_COUNTER_TTL_SECONDS]
+      );
     } catch {
       await this.fallback.increment(userId, delta);
     }
@@ -174,16 +184,11 @@ export class UpstashUnreadCounterCache implements UnreadCounterCache {
 
   async decrement(userId: string, delta = 1): Promise<void> {
     try {
-      const key = buildKey(userId);
-      const exists = await this.client.exists(key);
-      if (exists) {
-        const next = await this.client.decrby(key, delta);
-        if (next < 0) {
-          await this.client.set(key, 0, { ex: UNREAD_COUNTER_TTL_SECONDS });
-        } else {
-          await this.client.expire(key, UNREAD_COUNTER_TTL_SECONDS);
-        }
-      }
+      await this.client.eval(
+        ATOMIC_ADJUST_IF_EXISTS_LUA,
+        [buildKey(userId)],
+        [-Math.abs(Math.trunc(delta)), UNREAD_COUNTER_TTL_SECONDS]
+      );
     } catch {
       await this.fallback.decrement(userId, delta);
     }

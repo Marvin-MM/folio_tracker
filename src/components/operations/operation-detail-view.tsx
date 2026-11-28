@@ -208,7 +208,7 @@ export function OperationDetailView({
 
       // Hand off RAM-only secret variables without touching storage or URL.
       if (Object.keys(secretValues).length > 0) {
-        setEphemeralRunSecrets(result.data.run.id, secretValues);
+        setEphemeralRunSecrets(userId, result.data.run.id, secretValues);
       }
 
       setStartDialogOpen(false);

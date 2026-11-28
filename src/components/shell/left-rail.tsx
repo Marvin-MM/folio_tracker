@@ -22,7 +22,7 @@ import {
 } from "lucide-react";
 import { BrandMark } from "@/components/brand-mark";
 import { CreateProjectDialog } from "@/components/projects/create-project-dialog";
-import { useWorkspaceChrome } from "@/components/shell/workspace-chrome-context";
+import { useWorkspaceActions } from "@/components/shell/workspace-chrome-context";
 import { ThemeToggle } from "@/components/theme-toggle";
 import { Avatar, AvatarFallback } from "@/components/ui/avatar";
 import { Button } from "@/components/ui/button";
@@ -97,7 +97,7 @@ export function LeftRail({
   onNavigate,
 }: LeftRailProps) {
   const pathname = usePathname();
-  const { openQuickCapture } = useWorkspaceChrome();
+  const { openQuickCapture } = useWorkspaceActions();
   const prefetch = usePrefetchWorkspaceView(user.id);
   const [signingOut, setSigningOut] = useState(false);
   const [createProjectOpen, setCreateProjectOpen] = useState(false);
@@ -410,9 +410,9 @@ export function LeftRail({
                   onClick={() => setCreateProjectOpen(true)}
                   aria-label="New project"
                   title="New project"
-                  className="flex size-5 items-center justify-center rounded text-muted-foreground hover:bg-sidebar-accent hover:text-foreground"
+                  className="flex size-9 items-center justify-center rounded text-muted-foreground hover:bg-sidebar-accent hover:text-foreground md:size-6"
                 >
-                  <Plus className="size-3" />
+                  <Plus className="size-3.5 md:size-3" />
                 </button>
               </div>
             ) : (
@@ -440,12 +440,12 @@ export function LeftRail({
                   onClick={() => setCreateProjectOpen(true)}
                   className="w-full rounded-md border border-dashed border-sidebar-border px-2.5 py-2 text-left text-[11px] leading-relaxed text-muted-foreground transition-colors hover:border-foreground/30 hover:text-foreground"
                 >
-                  <p className="font-medium text-foreground/85">
+                  <span className="block font-medium text-foreground/85">
                     + Create your first project
-                  </p>
-                  <p className="mt-0.5">
+                  </span>
+                  <span className="mt-0.5 block">
                     Organize tasks &amp; notes privately or invite teammates.
-                  </p>
+                  </span>
                 </button>
               ) : null
             ) : (

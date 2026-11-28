@@ -1,5 +1,5 @@
 import type { Metadata } from "next";
-import { HabitsMonthClient } from "@/components/habits/habits-query-views";
+import { HabitsMonthClient } from "@/components/habits/habits-month-client";
 import { getServerTimestampMs } from "@/lib/query/clock";
 import { requireSession } from "@/server/dal/auth-guard";
 import type { ScoringMode } from "@/server/domain/habit-analytics";

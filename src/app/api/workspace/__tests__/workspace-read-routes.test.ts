@@ -9,13 +9,7 @@ import {
 
 vi.mock("@/server/dal/auth-guard", () => ({
   requireSession: vi.fn(),
-  resolveLiveAdminStatus: vi.fn(),
-}));
-
-vi.mock("@/server/dal/user-repository", () => ({
-  userRepository: {
-    getById: vi.fn(),
-  },
+  resolveLiveUserShellStatus: vi.fn(),
 }));
 
 vi.mock("@/server/dal/workspace-repository", () => ({
@@ -33,10 +27,9 @@ vi.mock("@/server/dal/notification-repository", () => ({
 import { GET as getBootstrap } from "@/app/api/workspace/bootstrap/route";
 import {
   requireSession,
-  resolveLiveAdminStatus,
+  resolveLiveUserShellStatus,
 } from "@/server/dal/auth-guard";
 import { notificationRepository } from "@/server/dal/notification-repository";
-import { userRepository } from "@/server/dal/user-repository";
 import { workspaceRepository } from "@/server/dal/workspace-repository";
 import { withWorkspaceAuth, workspaceJson } from "@/server/http/workspace-api";
 
@@ -121,22 +114,13 @@ describe("withWorkspaceAuth (GET /api/workspace/* security boundary)", () => {
       },
     } as Awaited<ReturnType<typeof requireSession>>);
 
-    vi.mocked(userRepository.getById).mockResolvedValueOnce({
-      id: "u1",
-      name: "Fresh DB Name",
-      email: "ada@example.com",
-      emailVerified: true,
-      role: "admin",
-      isSuspended: false,
-      timezone: "Africa/Kampala",
-      emailRemindersEnabled: true,
-      handle: null,
-      bio: null,
-    });
-    vi.mocked(resolveLiveAdminStatus).mockResolvedValueOnce({
+    vi.mocked(resolveLiveUserShellStatus).mockResolvedValueOnce({
       isAdmin: true,
       isSuspended: false,
       email: "ada@example.com",
+      name: "Fresh DB Name",
+      timezone: "Africa/Kampala",
+      emailRemindersEnabled: true,
     });
     vi.mocked(workspaceRepository.getSidebarSummary).mockResolvedValueOnce({
       inboxCount: 1,

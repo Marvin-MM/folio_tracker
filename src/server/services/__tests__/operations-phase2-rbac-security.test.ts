@@ -311,17 +311,27 @@ describe("Operations Phase 2 — RBAC, Secret Gate, XSS/DTO Isolation, Dual Invi
       role: "collaborator",
     });
     expect(collabInvite.message).toBe("Invitation sent.");
-    expect(collabInvite.inviteUrl).toBeNull(); // Existing user -> in-app invite
+    expect("inviteUrl" in collabInvite).toBe(false); // Strict anti-enumeration
     await shareService.acceptInAppInvitation(
       collaboratorId,
       collabInvite.invitationId!
     );
 
+    // Quick-pick invite enforces allowlist (outsider rejected, follower allowed)
+    await expect(
+      shareService.inviteQuickPickUser(ownerId, opId, {
+        targetUserId: viewerId,
+        role: "viewer",
+      })
+    ).rejects.toBeInstanceOf(ForbiddenError);
+
+    await socialService.followCreator(viewerId, ownerId);
     const viewerInvite = await shareService.inviteQuickPickUser(ownerId, opId, {
       targetUserId: viewerId,
       role: "viewer",
     });
     await shareService.acceptInAppInvitation(viewerId, viewerInvite.invitationId!);
+    await socialService.unfollowCreator(viewerId, ownerId);
 
     // 4. Viewer capabilities: read, own run, flag step, fork PASS; edit/rollback/resolve/delete FORBIDDEN
     const viewerDetail = await operationService.getOperationDetail(viewerId, opId);
@@ -365,7 +375,7 @@ describe("Operations Phase 2 — RBAC, Secret Gate, XSS/DTO Isolation, Dual Invi
         title: "Private Database Failover Runbook",
         summary: "Updated by collaborator for PG 17.",
         domain: "tech",
-        expectedEditVersion: created.operation.editVersion,
+        expectedEditVersion: viewerDetail.operation.editVersion,
         steps: [
           {
             ...created.version.steps[0]!,
@@ -681,7 +691,7 @@ describe("Operations Phase 2 — RBAC, Secret Gate, XSS/DTO Isolation, Dual Invi
       role: "viewer",
     });
     expect(inAppInv.message).toBe("Invitation sent.");
-    expect(inAppInv.inviteUrl).toBeNull();
+    expect("inviteUrl" in inAppInv).toBe(false);
 
     const [r1, r2] = await Promise.allSettled([
       shareService.acceptInAppInvitation(outsiderId, inAppInv.invitationId!),
@@ -695,14 +705,20 @@ describe("Operations Phase 2 — RBAC, Secret Gate, XSS/DTO Isolation, Dual Invi
       ConflictError
     );
 
-    // 2. External non-user email invite mints 7-day token link + enforces email match
+    // 2. External non-user email invite mints 7-day token link via email event ONLY (strict anti-enumeration)
     const extInv = await shareService.inviteByEmail(ownerId, source.operation.id, {
       email: "brand.new.user@external.example",
       role: "viewer",
     });
     expect(extInv.message).toBe("Invitation sent."); // Anti-enumeration uniform message
-    expect(extInv.inviteUrl).toContain("/invite/operation/");
-    const rawToken = extInv.inviteUrl!.split("/invite/operation/")[1]!;
+    expect("inviteUrl" in extInv).toBe(false);
+    const emailInviteEvent = eventBus.events.find(
+      (evt): evt is Extract<AppDomainEvent, { name: "app/operation.invited_email" }> =>
+        evt.name === "app/operation.invited_email" &&
+        evt.data.invitationId === extInv.invitationId
+    );
+    expect(emailInviteEvent?.data.inviteUrl).toContain("/invite/operation/");
+    const rawToken = emailInviteEvent!.data.inviteUrl.split("/invite/operation/")[1]!;
 
     // Wrong account email throws EmailMismatchError
     await expect(

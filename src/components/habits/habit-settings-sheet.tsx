@@ -108,15 +108,22 @@ export function HabitSettingsSheet({
     "closed" | "set" | "remove"
   >("closed");
   const [currentPin, setCurrentPin] = useState("");
+  const [policyConfirmPin, setPolicyConfirmPin] = useState("");
   const [newPin, setNewPin] = useState("");
   const [confirmPin, setConfirmPin] = useState("");
   const [isPending, startTransition] = useTransition();
   const [isPinPending, startPinTransition] = useTransition();
   const invalidate = useInvalidateWorkspace();
 
+  const requiresPinToWeakenedLockPolicy =
+    settings.hasMonthLockPin &&
+    ((settings.monthLockEnabled && !monthLockEnabled) ||
+      monthLockGraceDays > settings.monthLockGraceDays);
+
   const resetPinForm = () => {
     setPinPanelMode("closed");
     setCurrentPin("");
+    setPolicyConfirmPin("");
     setNewPin("");
     setConfirmPin("");
   };
@@ -196,6 +203,16 @@ export function HabitSettingsSheet({
   };
 
   const handleSave = () => {
+    if (
+      requiresPinToWeakenedLockPolicy &&
+      !/^\d{4,6}$/.test(policyConfirmPin)
+    ) {
+      toast.error(
+        "Enter your current 4–6 digit Accountability PIN to relax month locking."
+      );
+      return;
+    }
+
     startTransition(async () => {
       const intervalDaysNum =
         defaultCommentMode === "interval_days"
@@ -223,6 +240,9 @@ export function HabitSettingsSheet({
         allowReactionsWhenLocked,
         monthLockEnabled,
         monthLockGraceDays,
+        ...(requiresPinToWeakenedLockPolicy
+          ? { currentPin: policyConfirmPin }
+          : {}),
       });
 
       if (!result.ok) {
@@ -380,6 +400,36 @@ export function HabitSettingsSheet({
               </div>
             ) : null}
 
+            {requiresPinToWeakenedLockPolicy ? (
+              <div className="space-y-1.5 rounded-md border border-primary/30 bg-primary/5 p-3">
+                <Label
+                  htmlFor="settings-policy-confirm-pin"
+                  className="text-xs font-medium text-foreground"
+                >
+                  Confirm Accountability PIN to relax month lock
+                </Label>
+                <Input
+                  id="settings-policy-confirm-pin"
+                  type="password"
+                  autoComplete="one-time-code"
+                  inputMode="numeric"
+                  maxLength={6}
+                  placeholder="Enter current 4–6 digit PIN"
+                  value={policyConfirmPin}
+                  onChange={(e) =>
+                    setPolicyConfirmPin(
+                      e.target.value.replace(/\D/g, "").slice(0, 6)
+                    )
+                  }
+                  className="mono-tabular mira-row bg-background text-xs tracking-widest"
+                />
+                <p className="text-[11px] text-muted-foreground">
+                  Disabling auto-lock or extending the grace window requires
+                  your current PIN.
+                </p>
+              </div>
+            ) : null}
+
             {/* Optional 4-6 Digit Accountability PIN */}
             <div className="space-y-2.5 rounded-md border border-border bg-background p-3">
               <div className="flex items-center justify-between gap-2">
@@ -453,6 +503,7 @@ export function HabitSettingsSheet({
                       <Input
                         id="settings-pin-current"
                         type="password"
+                        autoComplete="one-time-code"
                         inputMode="numeric"
                         maxLength={6}
                         placeholder="4–6 digits"
@@ -475,6 +526,7 @@ export function HabitSettingsSheet({
                       <Input
                         id="settings-pin-new"
                         type="password"
+                        autoComplete="one-time-code"
                         inputMode="numeric"
                         maxLength={6}
                         placeholder="••••"
@@ -495,6 +547,7 @@ export function HabitSettingsSheet({
                       <Input
                         id="settings-pin-confirm"
                         type="password"
+                        autoComplete="one-time-code"
                         inputMode="numeric"
                         maxLength={6}
                         placeholder="••••"
@@ -540,6 +593,7 @@ export function HabitSettingsSheet({
                     <Input
                       id="settings-pin-remove-current"
                       type="password"
+                      autoComplete="one-time-code"
                       inputMode="numeric"
                       maxLength={6}
                       placeholder="4–6 digits"
@@ -623,14 +677,20 @@ export function HabitSettingsSheet({
             {defaultCommentMode === "weekly_window" ? (
               <div className="grid grid-cols-2 gap-2">
                 <div className="space-y-1">
-                  <Label className="text-[11px] text-muted-foreground">
+                  <Label
+                    htmlFor="settings-window-open-day"
+                    className="text-[11px] text-muted-foreground"
+                  >
                     Opens
                   </Label>
                   <Select
                     value={String(defaultWindowStartDay)}
                     onValueChange={(v) => setDefaultWindowStartDay(Number(v))}
                   >
-                    <SelectTrigger className="mira-row bg-background text-xs">
+                    <SelectTrigger
+                      id="settings-window-open-day"
+                      className="mira-row bg-background text-xs"
+                    >
                       <SelectValue />
                     </SelectTrigger>
                     <SelectContent>
@@ -647,20 +707,27 @@ export function HabitSettingsSheet({
                   </Select>
                   <Input
                     type="time"
+                    aria-label="Window open time"
                     value={defaultWindowStartTime}
                     onChange={(e) => setDefaultWindowStartTime(e.target.value)}
                     className="mono-tabular mira-row bg-background text-xs"
                   />
                 </div>
                 <div className="space-y-1">
-                  <Label className="text-[11px] text-muted-foreground">
+                  <Label
+                    htmlFor="settings-window-close-day"
+                    className="text-[11px] text-muted-foreground"
+                  >
                     Closes
                   </Label>
                   <Select
                     value={String(defaultWindowEndDay)}
                     onValueChange={(v) => setDefaultWindowEndDay(Number(v))}
                   >
-                    <SelectTrigger className="mira-row bg-background text-xs">
+                    <SelectTrigger
+                      id="settings-window-close-day"
+                      className="mira-row bg-background text-xs"
+                    >
                       <SelectValue />
                     </SelectTrigger>
                     <SelectContent>
@@ -677,6 +744,7 @@ export function HabitSettingsSheet({
                   </Select>
                   <Input
                     type="time"
+                    aria-label="Window close time"
                     value={defaultWindowEndTime}
                     onChange={(e) => setDefaultWindowEndTime(e.target.value)}
                     className="mono-tabular mira-row bg-background text-xs"
